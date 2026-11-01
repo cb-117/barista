@@ -91,7 +91,11 @@ struct CoffeeSettingsView: View {
                     if !session.history.isEmpty { Button("Clear") { session.clearHistory() }.buttonStyle(.link) }
                 }
             } footer: {
-                Text("Barista \(BaristaVersion.current) · Prevents idle sleep. Closing the lid or choosing Sleep still sleeps your Mac.")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Barista \(BaristaVersion.current) · Running from \(Bundle.main.bundleURL.resolvingSymlinksInPath().path)")
+                        .textSelection(.enabled)
+                    Text("Prevents idle sleep. Closing the lid or choosing Sleep still sleeps your Mac.")
+                }
             }
         }
         .formStyle(.grouped)

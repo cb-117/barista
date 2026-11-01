@@ -9,8 +9,11 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-11-01
+
 ### Added
 - A **What’s new** link in Settings → Updates that opens this changelog.
+- Settings shows where the running copy of Barista lives (for example `/Applications/Barista.app`), so you can confirm which one is open.
 
 ## [0.0.3] - 2026-11-01
 
