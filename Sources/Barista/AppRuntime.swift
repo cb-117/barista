@@ -209,12 +209,17 @@ final class AppRuntime: ObservableObject {
     func refreshPermissions() {
         launchAtLogin = loginEnabled
         loginStatus = loginEnabled ? .on : (loginNeedsApproval ? .needsApproval : .off)
-        Task { @MainActor in
-            let settings = await UNUserNotificationCenter.current().notificationSettings()
-            notificationAuthorization = settings.authorizationStatus
-            if settings.authorizationStatus == .denied, notificationsEnabled {
-                notificationsEnabled = false
-                defaults.set(false, forKey: "notificationsEnabled")
+        // Read only the (Sendable) status on the callback's thread; older SDKs reject sending the
+        // non-Sendable settings object across actors.
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            let status = settings.authorizationStatus
+            Task { @MainActor in
+                guard let self else { return }
+                self.notificationAuthorization = status
+                if status == .denied, self.notificationsEnabled {
+                    self.notificationsEnabled = false
+                    self.defaults.set(false, forKey: "notificationsEnabled")
+                }
             }
         }
     }
