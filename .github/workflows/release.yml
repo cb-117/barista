@@ -53,9 +53,6 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
@@ -168,7 +165,7 @@ jobs:
 
           **Windows:** in PowerShell, \`irm https://baristatime.app/install.ps1 | iex\`, or download **barista-$version-windows-x86_64.zip**.
 
-          **Linux:** the same \`install.sh\` command, or download **barista-$version-linux-x86_64.tar.gz** (or \`-arm64\`). The tray icon needs AppIndicator support (built into Ubuntu, KDE, and most desktops; GNOME needs the AppIndicator extension).
+          **Linux:** the same \`install.sh\` command, or download **barista-$version-linux-x86_64.tar.gz** (or \`-arm64\`). The tray icon uses StatusNotifierItem, built into KDE Plasma, Ubuntu, Xfce, and most desktops; on stock GNOME, install the AppIndicator extension. No GTK libraries are needed.
           NOTES
           gh release create "v$version" "$dmg" Barista.dmg "$zip" "$zip.sig" Barista.zip "${portable[@]}" SHA256SUMS.txt --target "$GITHUB_SHA" \
             --title "Barista $version" --notes-file notes.md

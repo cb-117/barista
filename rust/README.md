@@ -14,17 +14,18 @@ rust/
     src/mcp.rs        stdio MCP server
     src/update.rs     GitHub release check (via the system's curl; no TLS stack bundled)
     src/bin/barista.rs
-  barista-app/      the tray app (tray-icon + tao), plus `--serve PATH` and `--headless` modes
+  barista-app/      the tray app (ksni on Linux, tray-icon on Windows; no tray on macOS dev builds), plus `--serve PATH` and `--headless` modes
 ```
 
 The version comes from `Sources/BaristaCore/Version.swift` at build time (`build.rs`), so a release bumps one number for every platform. When you change behavior in the Swift CLI, hooks, or session logic, make the same change here; `Tests/agent_integration.py` runs against both.
 
 ## Build
 
-Rust 1.89 or later. On Linux, also install GTK and AppIndicator headers for the tray:
+Rust 1.89 or later; no system libraries. On Linux the tray is a StatusNotifierItem served over D-Bus
+with `ksni` (left-click opens the menu), so there's no GTK; on Windows Barista pumps `tray-icon`'s window
+messages itself and sets up per-monitor DPI and dark menus, so there's no `tao`.
 
 ```sh
-sudo apt-get install libgtk-3-dev libxdo-dev libayatana-appindicator3-dev   # Debian/Ubuntu
 cargo build --workspace --release      # target/release/barista and barista-app
 ```
 

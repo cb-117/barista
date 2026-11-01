@@ -2,8 +2,13 @@
 //! control endpoint the `barista` CLI, MCP server, and agent hooks talk to.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+// What the tray menu shows and does. macOS builds are development-only (the Mac app is the Swift one)
+// and have no tray, so the menu goes unused there.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+mod menu;
 mod platform;
 mod prefs;
+#[cfg(any(windows, target_os = "linux"))]
 mod tray;
 
 use barista_core::activity::{self, ActivityTracker, WatchedApp};
@@ -556,13 +561,19 @@ fn main() {
         });
     }
 
-    if options.headless {
-        // No tray (a server, a test, or no graphical session): just serve until terminated.
-        loop {
-            std::thread::park();
-        }
+    #[cfg(any(windows, target_os = "linux"))]
+    if !options.headless {
+        tray::run(app, server, options.background);
     }
-    tray::run(app, server, options.background);
+    #[cfg(not(any(windows, target_os = "linux")))]
+    if !options.headless && !options.background {
+        eprintln!("barista-app: no tray on this platform; serving the control endpoint only. Use the Mac app for a menu-bar icon.");
+    }
+    // No tray (a server, a test, no graphical session, or macOS): just serve until terminated.
+    let _ = (&app, &server);
+    loop {
+        std::thread::park();
+    }
 }
 
 /// Read by the completion callback, which runs while the app state is locked.

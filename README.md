@@ -71,7 +71,7 @@ curl -fsSL https://baristatime.app/install.sh | sh
 
 Both check the download against the release’s SHA-256, install `barista` and `barista-app` (Windows: `%LOCALAPPDATA%\Programs\Barista`, added to your PATH and Start menu; Linux: `~/.local/bin`, plus an app-menu entry), and run `barista setup`. Re-run to update; Barista’s menu tells you when a new version is out. Or download `barista-<version>-windows-x86_64.zip` or `barista-<version>-linux-<arch>.tar.gz` from the [latest release](https://github.com/cb-117/barista/releases/latest).
 
-On Linux the tray icon needs AppIndicator support: built into Ubuntu, KDE Plasma, Xfce, and most desktops; on stock GNOME install the AppIndicator extension. Without a graphical session (a server, WSL, SSH), `barista-app` runs headless and the CLI, hooks, and MCP keep working. Linux keeps the computer awake through the desktop’s power service (GNOME, KDE, and others) and a systemd-logind idle inhibitor; Windows uses a system power request (it shows in `powercfg /requests`).
+On Linux the tray icon is a StatusNotifierItem (no GTK needed), shown by KDE Plasma, Ubuntu, Xfce, and most desktops; on stock GNOME install the AppIndicator extension, and on trays that only support XEmbed (i3bar, dwm, tint2) run `snixembed`. Left-click or right-click the cup for the menu; the time left appears in the icon’s tooltip. Without a graphical session (a server, WSL, SSH), `barista-app` runs headless and the CLI, hooks, and MCP keep working. Linux keeps the computer awake through the desktop’s power service (GNOME, KDE, and others) and a systemd-logind idle inhibitor; Windows uses a system power request (it shows in `powercfg /requests`).
 
 What’s different from the Mac app: the panel is a menu (no custom minutes, end time, or “while an app runs”; use `barista start --pid` for that), there’s no global shortcut, and updates download from the release page instead of installing in place.
 
@@ -175,7 +175,7 @@ swift run BaristaChecks --power
 python3 Tests/agent_integration.py
 ```
 
-For the Windows and Linux build (Rust 1.89+; on Linux also `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev`):
+For the Windows and Linux build (Rust 1.89+; no system libraries needed):
 
 ```sh
 cd rust && cargo test --workspace && cargo build --workspace && cd ..

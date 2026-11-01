@@ -1,522 +1,418 @@
-//! The coffee cup in the system tray (Linux) or notification area (Windows), and its menu.
-use crate::{check_for_updates, cli_path, lock, platform, refresh_usage, AgentStatus, Shared};
-use barista_core::activity::WatchedApp;
+//! The coffee cup in the notification area (Windows) or system tray (Linux). What the menu shows and
+//! does lives in `menu.rs`; this file only draws it. No GUI toolkit is involved: Windows uses
+//! tray-icon's native backend with a small message pump, and Linux serves a StatusNotifierItem over
+//! D-Bus with ksni, so there's no GTK (or glib) anywhere.
+use crate::menu::{self, Entry, Icons, Model};
+use crate::{lock, platform, refresh_usage, Shared};
 use barista_core::control::ControlServer;
-use barista_core::hooks::HookAgent;
-use barista_core::*;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
-use tao::event::{Event, StartCause};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-enum UserEvent {
-    Menu(MenuEvent),
-    /// The tray icon was clicked (where the platform reports it), so the menu is about to show.
+/// What the platform's tray reports to the loop.
+pub enum UserEvent {
+    /// A menu entry was chosen; the id is a command for `menu::handle`.
+    Menu(String),
+    /// The menu is about to show, so usage in it should be fresh.
     Opened,
 }
 
-struct Icons {
-    active: Icon,
-    resting: Icon,
-}
-
-/// The app icon, full color while awake and faded while resting.
-fn icons() -> Icons {
-    let decoder = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/icon-64.png")[..]));
-    let mut reader = decoder.read_info().expect("bundled icon is a valid PNG");
-    let mut rgba = vec![0; reader.output_buffer_size().expect("icon size")];
-    let info = reader.next_frame(&mut rgba).expect("bundled icon decodes");
-    rgba.truncate(info.buffer_size());
-    let (width, height) = (info.width, info.height);
-    let mut faded = rgba.clone();
-    for pixel in faded.as_chunks_mut::<4>().0 {
-        let gray = ((u32::from(pixel[0]) * 30 + u32::from(pixel[1]) * 59 + u32::from(pixel[2]) * 11) / 100) as u8;
-        pixel[0] = gray;
-        pixel[1] = gray;
-        pixel[2] = gray;
-        pixel[3] = (u32::from(pixel[3]) * 3 / 5) as u8;
+/// Runs the tray until Quit. `wait` blocks for up to a second and returns the next tray event while
+/// keeping the platform's tray machinery running.
+fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: impl FnMut(&Receiver<UserEvent>) -> Option<UserEvent>) -> ! {
+    let (sender, events) = std::sync::mpsc::channel::<UserEvent>();
+    let icons = menu::icons();
+    let model = menu::build(&app);
+    let tray = backend::Tray::create(&model, &icons, sender);
+    if tray.is_none() {
+        eprintln!("barista-app: couldn't show the tray icon. Barista keeps running.");
     }
-    Icons {
-        active: Icon::from_rgba(rgba, width, height).expect("icon"),
-        resting: Icon::from_rgba(faded, width, height).expect("icon"),
+    if !background {
+        let place = if cfg!(windows) {
+            "notification area (you may need to click ^ to see it)"
+        } else {
+            "system tray"
+        };
+        platform::notify("Barista is running", &format!("Find the coffee cup in the {place}."));
     }
-}
-
-pub fn run(app: Shared, server: ControlServer, background: bool) -> ! {
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-    let proxy = event_loop.create_proxy();
-    MenuEvent::set_event_handler(Some(move |event| {
-        let _ = proxy.send_event(UserEvent::Menu(event));
-    }));
-    let clicks = event_loop.create_proxy();
-    tray_icon::TrayIconEvent::set_event_handler(Some(move |_| {
-        let _ = clicks.send_event(UserEvent::Opened);
-    }));
-    let icons = icons();
-    let mut tray: Option<TrayIcon> = None;
-    let mut shown = String::new();
+    let mut shown = model.signature;
     let mut last_agent_refresh = Instant::now();
-    let mut server = Some(server);
-
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1));
-        match event {
-            // The tray must be created once the event loop is running.
-            Event::NewEvents(StartCause::Init) => {
-                let (menu, signature, tooltip, title, active) = build(&app);
-                let built = TrayIconBuilder::new()
-                    .with_menu(Box::new(menu))
-                    .with_tooltip(&tooltip)
-                    .with_icon(if active { icons.active.clone() } else { icons.resting.clone() })
-                    .with_title(&title)
-                    .build();
-                match built {
-                    Ok(icon) => tray = Some(icon),
-                    Err(error) => eprintln!("barista-app: couldn't show the tray icon ({error}). Barista keeps running."),
-                }
-                shown = signature;
-                if !background {
-                    let place = if cfg!(windows) {
-                        "notification area (you may need to click ^ to see it)"
-                    } else {
-                        "system tray"
-                    };
-                    platform::notify("Barista is running", &format!("Find the coffee cup in the {place}."));
-                }
-            }
+    loop {
+        match wait(&events) {
             // Usage shown in a menu that's opening should be at most a minute old.
-            Event::UserEvent(UserEvent::Opened) => refresh_usage(&app, Duration::from_secs(60)),
-            Event::UserEvent(UserEvent::Menu(event)) => {
-                if handle(&app, event.id.as_ref()) {
+            Some(UserEvent::Opened) => refresh_usage(&app, Duration::from_secs(60)),
+            Some(UserEvent::Menu(id)) => {
+                if menu::handle(&app, &id) {
                     lock(&app).shutdown();
-                    if let Some(server) = server.take() {
-                        server.stop();
-                    }
-                    tray = None;
-                    *control_flow = ControlFlow::Exit;
-                    return;
+                    server.stop();
+                    drop(tray);
+                    std::process::exit(0);
                 }
-                shown.clear(); // Rebuild right away.
+                shown.clear(); // Redraw right away.
             }
-            _ => {}
+            None => {}
         }
         if last_agent_refresh.elapsed() > Duration::from_secs(30) {
             lock(&app).refresh_agents();
             last_agent_refresh = Instant::now();
         }
-        if let Some(icon) = &tray {
-            let (menu, signature, tooltip, title, active) = build(&app);
-            if signature != shown {
-                icon.set_menu(Some(Box::new(menu)));
-                let _ = icon.set_tooltip(Some(&tooltip));
-                let _ = icon.set_icon(Some(if active { icons.active.clone() } else { icons.resting.clone() }));
-                icon.set_title(Some(&title));
-                shown = signature;
+        if let Some(tray) = &tray {
+            let model = menu::build(&app);
+            if model.signature != shown {
+                tray.show(&model, &icons);
+                shown = model.signature;
             }
+        }
+    }
+}
+
+/// Linux: a StatusNotifierItem served by ksni on its own D-Bus thread, so the loop only waits.
+#[cfg(target_os = "linux")]
+pub fn run(app: Shared, server: ControlServer, background: bool) -> ! {
+    event_loop(app, server, background, |events| events.recv_timeout(Duration::from_secs(1)).ok())
+}
+
+/// Windows: the tray and its menu deliver clicks as window messages to this thread, so pump them,
+/// waking at least every 100 ms to pass on menu events.
+#[cfg(windows)]
+pub fn run(app: Shared, server: ControlServer, background: bool) -> ! {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
+    };
+    backend::prepare_process();
+    event_loop(app, server, background, |events| {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            unsafe {
+                let mut message: MSG = std::mem::zeroed();
+                while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                    if message.message == WM_QUIT {
+                        // Asked to exit (e.g. PostQuitMessage): quit the normal way.
+                        return Some(UserEvent::Menu("quit".into()));
+                    }
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            if let Ok(event) = events.try_recv() {
+                return Some(event);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            let wait = left.min(Duration::from_millis(100)).as_millis() as u32;
+            unsafe { MsgWaitForMultipleObjects(0, std::ptr::null(), 0, wait, QS_ALLINPUT) };
         }
     })
 }
 
-fn item(id: &str, text: &str) -> MenuItem {
-    MenuItem::with_id(id, text, true, None)
-}
+#[cfg(windows)]
+mod backend {
+    use super::{Entry, Icons, Model, Sender, UserEvent};
+    use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+    use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-fn label(text: &str) -> MenuItem {
-    MenuItem::new(text, false, None)
-}
-
-fn check(id: &str, text: &str, checked: bool) -> CheckMenuItem {
-    CheckMenuItem::with_id(id, text, true, checked, None)
-}
-
-fn add(menu: &Menu, entry: &dyn IsMenuItem) {
-    let _ = menu.append(entry);
-}
-
-fn add_to(menu: &Submenu, entry: &dyn IsMenuItem) {
-    let _ = menu.append(entry);
-}
-
-/// Builds the menu and a signature of everything it shows, so unchanged menus aren't rebuilt.
-fn build(app: &Shared) -> (Menu, String, String, String, bool) {
-    let mut state = lock(app);
-    state.session.refresh();
-    let state = &*state;
-    let session = &state.session;
-    let menu = Menu::new();
-    let mut signature = Vec::<String>::new();
-    let computer = if cfg!(windows) { "PC" } else { "computer" };
-
-    if let Some(notice) = &state.notice {
-        add(&menu, &label(notice));
-        add(&menu, &item("dismiss-notice", "Dismiss"));
-        add(&menu, &PredefinedMenuItem::separator());
-        signature.push(notice.clone());
-    }
-    if let Some(error) = &session.error {
-        add(&menu, &label(error));
-        add(&menu, &PredefinedMenuItem::separator());
-        signature.push(error.clone());
-    }
-    if let Some(update) = state.visible_update() {
-        add(&menu, &item("open-update", &format!("Download Barista {}…", update.version)));
-        add(&menu, &item("dismiss-update", "Not now"));
-        add(&menu, &PredefinedMenuItem::separator());
-        signature.push(update.version.clone());
-    }
-
-    let headline = if session.is_active() {
-        let count = session.sessions().len();
-        format!(
-            "Keeping your {computer} awake · {}",
-            if count == 1 {
-                "1 session".into()
-            } else {
-                format!("{count} sessions")
+    /// Per-monitor DPI awareness (so menus aren't blurry on scaled displays) and dark popup menus in
+    /// dark mode, as tao used to set up. Every function is looked up at run time, with the same
+    /// fallbacks and version checks tao used, so older Windows versions simply skip what they lack.
+    pub fn prepare_process() {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+        unsafe fn function(library: &str, name: &[u8]) -> Option<unsafe extern "system" fn() -> isize> {
+            let wide: Vec<u16> = library.encode_utf16().chain([0]).collect();
+            let module = unsafe { LoadLibraryW(wide.as_ptr()) };
+            if module.is_null() {
+                return None;
             }
-        )
-    } else {
-        format!("Resting · your {computer} can sleep")
-    };
-    add(&menu, &label(&headline));
-    signature.push(headline);
-
-    let tasks: Vec<&CoffeeLease> = session.sessions().iter().filter(|s| s.source != SessionSource::Manual).collect();
-    for lease in &tasks {
-        let mut text = lease.title.clone();
-        if let Some(progress) = lease.progress {
-            text.push_str(&format!(" · {}%", (progress * 100.0).round()));
+            unsafe { GetProcAddress(module, name.as_ptr()) }
         }
-        if let Some(message) = &lease.message {
-            text.push_str(&format!(" · {message}"));
+        unsafe fn ordinal(library: &str, number: usize) -> Option<unsafe extern "system" fn() -> isize> {
+            let wide: Vec<u16> = library.encode_utf16().chain([0]).collect();
+            let module = unsafe { LoadLibraryW(wide.as_ptr()) };
+            if module.is_null() {
+                return None;
+            }
+            unsafe { GetProcAddress(module, number as *const u8) }
         }
-        let submenu = Submenu::new(&text, true);
-        add_to(&submenu, &item(&format!("cancel:{}", lease.id), "Stop keeping awake"));
-        add(&menu, &submenu);
-        signature.push(format!("{}{text}", lease.id));
-    }
+        unsafe {
+            // DPI: Windows 10 1703+ per-monitor v2, else 8.1+ per-monitor, else Vista+ system DPI.
+            const PER_MONITOR_AWARE_V2: isize = -4;
+            if let Some(f) = function("user32.dll", b"SetProcessDpiAwarenessContext\0") {
+                let f: unsafe extern "system" fn(isize) -> i32 = std::mem::transmute(f);
+                f(PER_MONITOR_AWARE_V2);
+            } else if let Some(f) = function("shcore.dll", b"SetProcessDpiAwareness\0") {
+                let f: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
+                f(2); // PROCESS_PER_MONITOR_DPI_AWARE
+            } else if let Some(f) = function("user32.dll", b"SetProcessDPIAware\0") {
+                let f: unsafe extern "system" fn() -> i32 = std::mem::transmute(f);
+                f();
+            }
 
-    add(&menu, &PredefinedMenuItem::separator());
-    if let Some(manual) = session.manual_session() {
-        let remaining = if manual.expires_at.is_some() {
-            format!("{} left", session.countdown_label())
-        } else {
-            "until stopped".into()
-        };
-        add(&menu, &label(&format!("Your timer · {remaining}")));
-        if manual.expires_at.is_some() {
-            add(&menu, &item("add:900", "Add 15 minutes"));
-        }
-        add(&menu, &item("stop-manual", "Stop"));
-        signature.push(format!("manual {remaining}"));
-    } else {
-        add(&menu, &label("Keep awake for"));
-        let enabled = !session.battery_blocked();
-        for (id, text) in [
-            ("start:900", "15 minutes"),
-            ("start:3600", "1 hour"),
-            ("start:14400", "4 hours"),
-            ("start:forever", "Until stopped"),
-        ] {
-            add(&menu, &MenuItem::with_id(id, text, enabled, None));
-        }
-        if !enabled {
-            add(
-                &menu,
-                &label(&format!("Battery protection is on below {}%", session.battery_threshold())),
-            );
-        }
-        signature.push(format!("idle {enabled}"));
-    }
-    if session.sessions().len() > 1 || (session.is_active() && session.manual_session().is_none()) {
-        add(&menu, &item("stop-all", "Stop all"));
-        signature.push("stop-all".into());
-    }
-
-    add(&menu, &PredefinedMenuItem::separator());
-    let settings = Submenu::new("Settings", true);
-    let prefs = &state.prefs;
-    add_to(
-        &settings,
-        &check("toggle:display", "Keep the display on during my timers", prefs.keep_display_awake),
-    );
-    if cfg!(target_os = "linux") {
-        add_to(
-            &settings,
-            &check("toggle:countdown", "Show time left next to the cup", prefs.show_countdown),
-        );
-    }
-    let battery = Submenu::new("Battery protection", true);
-    for value in [0, 10, 15, 20, 30] {
-        let text = if value == 0 {
-            "Off".to_string()
-        } else {
-            format!("Stop at {value}% on battery")
-        };
-        add_to(
-            &battery,
-            &check(&format!("battery:{value}"), &text, prefs.battery_threshold == value),
-        );
-    }
-    add_to(&settings, &battery);
-    add_to(&settings, &check("toggle:login", "Launch at login", state.launch_at_login));
-    add_to(
-        &settings,
-        &check("toggle:notifications", "Notify me when sessions end", prefs.notifications_enabled),
-    );
-    add_to(
-        &settings,
-        &check("toggle:updates", "Check for updates daily", prefs.checks_for_updates),
-    );
-    add_to(
-        &settings,
-        &item("check-updates", state.update_status.as_deref().unwrap_or("Check for updates now")),
-    );
-    add_to(&settings, &PredefinedMenuItem::separator());
-    add_to(
-        &settings,
-        &check("toggle:agents", "Local agent access (CLI, MCP, hooks)", prefs.agent_access),
-    );
-    add_to(
-        &settings,
-        &check(
-            "toggle:claude-account",
-            "Show Claude plan limits from your Claude account",
-            prefs.claude_account_limits,
-        ),
-    );
-    // The Claude and ChatGPT desktop apps have no hooks: Barista watches how busy they are.
-    // Neither exists for Linux.
-    if cfg!(windows) {
-        add_to(
-            &settings,
-            &check(
-                "toggle:watch-cowork",
-                "Keep awake while the Claude app works (Cowork)",
-                prefs.watch_cowork,
-            ),
-        );
-        add_to(
-            &settings,
-            &check(
-                "toggle:watch-chatgpt",
-                "Keep awake while the ChatGPT app works",
-                prefs.watch_chatgpt,
-            ),
-        );
-    }
-    for (agent, status) in &state.agents {
-        let name = match agent {
-            HookAgent::Claude => "Claude Code",
-            HookAgent::Codex => "ChatGPT Codex",
-            HookAgent::Cursor => "Cursor",
-        };
-        let (text, id) = match status {
-            AgentStatus::Connected => (format!("{name}: connected · Disconnect"), "disconnect"),
-            AgentStatus::Moved => (format!("{name}: needs repair · Reconnect"), "connect"),
-            AgentStatus::Disconnected => (format!("{name}: Connect"), "connect"),
-            AgentStatus::NotFound => (format!("{name}: not set up for this user"), ""),
-        };
-        let key = agent.name();
-        add_to(&settings, &MenuItem::with_id(format!("{id}:{key}"), &text, !id.is_empty(), None));
-        signature.push(text);
-    }
-    add_to(&settings, &item("copy:cli", "Copy CLI path"));
-    add_to(&settings, &item("copy:mcp", "Copy MCP setup"));
-    add(&menu, &settings);
-    signature.push(format!("{prefs:?}{}{:?}", state.launch_at_login, state.update_status));
-
-    let usage = usage_menu(state.usage.as_ref(), state.usage_loading);
-    signature.push(usage.1);
-    add(&menu, &usage.0);
-
-    let history = Submenu::new("Recent sessions", !session.history().is_empty());
-    for event in session.history().iter().take(10) {
-        add_to(&history, &label(&format!("{} · {}", event.title, event.reason.label())));
-    }
-    if !session.history().is_empty() {
-        add_to(&history, &PredefinedMenuItem::separator());
-        add_to(&history, &item("clear-history", "Clear history"));
-    }
-    add(&menu, &history);
-    signature.push(session.history().first().map(|h| h.id.clone()).unwrap_or_default());
-
-    add(&menu, &PredefinedMenuItem::separator());
-    add(&menu, &label(&format!("Barista {VERSION}")));
-    add(&menu, &item("quit", "Quit Barista"));
-
-    let active = session.is_active();
-    let tooltip = if active {
-        session.sessions().iter().map(|s| s.title.as_str()).collect::<Vec<_>>().join(" · ")
-    } else {
-        "Barista · resting".to_string()
-    };
-    let title = if active && prefs.show_countdown {
-        session.countdown_label()
-    } else {
-        String::new()
-    };
-    signature.push(tooltip.clone());
-    signature.push(title.clone());
-    (menu, signature.join("\u{1f}"), tooltip, title, active)
-}
-
-/// Performs a menu command. Returns true to quit.
-fn handle(app: &Shared, id: &str) -> bool {
-    let (command, argument) = id.split_once(':').unwrap_or((id, ""));
-    let mut state = lock(app);
-    match command {
-        "quit" => return true,
-        "dismiss-notice" => state.notice = None,
-        "start" => state.start_manual(argument.parse::<f64>().ok()),
-        "add" => state.session.add_time(argument.parse().unwrap_or(900.0)),
-        "stop-manual" => state.session.stop_manual(),
-        "cancel" => state.session.cancel(argument),
-        "stop-all" => state.session.stop(EndReason::Stopped),
-        "toggle" => match argument {
-            "display" => {
-                let value = !state.prefs.keep_display_awake;
-                state.set_keep_display_awake(value)
+            // Dark menus use undocumented uxtheme ordinals, so check the build first, like tao:
+            // 1809 (17763) has AllowDarkModeForApp(BOOL) at 135; 1903 (18362)+ has
+            // SetPreferredAppMode(mode) there (1 = allow dark) and FlushMenuThemes at 136.
+            let build = windows_build();
+            if build < 17763 {
+                return;
             }
-            "countdown" => {
-                let value = !state.prefs.show_countdown;
-                state.set_show_countdown(value)
+            if let Some(f) = ordinal("uxtheme.dll", 135) {
+                let f: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
+                f(1); // TRUE for AllowDarkModeForApp, AllowDark for SetPreferredAppMode.
             }
-            "login" => {
-                let value = !state.launch_at_login;
-                state.set_launch_at_login(value)
-            }
-            "notifications" => {
-                let value = !state.prefs.notifications_enabled;
-                state.set_notifications(value)
-            }
-            "updates" => {
-                let value = !state.prefs.checks_for_updates;
-                state.set_checks_for_updates(value)
-            }
-            "agents" => {
-                let value = !state.prefs.agent_access;
-                state.set_agent_access(value)
-            }
-            "claude-account" => {
-                let value = !state.prefs.claude_account_limits;
-                drop(state);
-                crate::set_claude_account_limits(app, value);
-                return false;
-            }
-            "watch-cowork" => {
-                let value = !state.prefs.watch_cowork;
-                state.set_watches(WatchedApp::COWORK, value)
-            }
-            "watch-chatgpt" => {
-                let value = !state.prefs.watch_chatgpt;
-                state.set_watches(WatchedApp::CHATGPT, value)
-            }
-            _ => {}
-        },
-        "battery" => state.set_battery_threshold(argument.parse().unwrap_or(20)),
-        "statusline-install" => {
-            let cli = cli_path().to_string_lossy().into_owned();
-            state.notice = Some(match barista_core::hooks::statusline_install(&cli, None) {
-                Ok(()) => "Added to Claude Code’s status line. Your Claude limits appear after Claude Code’s next reply.".into(),
-                Err(error) => format!("Couldn’t update Claude Code settings: {error}"),
-            });
-        }
-        "connect" | "disconnect" => {
-            if let Some(agent) = HookAgent::parse(argument) {
-                state.set_connected(agent, command == "connect");
-            }
-        }
-        "copy" => {
-            let cli = cli_path().to_string_lossy().into_owned();
-            let (text, message) = if argument == "mcp" {
-                let value = serde_json::json!({"mcpServers": {"barista": {"command": cli, "args": ["mcp"]}}});
-                (
-                    serde_json::to_string_pretty(&value).unwrap_or_default(),
-                    "MCP setup copied. Paste it into your agent’s MCP settings.",
-                )
-            } else {
-                (cli, "CLI path copied.")
-            };
-            state.notice = Some(match copy(&text) {
-                Ok(()) => message.to_string(),
-                Err(error) => format!("Couldn’t copy: {error}. {text}"),
-            });
-        }
-        "check-updates" => {
-            drop(state);
-            check_for_updates(app, true);
-            return false;
-        }
-        "open-update" => {
-            if let Some(update) = &state.update {
-                platform::open_url(update.download_url.as_deref().unwrap_or(&update.page_url));
-            }
-        }
-        "dismiss-update" => state.dismiss_update(),
-        "clear-history" => state.session.clear_history(),
-        "usage-refresh" => {
-            drop(state);
-            refresh_usage(app, Duration::ZERO);
-            return false;
-        }
-        _ => {}
-    }
-    false
-}
-
-/// Copies text, keeping the clipboard owner alive on Linux (X11 and Wayland clipboards are
-/// served by the copying app until something else is copied).
-fn copy(text: &str) -> std::result::Result<(), String> {
-    use std::sync::{Mutex, OnceLock};
-    static CLIPBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
-    let holder = CLIPBOARD.get_or_init(|| Mutex::new(arboard::Clipboard::new().ok()));
-    let mut guard = holder.lock().map_err(|_| "clipboard unavailable".to_string())?;
-    let clipboard = guard.as_mut().ok_or("no clipboard is available")?;
-    clipboard.set_text(text.to_string()).map_err(|error| error.to_string())
-}
-
-/// Plan limits, then today, this week, and this month per agent, plus a signature of what it shows.
-fn usage_menu(report: Option<&serde_json::Value>, loading: bool) -> (Submenu, String) {
-    use barista_core::usage::{limit_summary, summary};
-    let menu = Submenu::new("Usage & Limits", true);
-    let mut lines = Vec::new();
-    match report {
-        None => lines.push(if loading {
-            "Reading agent logs…".to_string()
-        } else {
-            "No usage yet".to_string()
-        }),
-        Some(report) => {
-            lines.push("Limits".to_string());
-            for limit in report["limits"].as_array().into_iter().flatten() {
-                lines.push(format!("{} · {}", limit["name"].as_str().unwrap_or(""), limit_summary(limit)));
-            }
-            for period in report["periods"].as_array().into_iter().flatten() {
-                lines.push(String::new());
-                lines.push(period["label"].as_str().unwrap_or("").to_string());
-                for agent in period["agents"].as_array().into_iter().flatten() {
-                    lines.push(format!("{}: {}", agent["name"].as_str().unwrap_or(""), summary(agent)));
+            if build >= 18362 {
+                if let Some(f) = ordinal("uxtheme.dll", 136) {
+                    let f: unsafe extern "system" fn() = std::mem::transmute(f);
+                    f();
                 }
             }
         }
     }
-    for line in &lines {
-        if line.is_empty() {
-            add_to(&menu, &PredefinedMenuItem::separator());
-        } else {
-            add_to(&menu, &label(line));
+
+    /// The Windows build number from ntdll's RtlGetVersion (GetVersionEx lies without a manifest), or 0.
+    fn windows_build() -> u32 {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+        #[repr(C)]
+        struct OsVersionInfo {
+            size: u32,
+            major: u32,
+            minor: u32,
+            build: u32,
+            platform: u32,
+            service_pack: [u16; 128],
+        }
+        unsafe {
+            let wide: Vec<u16> = "ntdll.dll".encode_utf16().chain([0]).collect();
+            let module = LoadLibraryW(wide.as_ptr());
+            if module.is_null() {
+                return 0;
+            }
+            let Some(f) = GetProcAddress(module, c"RtlGetVersion".as_ptr().cast()) else {
+                return 0;
+            };
+            let f: unsafe extern "system" fn(*mut OsVersionInfo) -> i32 = std::mem::transmute(f);
+            let mut info: OsVersionInfo = std::mem::zeroed();
+            info.size = std::mem::size_of::<OsVersionInfo>() as u32;
+            if f(&mut info) == 0 {
+                info.build
+            } else {
+                0
+            }
         }
     }
-    add_to(&menu, &PredefinedMenuItem::separator());
-    add_to(&menu, &label("Costs are estimates at API prices, not your subscription bill"));
-    add_to(&menu, &item("usage-refresh", if loading { "Refreshing…" } else { "Refresh" }));
-    // Upgraded with Claude Code already connected: offer the status line that reports Claude's limits.
-    let offer = HookAgent::Claude.is_installed() && barista_core::hooks::statusline_status(None) == "Not connected";
-    if offer {
-        add_to(&menu, &item("statusline-install", "Add live limits to Claude Code’s status line"));
+
+    pub struct Tray(TrayIcon);
+
+    fn icon(icons: &Icons, active: bool) -> Option<Icon> {
+        let pixels = if active { &icons.active } else { &icons.resting };
+        Icon::from_rgba(pixels.clone(), icons.width, icons.height).ok()
     }
-    lines.push(format!("{loading}{offer}"));
-    (menu, lines.join("\u{1f}"))
+
+    fn append(entries: &[Entry], add: &mut dyn FnMut(&dyn IsMenuItem)) {
+        for entry in entries {
+            match entry {
+                Entry::Item { id, text, enabled } => add(&MenuItem::with_id(id.as_str(), text, *enabled, None)),
+                Entry::Check { id, text, checked } => add(&CheckMenuItem::with_id(id.as_str(), text, true, *checked, None)),
+                Entry::Label(text) => add(&MenuItem::new(text, false, None)),
+                Entry::Separator => add(&PredefinedMenuItem::separator()),
+                Entry::Submenu { text, enabled, children } => {
+                    let submenu = Submenu::new(text, *enabled);
+                    append(children, &mut |child| {
+                        let _ = submenu.append(child);
+                    });
+                    add(&submenu);
+                }
+            }
+        }
+    }
+
+    fn menu(entries: &[Entry]) -> Menu {
+        let menu = Menu::new();
+        append(entries, &mut |entry| {
+            let _ = menu.append(entry);
+        });
+        menu
+    }
+
+    impl Tray {
+        pub fn create(model: &Model, icons: &Icons, sender: Sender<UserEvent>) -> Option<Self> {
+            let menu_sender = sender.clone();
+            MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+                let _ = menu_sender.send(UserEvent::Menu(event.id.0));
+            }));
+            TrayIconEvent::set_event_handler(Some(move |_| {
+                let _ = sender.send(UserEvent::Opened);
+            }));
+            let mut builder = TrayIconBuilder::new()
+                .with_id("barista")
+                .with_menu(Box::new(menu(&model.entries)))
+                .with_tooltip(&model.tooltip)
+                .with_title(&model.title);
+            if let Some(icon) = icon(icons, model.active) {
+                builder = builder.with_icon(icon);
+            }
+            builder.build().ok().map(Tray)
+        }
+
+        pub fn show(&self, model: &Model, icons: &Icons) {
+            self.0.set_menu(Some(Box::new(menu(&model.entries))));
+            let _ = self.0.set_tooltip(Some(&model.tooltip));
+            let _ = self.0.set_icon(icon(icons, model.active));
+            self.0.set_title(Some(&model.title));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod backend {
+    use super::{Entry, Icons, Model, Sender, UserEvent};
+    use ksni::blocking::{Handle, TrayMethods};
+    use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
+    use ksni::MenuItem;
+
+    /// What ksni serves. The host draws it; ksni calls back here on clicks.
+    struct Cup {
+        entries: Vec<Entry>,
+        tooltip: String,
+        title: String,
+        icon: ksni::Icon,
+        sender: Sender<UserEvent>,
+    }
+
+    /// ksni wants ARGB32 in network byte order; the bundled icon is RGBA.
+    fn argb(icons: &Icons, active: bool) -> ksni::Icon {
+        let pixels = if active { &icons.active } else { &icons.resting };
+        let data = pixels.as_chunks::<4>().0.iter().flat_map(|p| [p[3], p[0], p[1], p[2]]).collect();
+        ksni::Icon {
+            width: icons.width as i32,
+            height: icons.height as i32,
+            data,
+        }
+    }
+
+    /// Without GTK there's no label beside the icon, so the countdown goes in the title (shown by the
+    /// host's tooltip and its list of tray items).
+    fn title(model: &Model) -> String {
+        if model.title.is_empty() {
+            "Barista".into()
+        } else {
+            format!("Barista · {}", model.title)
+        }
+    }
+
+    fn items(entries: &[Entry]) -> Vec<MenuItem<Cup>> {
+        entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Item { id, text, enabled } => {
+                    let id = id.clone();
+                    StandardItem {
+                        label: text.clone(),
+                        enabled: *enabled,
+                        activate: Box::new(move |cup: &mut Cup| {
+                            let _ = cup.sender.send(UserEvent::Menu(id.clone()));
+                        }),
+                        ..Default::default()
+                    }
+                    .into()
+                }
+                Entry::Check { id, text, checked } => {
+                    let id = id.clone();
+                    CheckmarkItem {
+                        label: text.clone(),
+                        checked: *checked,
+                        activate: Box::new(move |cup: &mut Cup| {
+                            let _ = cup.sender.send(UserEvent::Menu(id.clone()));
+                        }),
+                        ..Default::default()
+                    }
+                    .into()
+                }
+                Entry::Label(text) => StandardItem {
+                    label: text.clone(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+                Entry::Separator => MenuItem::Separator,
+                Entry::Submenu { text, enabled, children } => SubMenu {
+                    label: text.clone(),
+                    enabled: *enabled,
+                    submenu: items(children),
+                    ..Default::default()
+                }
+                .into(),
+            })
+            .collect()
+    }
+
+    impl ksni::Tray for Cup {
+        /// Left-click opens the menu, as it did with AppIndicator.
+        const MENU_ON_ACTIVATE: bool = true;
+
+        /// Fixed, so desktops remember whether the icon is shown or hidden.
+        fn id(&self) -> String {
+            "barista".into()
+        }
+        fn title(&self) -> String {
+            self.title.clone()
+        }
+        fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+            vec![self.icon.clone()]
+        }
+        fn tool_tip(&self) -> ksni::ToolTip {
+            ksni::ToolTip {
+                title: self.title.clone(),
+                description: self.tooltip.clone(),
+                ..Default::default()
+            }
+        }
+        fn menu(&self) -> Vec<MenuItem<Self>> {
+            items(&self.entries)
+        }
+        fn menu_about_to_show(&mut self) {
+            let _ = self.sender.send(UserEvent::Opened);
+        }
+    }
+
+    pub struct Tray(Handle<Cup>);
+
+    impl Tray {
+        pub fn create(model: &Model, icons: &Icons, sender: Sender<UserEvent>) -> Option<Self> {
+            let cup = Cup {
+                entries: model.entries.clone(),
+                tooltip: model.tooltip.clone(),
+                title: title(model),
+                icon: argb(icons, model.active),
+                sender,
+            };
+            // The panel may start after Barista (login): wait for it rather than giving up.
+            match cup.assume_sni_available(true).spawn() {
+                Ok(handle) => Some(Tray(handle)),
+                Err(error) => {
+                    eprintln!("barista-app: no system tray available ({error}).");
+                    None
+                }
+            }
+        }
+
+        pub fn show(&self, model: &Model, icons: &Icons) {
+            let (entries, tooltip, title, icon) = (
+                model.entries.clone(),
+                model.tooltip.clone(),
+                title(model),
+                argb(icons, model.active),
+            );
+            self.0.update(move |cup| {
+                cup.entries = entries;
+                cup.tooltip = tooltip;
+                cup.title = title;
+                cup.icon = icon;
+            });
+        }
+    }
+
+    impl Drop for Tray {
+        fn drop(&mut self) {
+            self.0.shutdown().wait();
+        }
+    }
 }
