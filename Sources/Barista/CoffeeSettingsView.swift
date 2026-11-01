@@ -9,7 +9,10 @@ struct CoffeeSettingsView: View {
     var body: some View {
         Form {
             if let notice = runtime.notice {
-                Section { NoticeBanner(text: notice) { runtime.notice = nil } }
+                Section {
+                    NoticeBanner(text: notice, actionTitle: runtime.noticePane.map { _ in "Open System Settings" },
+                                 action: { if let pane = runtime.noticePane { runtime.openSystemSettings(pane) } }) { runtime.notice = nil }
+                }
             }
             Section {
                 Toggle("Launch at login", isOn: Binding(get: { runtime.launchAtLogin }, set: { runtime.setLaunchAtLogin($0) }))
@@ -25,6 +28,15 @@ struct CoffeeSettingsView: View {
                 }
             } header: { Text("General") } footer: {
                 Text("Option-click the menu-bar cup to toggle. Right-click it for quick timers.")
+            }
+
+            Section {
+                permissionRow("Start at login", status: loginText, needsAttention: runtime.loginStatus == .needsApproval, pane: .loginItems)
+                permissionRow("Notifications", status: notificationText,
+                              needsAttention: runtime.notificationAuthorization == .denied, pane: .notifications)
+                permissionRow("Security", status: "Where you allow Barista the first time you open it", needsAttention: false, pane: .privacySecurity)
+            } header: { Text("Permissions") } footer: {
+                Text("Each button opens the matching page in System Settings.")
             }
 
             Section {
@@ -99,7 +111,9 @@ struct CoffeeSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 680)
+        .onAppear { runtime.refreshPermissions() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in runtime.refreshPermissions() }
+        .frame(width: 460, height: 720)
         .tint(CoffeeTheme.accent)
         .onAppear { runtime.refreshClaudeStatus() }
     }
@@ -128,6 +142,31 @@ struct CoffeeSettingsView: View {
         case .moved: "The connection is incomplete or points to an older copy. Reconnect to repair it."
         case .disconnected: "Adds hooks to ~/.claude/settings.json. No MCP setup needed."
         case .notFound: "Claude Code isn’t installed for this user."
+        }
+    }
+
+    private var loginText: String {
+        switch runtime.loginStatus {
+        case .on: "On"
+        case .needsApproval: "Needs your approval in Login Items"
+        case .off: "Off"
+        }
+    }
+    private var notificationText: String {
+        switch runtime.notificationAuthorization {
+        case .authorized, .provisional, .ephemeral: "Allowed"
+        case .denied: "Turned off in System Settings"
+        default: "Not asked yet. Turn on “Notify when a session ends” above."
+        }
+    }
+    private func permissionRow(_ title: String, status: String, needsAttention: Bool, pane: SystemSettingsPane) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(status).font(.caption).foregroundStyle(needsAttention ? CoffeeTheme.accent : .secondary)
+            }
+            Spacer()
+            Button(pane.title) { runtime.openSystemSettings(pane) }
         }
     }
 }

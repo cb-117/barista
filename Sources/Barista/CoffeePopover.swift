@@ -50,7 +50,10 @@ struct CoffeePopover: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if let notice = runtime.notice { NoticeBanner(text: notice) { runtime.notice = nil } }
+            if let notice = runtime.notice {
+                NoticeBanner(text: notice, actionTitle: runtime.noticePane.map { _ in "Open System Settings" },
+                             action: { if let pane = runtime.noticePane { runtime.openSystemSettings(pane) } }) { runtime.notice = nil }
+            }
             if let update = runtime.visibleUpdate { UpdateBanner(update: update, runtime: runtime) }
             if session.batteryBlocked {
                 Label("Battery protection is on. Connect power to start a session.", systemImage: "battery.25")
@@ -257,10 +260,18 @@ struct CoffeePopover: View {
 
 struct NoticeBanner: View {
     let text: String
+    var actionTitle: String? = nil
+    var action: () -> Void = {}
     let dismiss: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Text(text).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(text).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                if let actionTitle {
+                    Button(actionTitle, action: action)
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(CoffeeTheme.accent)
+                }
+            }
             Spacer(minLength: 0)
             Button(action: dismiss) { Image(systemName: "xmark.circle.fill") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Dismiss notice")

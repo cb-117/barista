@@ -6,10 +6,29 @@ import UserNotifications
 
 enum ClaudeStatus { case notFound, disconnected, connected, moved }
 
+/// Pages in System Settings that Barista can open for you.
+enum SystemSettingsPane {
+    case loginItems, notifications, privacySecurity
+
+    var title: String {
+        switch self {
+        case .loginItems: "Login Items"
+        case .notifications: "Notifications"
+        case .privacySecurity: "Privacy & Security"
+        }
+    }
+}
+
+enum LoginStatus { case on, needsApproval, off }
+
 @MainActor
 final class AppRuntime: ObservableObject {
     let session: AwakeSession
-    @Published var notice: String?
+    @Published var notice: String? { didSet { if notice == nil || notice != oldValue { noticePane = nil } } }
+    /// A System Settings page that would resolve the current notice.
+    @Published private(set) var noticePane: SystemSettingsPane?
+    @Published private(set) var loginStatus: LoginStatus = .off
+    @Published private(set) var notificationAuthorization: UNAuthorizationStatus = .notDetermined
     @Published private(set) var launchAtLogin = false
     @Published private(set) var notificationsEnabled = false
     @Published var showCountdown: Bool { didSet { defaults.set(showCountdown, forKey: "showCountdown"); onAppearanceChange?() } }
@@ -71,7 +90,7 @@ final class AppRuntime: ObservableObject {
             launchAtLogin = loginEnabled
             // Registered but not yet approved: nothing will launch at login until the user allows it.
             if !loginEnabled && loginNeedsApproval {
-                notice = "Approve Barista in System Settings → General → Login Items to start it at login."
+                show("Approve Barista in System Settings → General → Login Items to start it at login.", pane: .loginItems)
             }
         }
         // Earlier builds registered the app itself; move that to the helper when possible.
@@ -103,6 +122,7 @@ final class AppRuntime: ObservableObject {
         configureAgentAccess()
         refreshClaudeStatus()
         scheduleUpdateChecks()
+        refreshPermissions()
     }
     func shutdown() {
         session.stop(reason: .appQuit)
@@ -143,8 +163,44 @@ final class AppRuntime: ObservableObject {
             if enabled { try registerLogin() } else { try unregisterLogin() }
             defaults.set(true, forKey: loginChoiceKey)
             launchAtLogin = loginEnabled
-            if enabled && !launchAtLogin { notice = "Approve Barista in System Settings → General → Login Items." }
+            if enabled && !launchAtLogin { show("Approve Barista in System Settings → General → Login Items.", pane: .loginItems) }
+            refreshPermissions()
         } catch { notice = "Couldn’t change login settings: \(error.localizedDescription). Move Barista to Applications and try again." }
+    }
+    /// Shows a notice with a button that opens the System Settings page that fixes it.
+    func show(_ message: String, pane: SystemSettingsPane) {
+        notice = message
+        noticePane = pane
+    }
+    func openSystemSettings(_ pane: SystemSettingsPane) {
+        switch pane {
+        case .loginItems:
+            SMAppService.openSystemSettingsLoginItems()
+        case .notifications:
+            let id = Bundle.main.bundleIdentifier ?? "com.connorbescos.barista"
+            open("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)",
+                 fallback: "x-apple.systempreferences:com.apple.preference.notifications")
+        case .privacySecurity:
+            open("x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+                 fallback: "x-apple.systempreferences:com.apple.preference.security")
+        }
+    }
+    private func open(_ address: String, fallback: String) {
+        if let url = URL(string: address), NSWorkspace.shared.open(url) { return }
+        if let url = URL(string: fallback) { NSWorkspace.shared.open(url) }
+    }
+    /// Re-reads login-item and notification status, e.g. after returning from System Settings.
+    func refreshPermissions() {
+        launchAtLogin = loginEnabled
+        loginStatus = loginEnabled ? .on : (loginNeedsApproval ? .needsApproval : .off)
+        Task { @MainActor in
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            notificationAuthorization = settings.authorizationStatus
+            if settings.authorizationStatus == .denied, notificationsEnabled {
+                notificationsEnabled = false
+                defaults.set(false, forKey: "notificationsEnabled")
+            }
+        }
     }
     func setNotifications(_ enabled: Bool) {
         if !enabled {
@@ -157,8 +213,9 @@ final class AppRuntime: ObservableObject {
                 let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
                 notificationsEnabled = granted
                 defaults.set(granted, forKey: "notificationsEnabled")
-                if !granted { notice = "Allow Barista notifications in System Settings → Notifications." }
-            } catch { notice = "Couldn’t enable notifications: \(error.localizedDescription)" }
+                if !granted { show("Allow Barista notifications in System Settings → Notifications.", pane: .notifications) }
+            } catch { show("Couldn’t enable notifications. Allow them in System Settings → Notifications.", pane: .notifications) }
+            refreshPermissions()
         }
     }
     var cliPath: String { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/barista").path }

@@ -9,6 +9,10 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Added
+- A **Permissions** section in Settings with one-click buttons to the right pages in System Settings: Login Items, Notifications, and Privacy & Security. Each shows its current status, and it refreshes when you come back.
+- Messages that ask you to approve something in System Settings now have an **Open System Settings** button.
+
 ## [0.0.4] - 2026-11-01
 
 ### Added
