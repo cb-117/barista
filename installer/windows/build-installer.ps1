@@ -1,5 +1,5 @@
-# Builds Barista-Setup-<version>.exe with Inno Setup 6.3 or later (installing a pinned 6.x with
-# Chocolatey when the machine has none, or only an older one).
+# Builds Barista-Setup-<version>.exe with Inno Setup 6.3 or later (installing it with Chocolatey
+# when the machine has none).
 #
 #   pwsh installer\windows\build-installer.ps1 -Version 0.0.11 -SourceDir rust\target\release -OutputDir dist
 #
@@ -12,29 +12,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$pinned = '6.4.3'
-$minimum = [Version]'6.3'
 
+# ISCC's file version resource reads 0.0.0.0, so the version isn't checked here: Barista.iss refuses
+# to compile on anything older than Inno Setup 6.3 (`#if Ver < EncodeVer(6, 3, 0)`).
 function Find-Iscc {
-    $candidates = @((Get-Command iscc.exe -ErrorAction SilentlyContinue).Source,
+    @((Get-Command iscc.exe -ErrorAction SilentlyContinue).Source,
         (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
-        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')) | Where-Object { $_ -and (Test-Path $_) }
-    foreach ($candidate in $candidates) {
-        $version = [Version](Get-Item $candidate).VersionInfo.FileVersion.Split(' ')[0]
-        if ($version -ge $minimum) { return $candidate }
-        Write-Host "Ignoring Inno Setup $version at $candidate (Barista.iss needs $minimum or later)."
-    }
-    return $null
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')) |
+        Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
 
 $iscc = Find-Iscc
 if (-not $iscc) {
-    choco install innosetup --version=$pinned --allow-downgrade -y --no-progress | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "choco install innosetup $pinned failed ($LASTEXITCODE)" }
+    choco install innosetup -y --no-progress | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed ($LASTEXITCODE)" }
     $iscc = Find-Iscc
-    if (-not $iscc) { throw "Inno Setup $minimum or later isn't installed" }
+    if (-not $iscc) { throw "Inno Setup 6 isn't installed" }
 }
-Write-Host "Using $iscc ($((Get-Item $iscc).VersionInfo.FileVersion))"
+Write-Host "Using $iscc"
 
 $script = Join-Path $PSScriptRoot 'Barista.iss'
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
