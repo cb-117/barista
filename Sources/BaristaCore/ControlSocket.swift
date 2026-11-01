@@ -83,6 +83,12 @@ public final class ControlServer {
                         break
                     }
                     guard slots.wait(timeout: .now()) == .success else {
+                        // Say why, without blocking the accept loop on a slow client.
+                        if let data = try? CoffeeJSON.encoder().encode(ControlReply(ok: false, error: "Barista is busy. Try again.")) {
+                            var payload = data
+                            payload.append(10)
+                            _ = payload.withUnsafeBytes { Darwin.send(peer, $0.baseAddress, $0.count, MSG_DONTWAIT) }
+                        }
                         Darwin.close(peer)
                         continue
                     }
@@ -176,9 +182,17 @@ private enum UnixWire {
         var data = Data()
         var bytes = [UInt8](repeating: 0, count: 4096)
         // SO_RCVTIMEO bounds each recv; this bounds the whole message, so trickled bytes can't hold a worker.
-        let giveUp = Date().addingTimeInterval(deadline)
+        let giveUp = DispatchTime.now().uptimeNanoseconds + UInt64(deadline * 1_000_000_000)
         while data.count <= limit {
-            guard Date() < giveUp else { throw CoffeeError.message("Control message took too long to arrive.") }
+            // Each recv waits at most the time left, so the whole message is bounded by `deadline`.
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < giveUp else { throw CoffeeError.message("Control message took too long to arrive.") }
+            let left = giveUp - now
+            var timeout = timeval(tv_sec: Int(left / 1_000_000_000), tv_usec: Int32(left % 1_000_000_000 / 1000))
+            if timeout.tv_sec == 0 && timeout.tv_usec == 0 { timeout.tv_usec = 1 }
+            // Best effort: macOS refuses socket options (EINVAL) once the peer has closed, but the
+            // reply may already be buffered; the 3-second per-recv timeout from configure() still applies.
+            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
             let count = Darwin.recv(fd, &bytes, bytes.count, 0)
             if count < 0 {
                 if errno == EINTR { continue }

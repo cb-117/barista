@@ -260,12 +260,39 @@ struct CoffeeCLI {
         guard reply.ok, let lease = reply.session else { throw CoffeeError.message(reply.error ?? "Couldn’t acquire a session.") }
         // Only the initial acquire may open Barista; maintenance never reopens an app the user quit.
         let connection = AgentConnection(path: connection.path, autoLaunch: false)
-        defer { _ = try? connection.send(ControlRequest(action: .release, id: lease.id)) }
-        // Ignore these before spawning so none is lost; the child gets default handlers back.
-        let forwarded = [SIGTERM, SIGHUP]
-        for number in [SIGINT] + forwarded { signal(number, SIG_IGN) }
-        let pid = try spawnInForeground(["/usr/bin/env"] + options.child)
+        let release = { _ = try? connection.send(ControlRequest(action: .release, id: lease.id)) }
+        defer { release() }
+        // Signals the caller chose to ignore (nohup ignores SIGHUP; shells ignore SIGINT for `&` jobs)
+        // stay ignored in the child; everything else gets its default back. SIGPIPE is ignored by
+        // this CLI itself, so the child always gets the default.
+        let inheritedIgnored = Set((1..<NSIG).filter { number in
+            var current = sigaction()
+            return number != SIGPIPE && sigaction(number, nil, &current) == 0
+                && unsafeBitCast(current.__sigaction_u.__sa_handler, to: Int.self) == unsafeBitCast(SIG_IGN, to: Int.self)
+        })
+        // In a terminal's foreground job, Ctrl-C and a hangup already reach the child (it shares this
+        // process's group), so forwarding them would deliver them twice. Without a terminal they can
+        // only arrive by PID, so they're forwarded. SIGTERM usually arrives by PID (`kill`, `timeout`,
+        // supervisors) and is always forwarded. This process ignores them all and waits, so the
+        // session lasts until the child actually exits, even if it catches a signal and keeps going.
+        let terminalDelivers = [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO].contains { isatty($0) == 1 && tcgetpgrp($0) == getpgrp() }
+        let forwarded = (terminalDelivers ? [SIGTERM] : [SIGINT, SIGHUP, SIGTERM]).filter { !inheritedIgnored.contains($0) }
+        for number in [SIGINT, SIGHUP, SIGTERM] { signal(number, SIG_IGN) }
         let queue = DispatchQueue(label: "barista.command-heartbeat")
+        var childPID: pid_t = 0         // Read and written only on `queue`.
+        var pending: [Int32] = []       // Signals that arrived before the child existed.
+        let sources = forwarded.map { number in
+            let source = DispatchSource.makeSignalSource(signal: number, queue: queue)
+            source.setEventHandler { if childPID > 0 { kill(childPID, number) } else { pending.append(number) } }
+            source.resume()
+            return source
+        }
+        defer { sources.forEach { $0.cancel() } }
+        let pid = try spawnInForeground(["/usr/bin/env"] + options.child, ignoring: inheritedIgnored)
+        queue.sync {
+            childPID = pid
+            pending.forEach { kill(pid, $0) }
+        }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 10, repeating: 10)
         timer.setEventHandler {
@@ -274,21 +301,16 @@ struct CoffeeCLI {
             if let reply = try? connection.send(ControlRequest(action: .heartbeat, id: lease.id, seconds: 45)), !reply.ok { timer.cancel() }
         }
         timer.resume()
-        // Ctrl-C reaches the child directly (it shares the terminal's foreground group), so only
-        // forward signals sent to this process by name. The session ends when the child exits,
-        // never earlier: a child that catches a signal and keeps working stays protected.
-        var signals: [DispatchSourceSignal] = []
-        for number in forwarded {
-            let source = DispatchSource.makeSignalSource(signal: number, queue: queue)
-            source.setEventHandler { kill(pid, number) }
-            source.resume()
-            signals.append(source)
-        }
         var status: Int32 = 0
         while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
         timer.cancel()
-        signals.forEach { $0.cancel() }
         let signalNumber = status & 0x7f
+        if signalNumber == SIGINT && !inheritedIgnored.contains(SIGINT) {
+            // Die from SIGINT too, so a calling shell script stops at Ctrl-C instead of carrying on.
+            release()
+            signal(SIGINT, SIG_DFL)
+            kill(getpid(), SIGINT)
+        }
         return signalNumber == 0 ? (status >> 8) & 0xff : 128 + signalNumber
     }
 
@@ -296,20 +318,22 @@ struct CoffeeCLI {
     /// it can read the terminal, prompt for passwords, run pagers, and receive Ctrl-C and Ctrl-Z.
     /// (Foundation's Process starts children in their own background group, which macOS stops
     /// as soon as they touch the terminal.) Only stdin, stdout, and stderr are inherited.
-    private static func spawnInForeground(_ arguments: [String]) throws -> pid_t {
+    private static func spawnInForeground(_ arguments: [String], ignoring ignored: Set<Int32>) throws -> pid_t {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        var all = sigset_t(), none = sigset_t()
-        sigfillset(&all)
+        var defaults = sigset_t(), none = sigset_t()
+        sigfillset(&defaults)
+        for number in ignored { sigdelset(&defaults, number) }
         sigemptyset(&none)
-        posix_spawnattr_setsigdefault(&attributes, &all)
+        posix_spawnattr_setsigdefault(&attributes, &defaults)
         posix_spawnattr_setsigmask(&attributes, &none)
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT))
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
-        for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
+        // A stream the caller closed (`<&-`) stays closed rather than failing the spawn.
+        for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] where fcntl(descriptor, F_GETFD) != -1 {
             posix_spawn_file_actions_addinherit_np(&actions, descriptor)
         }
         var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]

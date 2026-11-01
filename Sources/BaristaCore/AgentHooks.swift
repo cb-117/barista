@@ -127,7 +127,8 @@ public enum AgentHooks {
         // Follow dotfile symlinks so the link itself survives.
         let url = url.resolvingSymlinksInPath()
         for _ in 0..<3 {
-            let original = try? Data(contentsOf: url)
+            // A missing file starts empty; any other read error (permissions, a directory) is reported.
+            let original = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
             let result = try change(try parse(original, path: url.path))
             if case .keep = result { return }
             guard (try? Data(contentsOf: url)) == original else { continue }
