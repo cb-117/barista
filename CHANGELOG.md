@@ -9,6 +9,17 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-11-01
+
+### Added
+- **Usage & Limits**: one place for every agent. It shows your Claude plan’s 5-hour and weekly limits (shared by Claude Code, Cowork, and Claude chat), your ChatGPT plan’s limits, plan, and credits (shared by Codex and the ChatGPT app), and sessions and tokens per agent and model for today, this week, and this month, with an estimated cost at API list prices (not what a subscription charges). Open it from the panel, the right-click menu, or Settings; on Windows and Linux it’s the tray’s **Usage & Limits** menu. Also available as `barista usage` and the `barista_usage` MCP tool. Everything is read from files on your computer; nothing is uploaded.
+- Claude Code’s status line shows your plan limits (for example “Opus · 5h 24%”), which is how Barista reads them. `barista setup` and connecting Claude Code add it, and the Usage & Limits window offers it if you connected Claude Code before this version. If you already have a status line, Barista runs it unchanged and restores it when you disconnect. Manage it with `barista statusline install|uninstall|status`.
+- Keeps your computer awake while Claude’s Cowork or the ChatGPT app is working, on Mac and Windows. Neither app has hooks, so Barista watches how busy each app is (including Cowork’s VM) and lets the computer sleep once it has been quiet for 5 minutes. Turn each off in **Settings → Agents**.
+- Cursor support: **Settings → Agents → Cursor → Connect** (or `barista hooks install --agent cursor`) keeps your computer awake while Cursor’s agent works and records its turns and active time. Cursor doesn’t store token counts on your computer, so usage shows Cursor turns rather than tokens.
+
+### Changed
+- Codex’s hook review lists what each Barista hook does (for example “Barista: keep this computer awake while Codex works”) instead of “Hook 1” to “Hook 5”. Hooks from earlier versions keep working; reconnecting or running `barista setup` adds the labels, and Codex then asks you to review them once.
+
 ## [0.0.7] - 2026-11-01
 
 ### Fixed

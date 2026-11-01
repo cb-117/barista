@@ -1,5 +1,6 @@
 //! The coffee cup in the system tray (Linux) or notification area (Windows), and its menu.
-use crate::{check_for_updates, cli_path, lock, platform, AgentStatus, Shared};
+use crate::{check_for_updates, cli_path, lock, platform, refresh_usage, AgentStatus, Shared};
+use barista_core::activity::WatchedApp;
 use barista_core::control::ControlServer;
 use barista_core::hooks::HookAgent;
 use barista_core::*;
@@ -11,6 +12,8 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 enum UserEvent {
     Menu(MenuEvent),
+    /// The tray icon was clicked (where the platform reports it), so the menu is about to show.
+    Opened,
 }
 
 struct Icons {
@@ -46,6 +49,10 @@ pub fn run(app: Shared, server: ControlServer, background: bool) -> ! {
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = proxy.send_event(UserEvent::Menu(event));
     }));
+    let clicks = event_loop.create_proxy();
+    tray_icon::TrayIconEvent::set_event_handler(Some(move |_| {
+        let _ = clicks.send_event(UserEvent::Opened);
+    }));
     let icons = icons();
     let mut tray: Option<TrayIcon> = None;
     let mut shown = String::new();
@@ -78,6 +85,8 @@ pub fn run(app: Shared, server: ControlServer, background: bool) -> ! {
                     platform::notify("Barista is running", &format!("Find the coffee cup in the {place}."));
                 }
             }
+            // Usage shown in a menu that's opening should be at most a minute old.
+            Event::UserEvent(UserEvent::Opened) => refresh_usage(&app, Duration::from_secs(60)),
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if handle(&app, event.id.as_ref()) {
                     lock(&app).shutdown();
@@ -269,10 +278,31 @@ fn build(app: &Shared) -> (Menu, String, String, String, bool) {
         &settings,
         &check("toggle:agents", "Local agent access (CLI, MCP, hooks)", prefs.agent_access),
     );
+    // The Claude and ChatGPT desktop apps have no hooks: Barista watches how busy they are.
+    // Neither exists for Linux.
+    if cfg!(windows) {
+        add_to(
+            &settings,
+            &check(
+                "toggle:watch-cowork",
+                "Keep awake while the Claude app works (Cowork)",
+                prefs.watch_cowork,
+            ),
+        );
+        add_to(
+            &settings,
+            &check(
+                "toggle:watch-chatgpt",
+                "Keep awake while the ChatGPT app works",
+                prefs.watch_chatgpt,
+            ),
+        );
+    }
     for (agent, status) in &state.agents {
         let name = match agent {
             HookAgent::Claude => "Claude Code",
             HookAgent::Codex => "ChatGPT Codex",
+            HookAgent::Cursor => "Cursor",
         };
         let (text, id) = match status {
             AgentStatus::Connected => (format!("{name}: connected · Disconnect"), "disconnect"),
@@ -280,7 +310,7 @@ fn build(app: &Shared) -> (Menu, String, String, String, bool) {
             AgentStatus::Disconnected => (format!("{name}: Connect"), "connect"),
             AgentStatus::NotFound => (format!("{name}: not set up for this user"), ""),
         };
-        let key = if *agent == HookAgent::Claude { "claude" } else { "codex" };
+        let key = agent.name();
         add_to(&settings, &MenuItem::with_id(format!("{id}:{key}"), &text, !id.is_empty(), None));
         signature.push(text);
     }
@@ -288,6 +318,10 @@ fn build(app: &Shared) -> (Menu, String, String, String, bool) {
     add_to(&settings, &item("copy:mcp", "Copy MCP setup"));
     add(&menu, &settings);
     signature.push(format!("{prefs:?}{}{:?}", state.launch_at_login, state.update_status));
+
+    let usage = usage_menu(state.usage.as_ref(), state.usage_loading);
+    signature.push(usage.1);
+    add(&menu, &usage.0);
 
     let history = Submenu::new("Recent sessions", !session.history().is_empty());
     for event in session.history().iter().take(10) {
@@ -357,9 +391,24 @@ fn handle(app: &Shared, id: &str) -> bool {
                 let value = !state.prefs.agent_access;
                 state.set_agent_access(value)
             }
+            "watch-cowork" => {
+                let value = !state.prefs.watch_cowork;
+                state.set_watches(WatchedApp::COWORK, value)
+            }
+            "watch-chatgpt" => {
+                let value = !state.prefs.watch_chatgpt;
+                state.set_watches(WatchedApp::CHATGPT, value)
+            }
             _ => {}
         },
         "battery" => state.set_battery_threshold(argument.parse().unwrap_or(20)),
+        "statusline-install" => {
+            let cli = cli_path().to_string_lossy().into_owned();
+            state.notice = Some(match barista_core::hooks::statusline_install(&cli, None) {
+                Ok(()) => "Added to Claude Code’s status line. Your Claude limits appear after Claude Code’s next reply.".into(),
+                Err(error) => format!("Couldn’t update Claude Code settings: {error}"),
+            });
+        }
         "connect" | "disconnect" => {
             if let Some(agent) = HookAgent::parse(argument) {
                 state.set_connected(agent, command == "connect");
@@ -393,6 +442,11 @@ fn handle(app: &Shared, id: &str) -> bool {
         }
         "dismiss-update" => state.dismiss_update(),
         "clear-history" => state.session.clear_history(),
+        "usage-refresh" => {
+            drop(state);
+            refresh_usage(app, Duration::ZERO);
+            return false;
+        }
         _ => {}
     }
     false
@@ -407,4 +461,48 @@ fn copy(text: &str) -> std::result::Result<(), String> {
     let mut guard = holder.lock().map_err(|_| "clipboard unavailable".to_string())?;
     let clipboard = guard.as_mut().ok_or("no clipboard is available")?;
     clipboard.set_text(text.to_string()).map_err(|error| error.to_string())
+}
+
+/// Plan limits, then today, this week, and this month per agent, plus a signature of what it shows.
+fn usage_menu(report: Option<&serde_json::Value>, loading: bool) -> (Submenu, String) {
+    use barista_core::usage::{limit_summary, summary};
+    let menu = Submenu::new("Usage & Limits", true);
+    let mut lines = Vec::new();
+    match report {
+        None => lines.push(if loading {
+            "Reading agent logs…".to_string()
+        } else {
+            "No usage yet".to_string()
+        }),
+        Some(report) => {
+            lines.push("Limits".to_string());
+            for limit in report["limits"].as_array().into_iter().flatten() {
+                lines.push(format!("{} · {}", limit["name"].as_str().unwrap_or(""), limit_summary(limit)));
+            }
+            for period in report["periods"].as_array().into_iter().flatten() {
+                lines.push(String::new());
+                lines.push(period["label"].as_str().unwrap_or("").to_string());
+                for agent in period["agents"].as_array().into_iter().flatten() {
+                    lines.push(format!("{}: {}", agent["name"].as_str().unwrap_or(""), summary(agent)));
+                }
+            }
+        }
+    }
+    for line in &lines {
+        if line.is_empty() {
+            add_to(&menu, &PredefinedMenuItem::separator());
+        } else {
+            add_to(&menu, &label(line));
+        }
+    }
+    add_to(&menu, &PredefinedMenuItem::separator());
+    add_to(&menu, &label("Costs are estimates at API prices, not your subscription bill"));
+    add_to(&menu, &item("usage-refresh", if loading { "Refreshing…" } else { "Refresh" }));
+    // Upgraded with Claude Code already connected: offer the status line that reports Claude's limits.
+    let offer = HookAgent::Claude.is_installed() && barista_core::hooks::statusline_status(None) == "Not connected";
+    if offer {
+        add_to(&menu, &item("statusline-install", "Add live limits to Claude Code’s status line"));
+    }
+    lines.push(format!("{loading}{offer}"));
+    (menu, lines.join("\u{1f}"))
 }

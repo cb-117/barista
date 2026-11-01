@@ -2,20 +2,58 @@ import Darwin
 import Foundation
 
 /// Coding agents Barista can connect to with lifecycle hooks.
-/// Both use the same hook file shape: event → [{matcher?, hooks: [{type: "command", command, timeout}]}].
+/// Claude Code and Codex share one hook file shape: event → [{matcher?, hooks: [{type: "command", command, timeout}]}].
+/// Cursor lists entries directly: {"version": 1, "hooks": {event → [{command, timeout}]}}.
 public enum HookAgent: String, CaseIterable, Sendable {
-    case claude, codex
+    case claude, codex, cursor
 
-    public var displayName: String { self == .claude ? "Claude Code" : "Codex" }
+    public var displayName: String {
+        switch self {
+        case .claude: "Claude Code"
+        case .codex: "Codex"
+        case .cursor: "Cursor"
+        }
+    }
     /// Where the agent reads user-level hooks.
     public var defaultSettingsURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return self == .claude ? home.appendingPathComponent(".claude/settings.json") : home.appendingPathComponent(".codex/hooks.json")
+        switch self {
+        case .claude: return home.appendingPathComponent(".claude/settings.json")
+        case .codex: return home.appendingPathComponent(".codex/hooks.json")
+        case .cursor: return home.appendingPathComponent(".cursor/hooks.json")
+        }
     }
     /// The agent has been used by this account (its config folder exists).
     public var isInstalled: Bool { FileManager.default.fileExists(atPath: defaultSettingsURL.deletingLastPathComponent().path) }
     /// Arguments after `barista` in the hook command.
-    var hookArguments: String { self == .claude ? "hook" : "hook --agent codex" }
+    var hookArguments: String {
+        switch self {
+        case .claude: "hook"
+        case .codex: "hook --agent codex"
+        case .cursor: "hook --agent cursor"
+        }
+    }
+    /// Events Barista listens to. Prompts start work, tool calls renew it, stops and session ends release it.
+    public var events: [String] {
+        self == .cursor
+            ? ["beforeSubmitPrompt", "postToolUse", "afterAgentResponse", "stop", "sessionEnd"]
+            : ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"]
+    }
+    /// Codex titles each hook in its review list "N - <statusMessage>" (else just "Hook N"),
+    /// and shows the message while the hook runs. Claude Code and Cursor don't use it.
+    func statusMessage(for event: String) -> String? {
+        guard self == .codex else { return nil }
+        switch event {
+        case "UserPromptSubmit": return "Barista: keep this computer awake while Codex works"
+        case "PreToolUse": return "Barista: keep the computer awake during this tool call"
+        case "PostToolUse": return "Barista: renew the awake session after this tool call"
+        case "Stop": return "Barista: let the computer sleep now that Codex is done"
+        case "SessionEnd": return "Barista: end this conversation’s awake session"
+        default: return nil
+        }
+    }
+    /// Shown by Codex for the hooks file; set only when Barista creates the file.
+    static let codexFileDescription = "Barista keeps this computer awake while Codex works, then lets it sleep. https://github.com/cb-117/barista"
     func timeout(for event: String) -> Int {
         // Codex caps SessionEnd hooks at 3 seconds.
         self == .codex && event == "SessionEnd" ? 3 : 10
@@ -25,18 +63,21 @@ public enum HookAgent: String, CaseIterable, Sendable {
 /// Installs and removes Barista's entries in an agent's hook settings file.
 /// Only entries whose command runs `barista … hook` are touched; everything else is preserved.
 public enum AgentHooks {
-    /// Events Barista listens to. Prompts start work, tool calls renew it, Stop/SessionEnd release it.
-    public static let events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"]
     private static let toolEvents: Set<String> = ["PreToolUse", "PostToolUse"]
 
     public static func command(cliPath: String, agent: HookAgent = .claude) -> String {
         "'" + cliPath.replacingOccurrences(of: "'", with: "'\\''") + "' " + agent.hookArguments
     }
     /// True only for the exact shapes `command(cliPath:agent:)` generates (or a bare `…/barista hook`),
-    /// so unrelated user hooks that merely end in "barista hook" are never touched.
+    /// so unrelated user hooks that merely end in "barista hook" are never touched. A leading `& `
+    /// (PowerShell's call operator, used by the Windows build for Cursor) is allowed.
     static func isOurs(_ command: String) -> Bool {
+        let command = command.hasPrefix("& ") ? String(command.dropFirst(2)) : command
         guard let suffix = HookAgent.allCases.map({ " " + $0.hookArguments }).first(where: command.hasSuffix) else { return false }
-        let executable = String(command.dropLast(suffix.count))
+        return isBarista(String(command.dropLast(suffix.count)))
+    }
+    /// The executable word of a command Barista generated: a quoted or plain path to `barista`.
+    static func isBarista(_ executable: String) -> Bool {
         let path: String
         if executable.hasPrefix("'") {
             // A single-quoted word where embedded quotes appear only as '\''.
@@ -58,7 +99,7 @@ public enum AgentHooks {
         let url = settings ?? agent.defaultSettingsURL
         guard let root = try? read(url), let hooks = root["hooks"] as? [String: Any] else { return [] }
         var found: [String] = []
-        for event in events {
+        for event in agent.events {
             for (_, command) in ourEntries(hooks, event: event) where !found.contains(command) { found.append(command) }
         }
         return found
@@ -69,18 +110,25 @@ public enum AgentHooks {
         let url = settings ?? agent.defaultSettingsURL
         guard let root = try? read(url), let hooks = root["hooks"] as? [String: Any] else { return false }
         let expected = command(cliPath: cliPath, agent: agent)
-        return events.allSatisfy { event in
+        return agent.events.allSatisfy { event in
             let entries = ourEntries(hooks, event: event)
             return !entries.isEmpty && entries.allSatisfy { group, command in
-                command == expected && (!toolEvents.contains(event) || group["matcher"] as? String == "*")
+                command == expected && (agent == .cursor || !toolEvents.contains(event) || group["matcher"] as? String == "*")
+                    // Hooks from 0.0.7 have no label; labels are cosmetic, so they still count as connected.
+                    && ourHooks(in: group).allSatisfy { ($0["statusMessage"] as? String).map { $0 == agent.statusMessage(for: event) } ?? true }
             }
         }
+    }
+
+    private static func ourHooks(in group: [String: Any]) -> [[String: Any]] {
+        (group["hooks"] as? [[String: Any]] ?? [group]).filter { isOurs($0["command"] as? String ?? "") }
     }
 
     private static func ourEntries(_ hooks: [String: Any], event: String) -> [(group: [String: Any], command: String)] {
         var result: [(group: [String: Any], command: String)] = []
         for group in hooks[event] as? [[String: Any]] ?? [] {
-            for hook in group["hooks"] as? [[String: Any]] ?? [] {
+            // Cursor's entries are the hooks themselves; Claude's and Codex's wrap them in groups.
+            for hook in group["hooks"] as? [[String: Any]] ?? [group] {
                 if hook["type"] as? String ?? "command" == "command", let command = hook["command"] as? String, isOurs(command) {
                     result.append((group, command))
                 }
@@ -93,14 +141,25 @@ public enum AgentHooks {
         try edit(settings ?? agent.defaultSettingsURL) { root in
             var root = root
             var hooks = removingOurs(from: root["hooks"] as? [String: Any] ?? [:])
-            for event in events {
-                let entry: [String: Any] = ["type": "command", "command": command(cliPath: cliPath, agent: agent),
-                                            "timeout": agent.timeout(for: event)]
-                var group: [String: Any] = ["hooks": [entry]]
-                if toolEvents.contains(event) { group["matcher"] = "*" }
+            for event in agent.events {
+                let group: [String: Any]
+                if agent == .cursor {
+                    group = ["command": command(cliPath: cliPath, agent: agent), "timeout": agent.timeout(for: event)]
+                } else {
+                    var entry: [String: Any] = ["type": "command", "command": command(cliPath: cliPath, agent: agent),
+                                                "timeout": agent.timeout(for: event)]
+                    if let message = agent.statusMessage(for: event) { entry["statusMessage"] = message }
+                    var wrapped: [String: Any] = ["hooks": [entry]]
+                    if toolEvents.contains(event) { wrapped["matcher"] = "*" }
+                    group = wrapped
+                }
                 hooks[event] = (hooks[event] as? [[String: Any]] ?? []) + [group]
             }
             root["hooks"] = hooks
+            if agent == .cursor && root["version"] == nil { root["version"] = 1 }
+            if agent == .codex && root["description"] == nil && root.keys.allSatisfy({ $0 == "hooks" }) {
+                root["description"] = HookAgent.codexFileDescription
+            }
             return .write(root)
         }
     }
@@ -113,10 +172,13 @@ public enum AgentHooks {
             guard let existing = root["hooks"] as? [String: Any] else { return .keep }
             let hooks = removingOurs(from: existing)
             if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
+            if root["description"] as? String == HookAgent.codexFileDescription { root.removeValue(forKey: "description") }
             // A hooks file that held only Barista's entries (as Codex's usually does) goes away entirely,
             // unless it's a symlink (a dotfiles repo's file would go with it): then it's emptied instead.
             let isLink = (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
-            return root.isEmpty && agentOwnsWholeFile(url) && !isLink ? .delete : .write(root)
+            // Cursor's file always carries "version"; on its own it means nothing is left.
+            let empty = root.keys.allSatisfy { agent == .cursor && $0 == "version" }
+            return empty && agentOwnsWholeFile(url) && !isLink ? .delete : .write(root)
         }
     }
 
@@ -150,7 +212,10 @@ public enum AgentHooks {
         for (event, value) in hooks {
             guard let groups = value as? [[String: Any]] else { continue }
             let kept: [[String: Any]] = groups.compactMap { group in
-                guard let entries = group["hooks"] as? [[String: Any]] else { return group }
+                guard let entries = group["hooks"] as? [[String: Any]] else {
+                    // A Cursor entry: the hook itself.
+                    return isOurs(group["command"] as? String ?? "") ? nil : group
+                }
                 let remaining = entries.filter { !isOurs($0["command"] as? String ?? "") }
                 if remaining.isEmpty { return nil }
                 var copy = group
@@ -296,5 +361,111 @@ extension SystemState {
             current = Int32(info.pbi_ppid)
         }
         return chain
+    }
+}
+
+/// Claude Code's status line is where Claude Code reports plan limits (`rate_limits`), so Barista
+/// installs `barista statusline` there. An existing status line is saved, per settings file, and run in
+/// front of it: `barista statusline --chain KEY` runs the one saved for that file.
+public enum ClaudeStatusLine {
+    /// FNV-1a 64-bit hash of the settings file's resolved absolute path, as 16 lowercase hex digits.
+    public static func key(for settings: URL) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in settings.absoluteURL.resolvingSymlinksInPath().path.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return String(format: "%016llx", hash)
+    }
+    static func backupFile(_ key: String) -> URL {
+        UsageLocations.dataDirectory.appendingPathComponent("statusline-chain-\(key).json")
+    }
+
+    public static func command(cliPath: String, chain: String? = nil) -> String {
+        "'" + cliPath.replacingOccurrences(of: "'", with: "'\\''") + "' statusline" + (chain.map { " --chain \($0)" } ?? "")
+    }
+    /// The backup key in one of our commands, if it chains a saved status line.
+    static func chainKey(in command: String) -> String? {
+        let parts = command.components(separatedBy: " ")
+        guard parts.count >= 3, parts[parts.count - 2] == "--chain", isKey(parts[parts.count - 1]) else { return nil }
+        return parts[parts.count - 1]
+    }
+    private static func isKey(_ text: String) -> Bool {
+        text.count == 16 && text.unicodeScalars.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    }
+    static func isOurs(_ command: String) -> Bool {
+        var command = command
+        if let key = chainKey(in: command) { command = String(command.dropLast(" --chain \(key)".count)) }
+        return command.hasSuffix(" statusline") && AgentHooks.isBarista(String(command.dropLast(" statusline".count)))
+    }
+
+    /// The status line saved under `key`, or nil if missing or unreadable.
+    public static func saved(_ key: String) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: backupFile(key)),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return object["statusLine"] as? [String: Any]
+    }
+
+    public static func install(cliPath: String, settings: URL? = nil) throws {
+        let url = settings ?? HookAgent.claude.defaultSettingsURL
+        let key = key(for: url)
+        try AgentHooks.editSettings(url) { root in
+            var root = root
+            var chain: String?
+            if let existing = root["statusLine"] as? [String: Any] {
+                let current = existing["command"] as? String ?? ""
+                if isOurs(current) {
+                    chain = chainKey(in: current)
+                } else {
+                    // Keep the user's own status line working: save it for this settings file, and run it from ours.
+                    let backup: [String: Any] = ["settings": url.absoluteURL.resolvingSymlinksInPath().path, "statusLine": existing]
+                    let data = try JSONSerialization.data(withJSONObject: backup, options: [.sortedKeys, .withoutEscapingSlashes])
+                    try FileManager.default.createDirectory(at: UsageLocations.dataDirectory, withIntermediateDirectories: true)
+                    try data.write(to: backupFile(key), options: .atomic)
+                    chain = key
+                }
+            }
+            root["statusLine"] = ["type": "command", "command": command(cliPath: cliPath, chain: chain)]
+            return root
+        }
+    }
+
+    public static func uninstall(settings: URL? = nil) throws {
+        let url = settings ?? HookAgent.claude.defaultSettingsURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        var restored: String?
+        try AgentHooks.editSettings(url) { root in
+            guard let existing = root["statusLine"] as? [String: Any], let current = existing["command"] as? String,
+                  isOurs(current) else { return nil }
+            var root = root
+            if let key = chainKey(in: current) {
+                guard let previous = saved(key) else {
+                    throw CoffeeError.message("Barista’s saved copy of your previous status line is missing, so \(url.path) was left unchanged. The original is in \(url.lastPathComponent).barista-backup next to it.")
+                }
+                root["statusLine"] = previous
+                restored = key
+            } else {
+                root.removeValue(forKey: "statusLine")
+            }
+            return root
+        }
+        if let restored { try? FileManager.default.removeItem(at: backupFile(restored)) }
+    }
+
+    public enum Status { case connected, chained, notConnected }
+    public static func status(settings: URL? = nil) -> Status {
+        let url = settings ?? HookAgent.claude.defaultSettingsURL
+        guard let data = try? Data(contentsOf: url.resolvingSymlinksInPath()),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let line = root["statusLine"] as? [String: Any], let current = line["command"] as? String, isOurs(current) else { return .notConnected }
+        return chainKey(in: current) == nil ? .connected : .chained
+    }
+}
+
+extension AgentHooks {
+    /// Edits a settings file with the same safety as hooks: backup, symlinks followed, concurrent edits redone.
+    /// `change` returns the new root, or nil to leave the file alone.
+    static func editSettings(_ url: URL, _ change: ([String: Any]) throws -> [String: Any]?) throws {
+        try edit(url) { root in try change(root).map { .write($0) } ?? .keep }
     }
 }

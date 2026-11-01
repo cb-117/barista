@@ -6,6 +6,7 @@ mod platform;
 mod prefs;
 mod tray;
 
+use barista_core::activity::{self, ActivityTracker, WatchedApp};
 use barista_core::control::{default_path, ControlServer};
 use barista_core::hooks::{self, HookAgent};
 use barista_core::power::{self, FakePower};
@@ -13,6 +14,7 @@ use barista_core::session::AwakeSession;
 use barista_core::update::{self, AvailableUpdate};
 use barista_core::*;
 use prefs::Prefs;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -38,6 +40,17 @@ pub struct App {
     pub launch_at_login: bool,
     /// Saves nothing and touches no OS settings (`--serve` test mode).
     pub ephemeral: bool,
+    /// Today, this week, and this month (see docs/USAGE.md), computed off the main thread.
+    pub usage: Option<serde_json::Value>,
+    pub usage_updated: Option<std::time::Instant>,
+    pub usage_loading: bool,
+    /// Watched apps (Cowork, ChatGPT): busy trackers, live session IDs, and apps whose session you
+    /// stopped (they wait for a quiet spell before starting another).
+    pub activity: HashMap<&'static str, ActivityTracker>,
+    pub activity_leases: HashMap<&'static str, String>,
+    pub activity_stopped: HashSet<&'static str>,
+    /// When each app's current burst of activity began; the 8-hour cap covers the whole burst.
+    pub activity_burst: HashMap<&'static str, f64>,
 }
 
 pub type Shared = Arc<Mutex<App>>;
@@ -83,9 +96,16 @@ impl App {
     pub fn set_connected(&mut self, agent: HookAgent, connected: bool) {
         let cli = cli_path().to_string_lossy().into_owned();
         let result = if connected {
-            hooks::install(&cli, agent, None)
+            // Claude Code shares its plan limits only with its status line, so it comes along.
+            hooks::install(&cli, agent, None).and_then(|()| match agent {
+                HookAgent::Claude => hooks::statusline_install(&cli, None),
+                _ => Ok(()),
+            })
         } else {
-            hooks::uninstall(agent, None)
+            hooks::uninstall(agent, None).and_then(|()| match agent {
+                HookAgent::Claude => hooks::statusline_uninstall(None),
+                _ => Ok(()),
+            })
         };
         self.notice = Some(match result {
             Ok(()) if connected => {
@@ -93,8 +113,9 @@ impl App {
                     self.set_agent_access(true);
                 }
                 match agent {
-                    HookAgent::Claude => "Claude Code connected. New prompts keep your computer awake until Claude finishes.".into(),
+                    HookAgent::Claude => "Claude Code connected. New prompts keep your computer awake until Claude finishes, and its status line shows your plan limits.".into(),
                     HookAgent::Codex => "Codex connected. One more step: Codex runs new hooks only after you trust them. In Codex, type /hooks and trust Barista’s hooks.".into(),
+                    HookAgent::Cursor => "Cursor connected. Prompts in Cursor’s agent keep your computer awake until it finishes, and its turns appear in Usage.".into(),
                 }
             }
             Ok(()) => format!("{} disconnected.", agent.display_name()),
@@ -159,6 +180,89 @@ impl App {
         }
     }
 
+    pub fn watches(&self, app: WatchedApp) -> bool {
+        if app == WatchedApp::COWORK {
+            self.prefs.watch_cowork
+        } else {
+            self.prefs.watch_chatgpt
+        }
+    }
+
+    pub fn set_watches(&mut self, app: WatchedApp, value: bool) {
+        if app == WatchedApp::COWORK {
+            self.prefs.watch_cowork = value;
+        } else {
+            self.prefs.watch_chatgpt = value;
+        }
+        self.save();
+        if !value {
+            if let Some(id) = self.activity_leases.remove(app.id) {
+                self.session.cancel(&id);
+            }
+        }
+    }
+
+    /// Starts, renews, or lets lapse a watched app's session after a sample.
+    fn update_activity(&mut self, app: WatchedApp, root: Option<i32>, cpu: &HashMap<i32, f64>, time: f64) {
+        // Turned off while this sample was being taken: discard it.
+        if !self.watches(app) {
+            if let Some(id) = self.activity_leases.remove(app.id) {
+                self.session.cancel(&id);
+            }
+            self.activity_burst.remove(app.id);
+            return;
+        }
+        let tracker = self.activity.entry(app.id).or_default();
+        let busy = tracker.record(cpu, time);
+        let last_busy = tracker.last_busy;
+        // A burst starts with the first busy sample and ends after a quiet spell or when the app quits.
+        let quiet_for = time - last_busy.unwrap_or(f64::MIN);
+        if root.is_none() || (!busy && quiet_for >= activity::policy::QUIET_BEFORE_RESTART) {
+            self.activity_burst.remove(app.id);
+        } else if busy {
+            self.activity_burst.entry(app.id).or_insert(time);
+        }
+        if let Some(id) = self.activity_leases.get(app.id).cloned() {
+            if !self.session.sessions().iter().any(|s| s.id == id) {
+                // Ended. If you stopped it (or battery protection did), don't restart it during this burst.
+                let reason = self.session.history().iter().find(|h| h.id == id).map(|h| h.reason);
+                if !matches!(reason, Some(EndReason::Expired) | Some(EndReason::ProcessExited)) {
+                    self.activity_stopped.insert(app.id);
+                }
+                self.activity_leases.remove(app.id);
+            }
+        }
+        if self.activity_stopped.contains(app.id) {
+            if !busy && quiet_for >= activity::policy::QUIET_BEFORE_RESTART {
+                self.activity_stopped.remove(app.id);
+            }
+            return;
+        }
+        let (true, Some(root)) = (busy, root) else { return };
+        if let Some(id) = self.activity_leases.get(app.id).cloned() {
+            self.session.renew(&id, activity::policy::LEASE);
+            return;
+        }
+        // A new session gets only what's left of the burst's cap; once it's used up, wait for quiet.
+        let started = self.activity_burst.get(app.id).copied().unwrap_or(time);
+        let remaining = activity::policy::HARD_CAP - (time - started);
+        if remaining <= 1.0 {
+            self.activity_stopped.insert(app.id);
+            return;
+        }
+        if let Ok(lease) = self.session.acquire(
+            app.title,
+            SessionSource::Application,
+            Some(activity::policy::LEASE.min(remaining)),
+            false,
+            Some(root),
+            Some(remaining),
+            false,
+        ) {
+            self.activity_leases.insert(app.id, lease.id);
+        }
+    }
+
     pub fn set_show_countdown(&mut self, value: bool) {
         self.prefs.show_countdown = value;
         self.save();
@@ -217,6 +321,28 @@ impl App {
     pub fn shutdown(&mut self) {
         self.session.stop(EndReason::AppQuit);
     }
+}
+
+/// Recomputes usage on a background thread if it's older than `max_age` (parsing logs can take a
+/// moment, so the event loop never waits for it).
+pub fn refresh_usage(app: &Shared, max_age: Duration) {
+    {
+        let mut state = lock(app);
+        let fresh = state.usage_updated.is_some_and(|at| at.elapsed() < max_age);
+        if state.ephemeral || state.usage_loading || fresh {
+            return;
+        }
+        state.usage_loading = true;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        use barista_core::usage::{report, Period};
+        let value = report(&[Period::Today, Period::Week, Period::Month]);
+        let mut state = lock(&app);
+        state.usage = Some(value);
+        state.usage_updated = Some(std::time::Instant::now());
+        state.usage_loading = false;
+    });
 }
 
 /// Asks GitHub for a newer release on a background thread.
@@ -307,6 +433,13 @@ fn main() {
         agents: Vec::new(),
         launch_at_login: false,
         ephemeral,
+        usage: None,
+        usage_updated: None,
+        usage_loading: false,
+        activity: HashMap::new(),
+        activity_leases: HashMap::new(),
+        activity_stopped: HashSet::new(),
+        activity_burst: HashMap::new(),
     }));
     if !ephemeral {
         sync_notification_settings(&lock(&app).prefs);
@@ -338,6 +471,30 @@ fn main() {
         state.launch_at_login = platform::launches_at_login();
         state.refresh_agents();
         drop(state);
+        // Watched apps: sample CPU off the lock, then decide under it.
+        let watcher = app.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs_f64(activity::policy::SAMPLE_INTERVAL));
+            let apps: Vec<WatchedApp> = {
+                let state = lock(&watcher);
+                WatchedApp::ALL.into_iter().filter(|app| state.watches(*app)).collect()
+            };
+            if apps.is_empty() {
+                continue;
+            }
+            let samples = activity::sample(&apps);
+            let time = now();
+            let mut state = lock(&watcher);
+            for (app, (root, cpu)) in apps.into_iter().zip(samples) {
+                state.update_activity(app, root, &cpu, time);
+            }
+        });
+        // Usage: soon after launch, then every five minutes.
+        let usage_app = app.clone();
+        std::thread::spawn(move || loop {
+            refresh_usage(&usage_app, Duration::from_secs(60));
+            std::thread::sleep(Duration::from_secs(300));
+        });
         // Check hourly whether a day has passed, so sleep and restarts don't skip or repeat checks.
         let app = app.clone();
         std::thread::spawn(move || {

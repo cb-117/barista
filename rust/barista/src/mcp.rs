@@ -1,6 +1,7 @@
 //! A stdio MCP server. The shared Barista app owns power requests, not this subprocess.
 use crate::connection::AgentConnection;
 use crate::models::*;
+use crate::usage;
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
 
@@ -132,6 +133,18 @@ impl McpServer {
             return Err(rpc(-32602, format!("Unexpected or missing arguments for {name}.")));
         }
         let outcome = (|| -> Result<Value> {
+            if name == "barista_usage" {
+                // Read locally from the agents' logs; the app isn't involved.
+                let period = match arguments.get("period") {
+                    None => usage::Period::Week,
+                    Some(Value::String(text)) => {
+                        usage::Period::parse(text).ok_or_else(|| CoffeeError::msg("period must be today, week, month, or all."))?
+                    }
+                    Some(_) => return Err(CoffeeError::msg("period must be a string.")),
+                };
+                let report = usage::report(&[period]);
+                return Ok(json!({"content": [{"type": "text", "text": to_json(&report)}], "structuredContent": report, "isError": false}));
+            }
             let request = match name {
                 "barista_status" => ControlRequest::new(ControlAction::Status),
                 "barista_history" => ControlRequest::new(ControlAction::History),
@@ -261,5 +274,13 @@ fn tools() -> Vec<Value> {
             false,
         ),
         tool("barista_history", "Read recent session completions", "Read the last 20 local session summaries and reasons they ended. No command arguments or output are recorded.", json!({}), &[], true),
+        tool(
+            "barista_usage",
+            "Read coding-agent usage",
+            "Sessions, requests, and tokens for Claude Code and Codex (from their local logs) and Cursor turns, per agent and model, with costs estimated at API list prices (not subscription charges). Read locally; nothing is sent anywhere.",
+            json!({"period": {"type": "string", "enum": ["today", "week", "month", "all"], "default": "week", "description": "today, this week (from Monday), this month, or all time, in local time."}}),
+            &[],
+            true,
+        ),
     ]
 }

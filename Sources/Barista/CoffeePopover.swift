@@ -85,6 +85,7 @@ struct CoffeePopover: View {
         .onAppear {
             session.refresh()
             runtime.refreshAgentStatus()
+            runtime.refreshUsage()
             customMinutes = min(1440, max(1, customMinutes))
             customText = String(customMinutes)
         }
@@ -227,12 +228,24 @@ struct CoffeePopover: View {
         }
     }
 
+    private var usageButtonTitle: String {
+        if let limits = runtime.limitsSummary { return limits }
+        if let today = runtime.usage?.periods.first, today.totalTokens > 0 {
+            return "Today \(UsageReport.formatTokens(today.totalTokens)) tokens"
+        }
+        return "Usage & limits"
+    }
+
     private var footer: some View {
         HStack(spacing: 4) {
             if session.sessions.count > 1 {
                 Button("Stop all") { session.stop() }
                     .help("End every awake session. Commands and agents keep running.")
             }
+            Button { runtime.onShowUsage?() } label: {
+                Label(usageButtonTitle, systemImage: "chart.bar").lineLimit(1)
+            }
+            .help("Usage & Limits: your plan limits and each agent’s tokens. Costs are API-price estimates, not your subscription bill.")
             Spacer()
             Button { runtime.onShowSettings?() } label: { Image(systemName: "gearshape") }
                 .help("Settings").accessibilityLabel("Settings")
@@ -308,7 +321,7 @@ struct UpdateBanner: View {
 struct AgentSuggestionBanner: View {
     @ObservedObject var runtime: AppRuntime
     var body: some View {
-        let names = runtime.agentsToSuggest.map { $0 == .claude ? "Claude Code" : "Codex" }.joined(separator: " and ")
+        let names = ListFormatter.localizedString(byJoining: runtime.agentsToSuggest.map(\.displayName))
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "sparkles").foregroundStyle(CoffeeTheme.accent)
             VStack(alignment: .leading, spacing: 6) {

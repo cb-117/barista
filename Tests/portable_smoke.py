@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='caf-') as temporary:
             assert response['id'] == identifier, response
             return response
         assert rpc(1, 'initialize', {'protocolVersion': '2025-06-18'})['result']['protocolVersion'] == '2025-06-18'
-        assert len(rpc(2, 'tools/list')['result']['tools']) == 6
+        assert len(rpc(2, 'tools/list')['result']['tools']) == 7
         lease = rpc(3, 'tools/call', {'name': 'barista_acquire', 'arguments': {'title': 'MCP'}})['result']['structuredContent']['session']['id']
         assert not rpc(4, 'tools/call', {'name': 'barista_release', 'arguments': {'id': lease}})['result']['isError']
         print('PASS MCP: handshake, tools, acquire, release', flush=True)

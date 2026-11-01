@@ -22,4 +22,28 @@ fn main() {
         "Bad version: {version}"
     );
     println!("cargo:rustc-env=BARISTA_VERSION={version}");
+
+    // The one price table for usage estimates also lives in the Swift package.
+    let prices = Path::new(&manifest).join("../../Sources/BaristaCore/ModelPrices.swift");
+    println!("cargo:rerun-if-changed={}", prices.display());
+    let text = fs::read_to_string(&prices).expect("Couldn't read Sources/BaristaCore/ModelPrices.swift.");
+    let anchor = text.find("static let json").expect("ModelPrices.swift has no `static let json`");
+    let start = anchor + text[anchor..].find("#\"\"\"").expect("ModelPrices.swift has no #\"\"\" block") + 4;
+    let end = start
+        + text[start..]
+            .find("\"\"\"#")
+            .expect("ModelPrices.swift's #\"\"\" block isn't closed");
+    let json = text[start..end].trim();
+    assert!(
+        json.starts_with('[') && json.ends_with(']'),
+        "ModelPrices.swift's price table must be a JSON array"
+    );
+    let checked = text
+        .lines()
+        .find(|line| line.contains("static let checkedOn"))
+        .and_then(|line| line.split('"').nth(1))
+        .expect("ModelPrices.swift has no checkedOn date");
+    let out = env::var("OUT_DIR").unwrap();
+    fs::write(Path::new(&out).join("model-prices.json"), json).unwrap();
+    println!("cargo:rustc-env=BARISTA_PRICES_CHECKED={checked}");
 }

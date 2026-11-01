@@ -76,7 +76,10 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         invoke('heartbeat', short, ok=False)
         print('PASS lifecycle: process exit and stale heartbeats end sessions', flush=True)
 
-        mcp = subprocess.Popen([str(cli), 'mcp', '--socket', path, '--no-launch'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        # Usage reads agent logs: point it at empty folders so tests never touch real state.
+        isolated = {**os.environ, 'BARISTA_DATA_DIR': str(Path(temporary) / 'data'),
+                    'CLAUDE_CONFIG_DIR': str(Path(temporary) / 'no-claude'), 'CODEX_HOME': str(Path(temporary) / 'no-codex')}
+        mcp = subprocess.Popen([str(cli), 'mcp', '--socket', path, '--no-launch'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, env=isolated)
         def rpc(identifier, method, params=None):
             message = {'jsonrpc': '2.0', 'id': identifier, 'method': method}
             if params is not None:
@@ -92,7 +95,10 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         mcp.stdin.write(json.dumps({'jsonrpc': '2.0', 'method': 'notifications/initialized'}) + '\n')
         mcp.stdin.flush()
         tools = rpc(2, 'tools/list')['result']['tools']
-        assert len(tools) == 6 and all(t['inputSchema']['additionalProperties'] is False for t in tools)
+        assert len(tools) == 7 and all(t['inputSchema']['additionalProperties'] is False for t in tools)
+        usage = rpc('usage', 'tools/call', {'name': 'barista_usage', 'arguments': {'period': 'today'}})['result']
+        assert not usage['isError'] and [p['id'] for p in usage['structuredContent']['periods']] == ['today'], usage
+        assert rpc('usage-bad', 'tools/call', {'name': 'barista_usage', 'arguments': {'period': 'year'}})['result']['isError']
         assert rpc('ping', 'ping')['result'] == {}
         result = rpc(3, 'tools/call', {'name': 'barista_acquire', 'arguments': {'title': 'MCP test', 'ttl_seconds': 60}})['result']
         assert not result['isError']
@@ -109,7 +115,7 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         mcp.stdin.write('not-json\n')
         mcp.stdin.flush()
         assert json.loads(mcp.stdout.readline())['error']['code'] == -32700
-        print('PASS MCP: handshake, discovery, acquire, progress, release, schema checks, protocol errors', flush=True)
+        print('PASS MCP: handshake, discovery, acquire, progress, release, usage, schema checks, protocol errors', flush=True)
 
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(3)
@@ -290,6 +296,7 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         assert result.returncode == 0, result
         assert 'Connected Claude Code' in result.stdout and 'Connected Codex' in result.stdout and '/hooks' in result.stdout, result.stdout
         assert (home / '.claude' / 'settings.json').exists() and (home / '.codex' / 'hooks.json').exists()
+        assert json.loads((home / '.claude' / 'settings.json').read_text())['statusLine']['command'].endswith(' statusline'), 'setup adds the limits status line'
         only_claude = Path(temporary) / 'home2'
         (only_claude / '.claude').mkdir(parents=True)
         result = subprocess.run([str(cli), 'setup', '--socket', path, '--no-launch'], capture_output=True, text=True, timeout=10,

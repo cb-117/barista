@@ -16,6 +16,8 @@ jobs:
         run: swift run BaristaChecks
       - name: CLI, MCP, and hook integration
         run: python3 Tests/agent_integration.py
+      - name: Usage tracking and Cursor hooks
+        run: python3 Tests/usage_check.py --bin-dir .build/debug
       - name: App bundle
         run: zsh scripts/build-app.sh --universal
       - name: Zip app

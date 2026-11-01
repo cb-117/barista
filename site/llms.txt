@@ -12,7 +12,7 @@ Ask the user before installing software. Then run:
 curl -fsSL https://cb-117.github.io/barista/install.sh | sh
 ```
 
-This installs Barista.app to /Applications (or ~/Applications), verifies the download against the release's SHA-256 checksum, connects Claude Code and Codex if they're set up for this user, and starts the app in the menu bar. It's safe to re-run. Barista updates itself afterwards.
+This installs Barista.app to /Applications (or ~/Applications), verifies the download against the release's SHA-256 checksum, connects Claude Code, Codex, and Cursor if they're set up for this user, and starts the app in the menu bar. It's safe to re-run. Barista updates itself afterwards.
 
 ## Install (Windows 10/11 and Linux)
 
@@ -28,6 +28,8 @@ Codex asks users to approve new hooks once. After installing, tell the user to o
 - Connect agents later: `barista setup`.
 - The CLI lives at `/Applications/Barista.app/Contents/Helpers/barista` on macOS; on Windows and Linux it's `barista` on the PATH.
 - MCP: run `barista mcp` as a stdio MCP server; tools acquire, heartbeat, and release awake sessions.
+- Cursor: `barista hooks install --agent cursor` (or `barista setup`) keeps the computer awake while Cursor's agent works.
+- Usage: `barista usage` (or the `barista_usage` MCP tool) reports tokens per agent and model for today, this week, and this month, with API-price cost estimates, from local logs.
 
 Barista prevents idle sleep only. Closing the lid or choosing Sleep still sleeps the Mac.
 

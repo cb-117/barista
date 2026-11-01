@@ -4,6 +4,7 @@ use barista_core::control::default_path;
 use barista_core::hooks::{self, AgentHook, HookAgent, HookLeaseStore, HookWaiter};
 use barista_core::mcp::McpServer;
 use barista_core::session::AwakeSession;
+use barista_core::usage;
 use barista_core::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -30,7 +31,7 @@ impl Options {
             arguments.truncate(separator);
         }
         const BOOLEAN: [&str; 4] = ["--json", "--display", "--all", "--no-launch"];
-        const VALUES: [&str; 11] = [
+        const VALUES: [&str; 13] = [
             "--socket",
             "--name",
             "--minutes",
@@ -42,6 +43,8 @@ impl Options {
             "--message",
             "--settings",
             "--agent",
+            "--period",
+            "--chain",
         ];
         let mut options = Options {
             command,
@@ -195,15 +198,20 @@ fn run(arguments: Vec<String>) -> Result<i32> {
             // One step for people and agents: connect every coding agent found, then start Barista.
             options.validate(&["--agent"], &[], 0)?;
             let agents: Vec<HookAgent> = match options.values.get("--agent") {
-                Some(name) => vec![HookAgent::parse(name).ok_or_else(|| CoffeeError::msg("--agent must be claude or codex."))?],
+                Some(name) => vec![HookAgent::parse(name).ok_or_else(|| CoffeeError::msg("--agent must be claude, codex, or cursor."))?],
                 None => HookAgent::ALL.into_iter().filter(|a| a.is_installed()).collect(),
             };
             for agent in &agents {
                 hooks::install(&cli_path(), *agent, None)?;
                 println!("Connected {} ({})", agent.display_name(), agent.default_settings().display());
+                if *agent == HookAgent::Claude {
+                    // Claude Code shares its plan limits only with its status line.
+                    hooks::statusline_install(&cli_path(), None)?;
+                    println!("Claude Code’s status line now shows your plan limits.");
+                }
             }
             if agents.is_empty() {
-                println!("No Claude Code or Codex setup found for this user. Run barista setup again after using one of them.");
+                println!("No Claude Code, Codex, or Cursor setup found for this user. Run barista setup again after using one of them.");
             }
             let state = connection.send(&ControlRequest::new(ControlAction::Status))?.state;
             let version = state.map(|s| s.version).unwrap_or_else(|| VERSION.to_string());
@@ -220,10 +228,38 @@ fn run(arguments: Vec<String>) -> Result<i32> {
             }
             return Ok(0);
         }
+        "statusline" => {
+            if options.positionals.is_empty() {
+                // Run by Claude Code after each reply: never fail, always print a line.
+                let _ = options.validate(&["--chain"], &[], 0);
+                statusline::run(options.values.get("--chain").map(String::as_str));
+                return Ok(0);
+            }
+            options.validate(&["--settings"], &[], 1)?;
+            let settings = options.values.get("--settings").map(PathBuf::from);
+            let shown = settings.clone().unwrap_or_else(|| HookAgent::Claude.default_settings());
+            match options.positionals[0].as_str() {
+                "install" => {
+                    hooks::statusline_install(&cli_path(), settings.as_deref())?;
+                    println!("Claude Code’s status line now shows your plan limits: {}", shown.display());
+                }
+                "uninstall" => {
+                    hooks::statusline_uninstall(settings.as_deref())?;
+                    println!("Removed Barista’s status line: {}", shown.display());
+                }
+                "status" => println!("{}", hooks::statusline_status(settings.as_deref())),
+                _ => {
+                    return Err(CoffeeError::msg(
+                        "Use: barista statusline [install|uninstall|status] [--settings PATH]",
+                    ))
+                }
+            }
+            return Ok(0);
+        }
         "hooks" => {
             options.validate(&["--settings", "--agent"], &[], 1)?;
             let agent = HookAgent::parse(options.values.get("--agent").map_or("claude", String::as_str))
-                .ok_or_else(|| CoffeeError::msg("--agent must be claude or codex."))?;
+                .ok_or_else(|| CoffeeError::msg("--agent must be claude, codex, or cursor."))?;
             let settings = options.values.get("--settings").map(PathBuf::from);
             let url = settings.clone().unwrap_or_else(|| agent.default_settings());
             match options.positionals[0].as_str() {
@@ -247,15 +283,36 @@ fn run(arguments: Vec<String>) -> Result<i32> {
                     } else {
                         println!(
                             "Needs repair (incomplete or another copy): run barista hooks install{}",
-                            if agent == HookAgent::Codex { " --agent codex" } else { "" }
+                            if agent == HookAgent::Claude {
+                                String::new()
+                            } else {
+                                format!(" --agent {}", agent.name())
+                            }
                         );
                     }
                 }
                 _ => {
                     return Err(CoffeeError::msg(
-                        "Use: barista hooks install|uninstall|status [--agent claude|codex] [--settings PATH]",
+                        "Use: barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]",
                     ))
                 }
+            }
+            return Ok(0);
+        }
+        "usage" => {
+            // Reads the agents' logs on this computer; never needs the app.
+            options.validate(&["--period"], &[], 0)?;
+            let periods = match options.values.get("--period") {
+                Some(text) => {
+                    vec![usage::Period::parse(text).ok_or_else(|| CoffeeError::msg("--period must be today, week, month, or all."))?]
+                }
+                None => vec![usage::Period::Today, usage::Period::Week, usage::Period::Month],
+            };
+            let report = usage::report(&periods);
+            if options.flags.contains("--json") {
+                println!("{}", to_json(&report));
+            } else {
+                print!("{}", usage::text(&report, options.values.contains_key("--period")));
             }
             return Ok(0);
         }
@@ -409,6 +466,72 @@ fn run_command(options: &Options, connection: &AgentConnection) -> Result<i32> {
         child::reraise_interrupt();
     }
     Ok(outcome.code)
+}
+
+/// `barista statusline`: Claude Code's status line command. Records plan limits for Usage & Limits.
+mod statusline {
+    use super::*;
+    use serde_json::Value;
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+
+    pub fn run(chain: Option<&str>) {
+        let mut input = Vec::new();
+        let _ = std::io::stdin().read_to_end(&mut input);
+        let status: Option<Value> = serde_json::from_slice(&input).ok();
+        if let Some(limits) = status.as_ref().and_then(|s| s.get("rate_limits")).filter(|l| l.is_object()) {
+            usage::record_claude_limits(limits);
+        }
+        // The user's own status line, if Barista replaced one, keeps running with the same input.
+        let saved = chain.and_then(|key| hooks::statusline_chain(key).ok());
+        if let Some(command) = saved.and_then(|line| line.get("command").and_then(Value::as_str).map(String::from)) {
+            let mut shell = if cfg!(windows) {
+                let mut c = Command::new("cmd");
+                c.args(["/C", &command]);
+                c
+            } else {
+                let mut c = Command::new("/bin/sh");
+                c.args(["-c", &command]);
+                c
+            };
+            shell.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+            if let Ok(mut child) = shell.spawn() {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(&input);
+                }
+                if let Ok(output) = child.wait_with_output() {
+                    let _ = std::io::stdout().write_all(&output.stdout);
+                }
+            }
+            return;
+        }
+        if let Some(status) = status {
+            println!("{}", line(&status, now()));
+        }
+    }
+
+    /// "Opus · 5h 24% · 7d 41%", skipping windows that have reset.
+    pub fn line(status: &Value, now: f64) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(name) = status.get("model").and_then(|m| m.get("display_name")).and_then(Value::as_str) {
+            if !name.is_empty() {
+                parts.push(name.to_string());
+            }
+        }
+        for (key, label) in [("five_hour", "5h"), ("seven_day", "7d")] {
+            let Some(window) = status.get("rate_limits").and_then(|l| l.get(key)) else {
+                continue;
+            };
+            let Some(used) = window.get("used_percentage").and_then(Value::as_f64) else {
+                continue;
+            };
+            if window.get("resets_at").and_then(Value::as_f64).is_some_and(|at| at <= now) {
+                continue;
+            }
+            parts.push(format!("{label} {}%", used.round() as i64));
+        }
+        parts.join(" · ")
+    }
 }
 
 mod child {
@@ -607,9 +730,11 @@ barista stop SESSION_ID
 barista stop --all
 barista history [--json]
 barista run [--name \"Build\"] [--display] [--max-awake 28800] -- COMMAND [ARG ...]
+barista usage [--period today|week|month|all] [--json]
+barista statusline [install|uninstall|status] [--settings PATH]
 barista mcp
-barista hooks install|uninstall|status [--agent claude|codex] [--settings PATH]
-barista setup [--agent claude|codex]
+barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]
+barista setup [--agent claude|codex|cursor]
 barista version
 
 Agent sessions default to screen-off-friendly, expire after 5 minutes without renewal,
@@ -618,10 +743,17 @@ run renews automatically while its command runs, preserves output/exit code,
 and releases its own session on completion. Other sessions remain active.
 Stopping a session never terminates the underlying command.
 
-setup connects every agent it finds (Claude Code, Codex) and starts Barista.
+setup connects every agent it finds (Claude Code, Codex, Cursor) and starts Barista.
 hooks install connects Claude Code (or Codex with --agent codex, which then asks you to
-trust the hooks once with /hooks): prompts start a session, tool calls renew it,
-and the session ends when the agent finishes its turn or exits.
+trust the hooks once with /hooks, or Cursor with --agent cursor): prompts start a session,
+tool calls renew it, and the session ends when the agent finishes its turn or exits.
+
+usage reports sessions and tokens for Claude Code and Codex (from their local logs) and
+Cursor turns (recorded by its hooks) for today, this week, and this month, with costs
+estimated at API list prices. --period shows one period by model. Nothing leaves this computer.
+It starts with plan limits: Claude's (from Claude Code's status line, or the Claude app) and
+ChatGPT's (from Codex's logs). statusline is Claude Code's status line command that records
+Claude's limits; setup installs it, keeping any status line you already had working behind it.
 
 Global options: --json, --no-launch, --socket PATH. Barista (the coffee cup in the {place})
 starts automatically when needed. MCP uses newline-delimited JSON-RPC over stdio; no TCP

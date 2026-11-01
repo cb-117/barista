@@ -165,8 +165,48 @@ func localSocketSupportsConcurrentAgents() async throws {
     session.stop()
 }
 
+/// Watched apps (Cowork, ChatGPT): busy by CPU share over a window, with real process sampling.
+@MainActor
+func watchedAppActivity() throws {
+    var tracker = ActivityTracker()
+    let start = Date(timeIntervalSince1970: 1_000_000)
+    check(!tracker.record([1: 5.0, 2: 1.0], at: start), "First sample has nothing to compare against")
+    check(!tracker.record([1: 5.1, 2: 1.05], at: start.addingTimeInterval(10)), "1.5% of a core is idle")
+    check(tracker.record([1: 8.0, 2: 1.1], at: start.addingTimeInterval(20)), "A burst of work is busy")
+    check(tracker.record([1: 8.1, 2: 1.15, 3: 0.4], at: start.addingTimeInterval(30)), "A new helper's CPU counts; the window still holds the burst")
+    check(!tracker.record([1: 8.15, 2: 1.15, 3: 0.4], at: start.addingTimeInterval(60)), "Quiet once the burst leaves the window")
+    check(tracker.lastBusy == start.addingTimeInterval(30), "Remembers the last busy moment")
+    check(!tracker.record([:], at: start.addingTimeInterval(70)), "An app that isn't running is never busy")
+    check(!tracker.record([1: 0.0], at: start.addingTimeInterval(80)), "A relaunch starts over")
+
+    // Real sampling: this process's own tree is found by its executable, and busy work shows up.
+    let table = ProcessTable.snapshot()
+    check(table.contains { $0.pid == getpid() && $0.cpu > 0 }, "The process table reads this process's CPU time")
+    let session = AwakeSession(power: TestPower(), schedulesTimer: false, batteryProvider: { nil })
+    let lease = try session.acquire(title: "Claude app", source: .application, duration: 300, processID: getpid(), maxDuration: 400)
+    check(session.renew(id: lease.id, seconds: 300), "Watched-app sessions renew")
+    check(session.sessions.first?.expiresAt == lease.hardDeadline || session.sessions.first!.expiresAt! <= lease.hardDeadline!, "Renewal stays within the hard cap")
+    session.cancel(id: lease.id)
+    check(!session.renew(id: lease.id, seconds: 300), "A stopped session can't be renewed")
+}
+
+/// Plan limit windows: labels from their length, and passed resets read as 0% used.
+func planLimitWindows() {
+    check(PlanLimits.label(minutes: 300) == "5-hour" && PlanLimits.label(minutes: 10080) == "Weekly", "Standard window labels")
+    check(PlanLimits.label(minutes: 120) == "2-hour" && PlanLimits.label(minutes: 2880) == "2-day", "Other windows by length")
+    let now = Date(timeIntervalSince1970: 2_000_000)
+    let current = PlanLimits.window(id: "primary", minutes: 10080, usedPercent: 6, resetsAt: now.addingTimeInterval(60), now: now)
+    check(current.usedPercent == 6 && !current.reset, "A current window keeps its usage")
+    let passed = PlanLimits.window(id: "secondary", minutes: 300, usedPercent: 55, resetsAt: now.addingTimeInterval(-1), now: now)
+    check(passed.usedPercent == 0 && passed.reset, "A window past its reset reads 0%")
+    let unknown = PlanLimits.window(id: "five_hour", minutes: 300, usedPercent: 5, resetsAt: nil, now: now)
+    check(unknown.usedPercent == 5 && !unknown.reset, "No reset time means no reset")
+}
+
 @MainActor
 func runTaskSessionChecks() async throws {
+    planLimitWindows()
+    try watchedAppActivity()
     try concurrentOwnershipAndDisplayAggregation()
     try heartbeatsExpireAndRespectHardLimit()
     try deadAndReusedProcessesReleaseTheirLeases()
@@ -174,5 +214,5 @@ func runTaskSessionChecks() async throws {
     try inputValidationAndUserStopRemainAuthoritative()
     try boundedHistoryDoesNotRestoreAwakeRequests()
     try await localSocketSupportsConcurrentAgents()
-    print("Passed 7 task-session checks: concurrent ownership, heartbeat expiry, hard caps, PID reuse, battery cutoff, validation, history, and real Unix-socket concurrency.")
+    print("Passed 9 task-session checks: plan limit windows, watched-app activity, concurrent ownership, heartbeat expiry, hard caps, PID reuse, battery cutoff, validation, history, and real Unix-socket concurrency.")
 }

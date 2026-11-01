@@ -27,7 +27,10 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 
 - A coffee-cup menu-bar control with one simple panel: pick 15m, 1h, 4h, or ∞ and press **Keep awake**. **More** has custom minutes, an end time, and “while an app runs.”
 - **Right-click** the cup for one-click timers. **Option-click** toggles your last session.
-- **One-click Claude Code and ChatGPT Codex support:** Settings → Agents → **Connect**. Your Mac stays awake while the agent works and can sleep once it finishes. No MCP setup needed. (Codex asks you to trust the hooks once with `/hooks`.)
+- **One-click Claude Code, ChatGPT Codex, and Cursor support:** Settings → Agents → **Connect**. Your Mac stays awake while the agent works and can sleep once it finishes. No MCP setup needed. (Codex asks you to trust the hooks once with `/hooks`.)
+- **Cowork and the ChatGPT app:** these apps have no hooks, so Barista keeps your computer awake while they’re busy (judged by their CPU use, including Cowork’s VM) and lets it sleep once they’ve been quiet for 5 minutes. Switch each off in Settings → Agents.
+- **Usage & Limits:** one window (panel, right-click menu, or Settings) with your Claude plan’s 5-hour and weekly limits, your ChatGPT plan’s limits and credits, and token usage per agent. Claude’s limits come from a small status line Barista adds to Claude Code (it keeps your own if you have one); ChatGPT’s from Codex’s logs. Cursor doesn’t share its limits with other apps.
+- **Usage tracking:** sessions and tokens per agent and model for today, this week, and this month, with an estimated API-price cost, in Settings → Usage, the panel footer, `barista usage`, and the `barista_usage` MCP tool. Read from Claude Code’s and Codex’s own logs on your Mac; Cursor reports turns and active time through its hooks. Nothing is uploaded. Costs are estimates at API list prices, not what your subscription charges. Details: [docs/USAGE.md](docs/USAGE.md).
 - Tasks that keep the Mac awake (agents, commands, watched apps) appear in the panel with live progress and individual stop buttons, and in the right-click menu. The menu bar shows your own timer’s time left, or how many tasks are running. Settings shows the last sessions.
 - **Task-owned sessions:** commands renew their own short leases and release them on exit. Agents heartbeat during work and release when done. A missing heartbeat or watched process exit ends the session automatically.
 - Separate display control. Agent/command sessions allow the display to sleep by default.
@@ -108,6 +111,10 @@ Choose **Settings → Agents → ChatGPT Codex → Connect**, or run `barista ho
 
 Codex asks you to approve new hooks once: type `/hooks` in Codex and trust Barista’s hooks. After that, each Codex task keeps your Mac awake while it works, shown as “Codex · <folder>”.
 
+## Cursor
+
+Choose **Settings → Agents → Cursor → Connect**, or run `barista hooks install --agent cursor` (or `barista setup`). This adds hooks to `~/.cursor/hooks.json`: a prompt starts a session, tool calls and replies renew it, and it ends when the agent stops. Cursor reloads hooks on its own. Each turn is also recorded for usage tracking (time and model, no prompts or code). Cursor doesn’t write token counts to disk, so Barista shows Cursor turns and active time rather than tokens; Cursor’s token and cost data is only available to Enterprise team admins through Cursor’s Admin API. Cursor documents hooks for its editor; its command-line agent may not run them.
+
 ## Use from a terminal or agent
 
 ```sh
@@ -121,6 +128,10 @@ build/barista start --name "Research agent" --minutes 5
 build/barista heartbeat SESSION_ID --ttl 300 --progress 0.5 --message "Checking sources"
 build/barista stop SESSION_ID
 build/barista status --json
+
+# Tokens and estimated cost per agent: today, this week, this month (or --period all).
+build/barista usage
+build/barista usage --period week --json
 ```
 
 See [the agent guide](docs/AGENTS.md) for MCP setup, all commands, ownership rules, JSON responses, hard limits, and sandbox considerations. Settings also has **Copy CLI path** and **Copy MCP setup**.

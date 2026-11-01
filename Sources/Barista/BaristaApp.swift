@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem?
     private let popover = NSPopover()
     private lazy var settings = SettingsWindowController(runtime: runtime)
+    private lazy var usageWindow = UsageWindowController(runtime: runtime)
     private var observation: AnyCancellable?
     private var wakeObserver: NSObjectProtocol?
 
@@ -36,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.animates = true
         runtime.onAppearanceChange = { [weak self] in self?.updateStatus() }
         runtime.onShowPanel = { [weak self] in self?.showPanel() }
+        runtime.onShowUsage = { [weak self] in
+            self?.popover.performClose(nil)
+            self?.usageWindow.show()
+        }
         runtime.onShowSettings = { [weak self] in
             self?.popover.performClose(nil)
             self?.settings.show()
@@ -122,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(action("Stop all") { session.stop() })
         }
         menu.addItem(.separator())
+        menu.addItem(action("Usage & Limits…") { [weak self] in self?.usageWindow.show() })
         menu.addItem(action("Settings…", key: ",") { [weak self] in self?.settings.show() })
         menu.addItem(action("Quit Barista", key: "q") { [weak self] in
             self?.runtime.shutdown()

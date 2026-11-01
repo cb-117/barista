@@ -294,6 +294,20 @@ impl AwakeSession {
         Ok(())
     }
 
+    /// Pushes a live session's expiry to `seconds` from now, within its hard cap. For app-owned
+    /// sessions (watched apps); agents use `heartbeat`. Returns false if the session has ended.
+    pub fn renew(&mut self, id: &str, seconds: f64) -> bool {
+        self.refresh();
+        let clock = self.clock;
+        let Some(lease) = self.sessions.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        let candidate = clock + seconds;
+        lease.expires_at = Some(lease.hard_deadline.map_or(candidate, |deadline| deadline.min(candidate)));
+        lease.last_heartbeat = clock;
+        true
+    }
+
     pub fn heartbeat(
         &mut self,
         id: &str,
@@ -726,6 +740,31 @@ mod tests {
         assert!(session.handle(request(&token)).ok);
         session.stop(EndReason::Stopped);
         assert!(!session.handle(request(&token)).ok, "a user stop revokes the turn");
+    }
+
+    #[test]
+    fn app_owned_sessions_renew_within_their_cap() {
+        let (mut session, harness) = session();
+        let lease = session
+            .acquire(
+                "Claude app",
+                SessionSource::Application,
+                Some(300.0),
+                false,
+                Some(100),
+                Some(400.0),
+                false,
+            )
+            .unwrap();
+        harness.advance(200.0);
+        assert!(session.renew(&lease.id, 300.0));
+        assert_eq!(
+            session.sessions()[0].expires_at,
+            lease.hard_deadline,
+            "renewal stays within the hard cap"
+        );
+        session.cancel(&lease.id);
+        assert!(!session.renew(&lease.id, 300.0), "a stopped session can't be renewed");
     }
 
     #[test]

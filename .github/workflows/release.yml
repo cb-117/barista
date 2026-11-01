@@ -72,6 +72,7 @@ jobs:
             python Tests/agent_integration.py --bin-dir rust/target/debug --service rust/target/debug/barista-app
           fi
           python Tests/portable_smoke.py --bin-dir rust/target/debug
+          python Tests/usage_check.py --bin-dir rust/target/debug
       - name: Build and package
         run: |
           set -euo pipefail
@@ -110,6 +111,7 @@ jobs:
           swift build
           swift run BaristaChecks
           python3 Tests/agent_integration.py
+          python3 Tests/usage_check.py --bin-dir .build/debug
       - name: Build universal app
         run: zsh scripts/build-app.sh --universal
       - name: Windows and Linux builds

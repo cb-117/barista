@@ -83,6 +83,15 @@ struct MCPServer {
         guard Set(arguments.keys).isSubset(of: Set(properties.keys)), required.allSatisfy({ arguments[$0] != nil }) else {
             throw RPCError(code: -32602, message: "Unexpected or missing arguments for \(name).")
         }
+        if name == "barista_usage" {
+            // Read from local logs in this process; the app isn't involved.
+            let period: UsagePeriod
+            if arguments["period"] == nil { period = .week }
+            else if let text = arguments["period"] as? String, let value = UsagePeriod(rawValue: text) { period = value }
+            else { return ["content": [["type": "text", "text": "period must be today, week, month, or all."]], "isError": true] }
+            let report = UsageStore.report(periods: [period])
+            return ["content": [["type": "text", "text": report.json()]], "structuredContent": report.jsonObject, "isError": false]
+        }
         do {
             let request: ControlRequest
             switch name {
@@ -164,7 +173,10 @@ struct MCPServer {
             ], required: ["id"]),
             tool("barista_extend", title: "Extend a session timer", description: "Add seconds to an existing timer within its original hard limit.", properties: ["id": id, "seconds": ttl], required: ["id", "seconds"]),
             tool("barista_release", title: "Release your awake session", description: "Release your own session when work completes or waits for user input. Other sessions remain active. Repeated releases are safe.", properties: ["id": id], required: ["id"]),
-            tool("barista_history", title: "Read recent session completions", description: "Read the last 20 local session summaries and reasons they ended. No command arguments or output are recorded.", readOnly: true)
+            tool("barista_history", title: "Read recent session completions", description: "Read the last 20 local session summaries and reasons they ended. No command arguments or output are recorded.", readOnly: true),
+            tool("barista_usage", title: "Read agent token usage", description: "Sessions, requests, and tokens per agent (Claude Code, Codex, Cursor) and model for a period, from local logs, with costs estimated at API list prices (not what a subscription charges). Cursor reports turns and active time instead of tokens.", properties: [
+                "period": ["type": "string", "enum": ["today", "week", "month", "all"], "default": "week"]
+            ], readOnly: true)
         ]
     }
 }

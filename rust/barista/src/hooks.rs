@@ -1,4 +1,4 @@
-//! Claude Code and Codex lifecycle hooks: installing them, and running them.
+//! Claude Code, Codex, and Cursor lifecycle hooks: installing them, and running them.
 use crate::connection::{detach, AgentConnection};
 use crate::control::{ensure_private_directory, state_dir};
 use crate::models::*;
@@ -9,28 +9,49 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Coding agents Barista can connect to. Both use the same hook file shape:
-/// event → [{matcher?, hooks: [{type: "command", command, timeout}]}].
+/// Coding agents Barista can connect to. Claude Code and Codex use the same hook file shape:
+/// event → [{matcher?, hooks: [{type: "command", command, timeout}]}]. Cursor's is flatter:
+/// {"version": 1, "hooks": {event → [{command, timeout}]}}.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookAgent {
     Claude,
     Codex,
+    Cursor,
 }
 
+/// Cursor's events: a prompt starts work, tool calls and responses renew it, stop/sessionEnd release it.
+pub const CURSOR_EVENTS: [&str; 5] = ["beforeSubmitPrompt", "postToolUse", "afterAgentResponse", "stop", "sessionEnd"];
+
 impl HookAgent {
-    pub const ALL: [HookAgent; 2] = [HookAgent::Claude, HookAgent::Codex];
+    pub const ALL: [HookAgent; 3] = [HookAgent::Claude, HookAgent::Codex, HookAgent::Cursor];
 
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "cursor" => Some(Self::Cursor),
             _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Cursor => "cursor",
         }
     }
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
+        }
+    }
+    /// The hook events Barista installs for this agent.
+    pub fn events(self) -> &'static [&'static str] {
+        match self {
+            Self::Cursor => &CURSOR_EVENTS,
+            _ => &EVENTS,
         }
     }
     /// Where the agent reads user-level hooks.
@@ -39,6 +60,7 @@ impl HookAgent {
         match self {
             Self::Claude => home.join(".claude").join("settings.json"),
             Self::Codex => home.join(".codex").join("hooks.json"),
+            Self::Cursor => home.join(".cursor").join("hooks.json"),
         }
     }
     /// The agent has been used by this account (its config folder exists).
@@ -50,6 +72,22 @@ impl HookAgent {
         match self {
             Self::Claude => "hook",
             Self::Codex => "hook --agent codex",
+            Self::Cursor => "hook --agent cursor",
+        }
+    }
+    /// Codex titles each hook in its review list "N - <statusMessage>" (else just "Hook N"),
+    /// and shows the message while the hook runs. Claude Code and Cursor don't use it.
+    pub fn status_message(self, event: &str) -> Option<&'static str> {
+        if self != Self::Codex {
+            return None;
+        }
+        match event {
+            "UserPromptSubmit" => Some("Barista: keep this computer awake while Codex works"),
+            "PreToolUse" => Some("Barista: keep the computer awake during this tool call"),
+            "PostToolUse" => Some("Barista: renew the awake session after this tool call"),
+            "Stop" => Some("Barista: let the computer sleep now that Codex is done"),
+            "SessionEnd" => Some("Barista: end this conversation\u{2019}s awake session"),
+            _ => None,
         }
     }
     fn timeout(self, event: &str) -> i64 {
@@ -62,14 +100,23 @@ impl HookAgent {
     }
 }
 
+/// Shown by Codex for the hooks file; set only when Barista creates the file.
+pub const CODEX_FILE_DESCRIPTION: &str =
+    "Barista keeps this computer awake while Codex works, then lets it sleep. https://github.com/cb-117/barista";
+
 /// Events Barista listens to. Prompts start work, tool calls renew it, Stop/SessionEnd release it.
 pub const EVENTS: [&str; 5] = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"];
 const TOOL_EVENTS: [&str; 2] = ["PreToolUse", "PostToolUse"];
 
 /// The hook command for this CLI. POSIX shells get a single-quoted path; Windows gets a
-/// double-quoted path with forward slashes, which both cmd.exe and Git Bash accept.
+/// double-quoted path with forward slashes, which both cmd.exe and Git Bash accept. Cursor runs
+/// Windows hooks through PowerShell, which needs `&` to call a quoted path.
 pub fn command(cli_path: &str, agent: HookAgent) -> String {
-    if cfg!(windows) {
+    if cfg!(windows) && agent == HookAgent::Cursor {
+        // Cursor runs Windows hooks through PowerShell: a literal ('…') string expands nothing
+        // ($, backticks); only an embedded apostrophe needs doubling.
+        format!("& '{}' {}", cli_path.replace('\\', "/").replace('\'', "''"), agent.hook_arguments())
+    } else if cfg!(windows) {
         format!("\"{}\" {}", cli_path.replace('\\', "/"), agent.hook_arguments())
     } else {
         format!("'{}' {}", cli_path.replace('\'', "'\\''"), agent.hook_arguments())
@@ -86,8 +133,22 @@ pub fn is_ours(command: &str) -> bool {
     else {
         return false;
     };
-    let executable = &command[..command.len() - suffix.len()];
-    let path = if let Some(body) = executable.strip_prefix('\'') {
+    is_barista_executable(&command[..command.len() - suffix.len()])
+}
+
+/// True for a quoted or bare path to this CLI, as `command()` writes it.
+fn is_barista_executable(executable: &str) -> bool {
+    // PowerShell's call operator, as Cursor's Windows commands use, with a literal ('…') path
+    // where an apostrophe is written as ''.
+    let powershell = executable.starts_with("& ");
+    let executable = executable.strip_prefix("& ").unwrap_or(executable);
+    let path = if let Some(body) = executable.strip_prefix('\'').filter(|_| powershell) {
+        let Some(body) = body.strip_suffix('\'') else { return false };
+        if body.replace("''", "").contains('\'') {
+            return false;
+        }
+        body.replace("''", "'")
+    } else if let Some(body) = executable.strip_prefix('\'') {
         // A single-quoted word where embedded quotes appear only as '\''.
         let Some(body) = body.strip_suffix('\'') else { return false };
         let parts: Vec<&str> = body.split("'\\''").collect();
@@ -119,10 +180,13 @@ pub fn is_ours(command: &str) -> bool {
     (name == "barista" || name == "barista.exe") && (bare || absolute)
 }
 
+/// Each entry's group (for Claude/Codex matchers) and command. Cursor's entries are their own group.
 fn our_entries(hooks: &Map<String, Value>, event: &str) -> Vec<(Value, String)> {
     let mut result = Vec::new();
     for group in hooks.get(event).and_then(Value::as_array).into_iter().flatten() {
-        for hook in group.get("hooks").and_then(Value::as_array).into_iter().flatten() {
+        let flat = std::slice::from_ref(group);
+        let entries = group.get("hooks").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(flat);
+        for hook in entries {
             let kind = hook.get("type").and_then(Value::as_str).unwrap_or("command");
             if let (true, Some(command)) = (kind == "command", hook.get("command").and_then(Value::as_str)) {
                 if is_ours(command) {
@@ -134,6 +198,16 @@ fn our_entries(hooks: &Map<String, Value>, event: &str) -> Vec<(Value, String)> 
     result
 }
 
+/// Barista's hook entries within a group (Cursor's entries are their own group).
+fn our_hooks(group: &Value) -> Vec<&Value> {
+    let flat = std::slice::from_ref(group);
+    let entries = group.get("hooks").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(flat);
+    entries
+        .iter()
+        .filter(|hook| is_ours(hook.get("command").and_then(Value::as_str).unwrap_or("")))
+        .collect()
+}
+
 /// Commands Barista has installed, or an empty list when not connected.
 pub fn installed_commands(agent: HookAgent, settings: Option<&Path>) -> Vec<String> {
     let url = settings.map(Path::to_path_buf).unwrap_or_else(|| agent.default_settings());
@@ -142,7 +216,7 @@ pub fn installed_commands(agent: HookAgent, settings: Option<&Path>) -> Vec<Stri
         return Vec::new();
     };
     let mut found: Vec<String> = Vec::new();
-    for event in EVENTS {
+    for event in agent.events() {
         for (_, command) in our_entries(hooks, event) {
             if !found.contains(&command) {
                 found.push(command);
@@ -160,11 +234,17 @@ pub fn is_fully_installed(cli_path: &str, agent: HookAgent, settings: Option<&Pa
         return false;
     };
     let expected = command(cli_path, agent);
-    EVENTS.iter().all(|event| {
+    agent.events().iter().all(|event| {
         let entries = our_entries(hooks, event);
         !entries.is_empty()
             && entries.iter().all(|(group, command)| {
-                *command == expected && (!TOOL_EVENTS.contains(event) || group.get("matcher").and_then(Value::as_str) == Some("*"))
+                *command == expected
+                    && (!TOOL_EVENTS.contains(event) || group.get("matcher").and_then(Value::as_str) == Some("*"))
+                    // Hooks from 0.0.7 have no label; they still work, so they still count as connected.
+                    && our_hooks(group).iter().all(|hook| match hook.get("statusMessage") {
+                        None => true,
+                        Some(label) => label.as_str() == agent.status_message(event),
+                    })
             })
     })
 }
@@ -174,8 +254,21 @@ pub fn install(cli_path: &str, agent: HookAgent, settings: Option<&Path>) -> Res
     edit(&url, |mut root| {
         let existing = root.get("hooks").and_then(Value::as_object).cloned().unwrap_or_default();
         let mut hooks = removing_ours(&existing);
+        if agent == HookAgent::Cursor {
+            for event in CURSOR_EVENTS {
+                let mut groups = hooks.get(event).and_then(Value::as_array).cloned().unwrap_or_default();
+                groups.push(json!({"command": command(cli_path, agent), "timeout": agent.timeout(event)}));
+                hooks.insert(event.to_string(), Value::Array(groups));
+            }
+            root.entry("version").or_insert(json!(1));
+            root.insert("hooks".into(), Value::Object(hooks));
+            return Ok(Edit::Write(root));
+        }
         for event in EVENTS {
-            let entry = json!({"type": "command", "command": command(cli_path, agent), "timeout": agent.timeout(event)});
+            let mut entry = json!({"type": "command", "command": command(cli_path, agent), "timeout": agent.timeout(event)});
+            if let Some(message) = agent.status_message(event) {
+                entry["statusMessage"] = json!(message);
+            }
             let mut group = json!({"hooks": [entry]});
             if TOOL_EVENTS.contains(&event) {
                 group["matcher"] = json!("*");
@@ -183,6 +276,9 @@ pub fn install(cli_path: &str, agent: HookAgent, settings: Option<&Path>) -> Res
             let mut groups = hooks.get(event).and_then(Value::as_array).cloned().unwrap_or_default();
             groups.push(group);
             hooks.insert(event.to_string(), Value::Array(groups));
+        }
+        if agent == HookAgent::Codex && !root.contains_key("description") && root.keys().all(|key| key == "hooks") {
+            root.insert("description".into(), json!(CODEX_FILE_DESCRIPTION));
         }
         root.insert("hooks".into(), Value::Object(hooks));
         Ok(Edit::Write(root))
@@ -206,9 +302,14 @@ pub fn uninstall(agent: HookAgent, settings: Option<&Path>) -> Result<()> {
         } else {
             root.insert("hooks".into(), Value::Object(hooks));
         }
+        if root.get("description").and_then(Value::as_str) == Some(CODEX_FILE_DESCRIPTION) {
+            root.remove("description");
+        }
         // A hooks file that held only Barista's entries (as Codex's usually does) goes away entirely,
         // unless it's a symlink (a dotfiles repo's file would go with it): then it's emptied instead.
-        Ok(if root.is_empty() && whole_file && !is_link {
+        // Cursor's file keeps a "version" key; with nothing else left it's empty too.
+        let only_version = agent == HookAgent::Cursor && root.keys().all(|key| key == "version");
+        Ok(if (root.is_empty() || only_version) && whole_file && !is_link {
             Edit::Delete
         } else {
             Edit::Write(root)
@@ -254,6 +355,180 @@ fn edit(url: &Path, change: impl Fn(Map<String, Value>) -> Result<Edit>) -> Resu
     )))
 }
 
+// MARK: Status line
+
+/// Each settings file's replaced status line lives in its own backup, `statusline-chain-<KEY>.json`,
+/// so installing into one settings file never disturbs another's saved status line.
+pub const STATUSLINE_CHAIN_PREFIX: &str = "statusline-chain-";
+
+/// The first 16 hex digits of the FNV-1a 64-bit hash of `text`'s UTF-8 bytes.
+pub fn fnv1a_key(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// The settings file's resolved absolute path, as a string.
+fn resolved_path(url: &Path) -> String {
+    let resolved = resolve_symlinks(url);
+    let absolute = fs::canonicalize(&resolved)
+        .map(crate::connection::strip_verbatim)
+        .unwrap_or_else(|_| {
+            if resolved.is_absolute() {
+                resolved.clone()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(&resolved)
+            }
+        });
+    absolute.to_string_lossy().into_owned()
+}
+
+/// The backup key for a settings file.
+pub fn statusline_key(settings: &Path) -> String {
+    fnv1a_key(&resolved_path(settings))
+}
+
+fn statusline_chain_path(key: &str) -> PathBuf {
+    crate::usage::data_dir().join(format!("{STATUSLINE_CHAIN_PREFIX}{key}.json"))
+}
+
+/// The quoted CLI, as hook commands write it.
+fn quoted_cli(cli_path: &str) -> String {
+    if cfg!(windows) {
+        format!("\"{}\"", cli_path.replace('\\', "/"))
+    } else {
+        format!("'{}'", cli_path.replace('\'', "'\\''"))
+    }
+}
+
+/// Claude Code's status line command that records plan limits, chained to a saved one when `key` is set.
+pub fn statusline_command(cli_path: &str, key: Option<&str>) -> String {
+    match key {
+        Some(key) => format!("{} statusline --chain {key}", quoted_cli(cli_path)),
+        None => format!("{} statusline", quoted_cli(cli_path)),
+    }
+}
+
+fn is_key(text: &str) -> bool {
+    text.len() == 16 && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The command's `--chain` key when it's Barista's status line: Some(None) without a chain.
+fn our_statusline(command: &str) -> Option<Option<String>> {
+    if let Some(executable) = command.strip_suffix(" statusline") {
+        return is_barista_executable(executable).then_some(None);
+    }
+    let (rest, key) = command.rsplit_once(' ')?;
+    let executable = rest.strip_suffix(" statusline --chain")?;
+    (is_key(key) && is_barista_executable(executable)).then(|| Some(key.to_string()))
+}
+
+/// True for a status line command Barista wrote, with or without `--chain KEY`.
+pub fn is_our_statusline(command: &str) -> bool {
+    our_statusline(command).is_some()
+}
+
+/// The status line object saved under `key`; Err when the backup is missing or unreadable.
+pub fn statusline_chain(key: &str) -> std::result::Result<Value, String> {
+    let data = fs::read(statusline_chain_path(key)).map_err(|e| e.to_string())?;
+    let saved: Value = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
+    saved
+        .get("statusLine")
+        .cloned()
+        .filter(Value::is_object)
+        .ok_or_else(|| "it has no saved status line".to_string())
+}
+
+fn statusline_settings(settings: Option<&Path>) -> PathBuf {
+    settings
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| HookAgent::Claude.default_settings())
+}
+
+fn current_statusline(root: &Map<String, Value>) -> Option<Option<String>> {
+    root.get("statusLine")
+        .and_then(|line| line.get("command"))
+        .and_then(Value::as_str)
+        .and_then(our_statusline)
+}
+
+/// Points Claude Code's status line at `barista statusline`, saving any status line it replaces.
+pub fn statusline_install(cli_path: &str, settings: Option<&Path>) -> Result<()> {
+    let url = statusline_settings(settings);
+    edit(&url, |mut root| {
+        let line = match (current_statusline(&root), root.get("statusLine")) {
+            // Already Barista's: keep its chain (if any), refresh the CLI path.
+            (Some(key), _) => json!({"type": "command", "command": statusline_command(cli_path, key.as_deref())}),
+            (None, Some(existing)) if !existing.is_null() => {
+                // Save theirs first: it keeps running behind Barista and comes back on uninstall.
+                let path_text = resolved_path(&url);
+                let key = fnv1a_key(&path_text);
+                let path = statusline_chain_path(&key);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let saved = serde_json::to_vec_pretty(&json!({"settings": path_text, "statusLine": existing}))
+                    .map_err(|e| CoffeeError::msg(e.to_string()))?;
+                write_atomically(&path, &saved)?;
+                json!({"type": "command", "command": statusline_command(cli_path, Some(&key))})
+            }
+            _ => json!({"type": "command", "command": statusline_command(cli_path, None)}),
+        };
+        if root.get("statusLine") == Some(&line) {
+            return Ok(Edit::Keep);
+        }
+        root.insert("statusLine".into(), line);
+        Ok(Edit::Write(root))
+    })
+}
+
+/// Restores the status line Barista replaced, or removes Barista's. Refuses, leaving the settings
+/// unchanged, if a status line was saved but its backup is missing or unreadable.
+pub fn statusline_uninstall(settings: Option<&Path>) -> Result<()> {
+    let url = statusline_settings(settings);
+    if !url.exists() {
+        return Ok(());
+    }
+    let Some(key) = read(&url).ok().as_ref().and_then(current_statusline) else {
+        return Ok(());
+    };
+    let restored = match &key {
+        Some(key) => Some(statusline_chain(key).map_err(|error| {
+            CoffeeError::msg(format!(
+                "Barista’s saved copy of your own status line is missing or unreadable ({error}), so {} was left unchanged. Its .barista-backup copy still holds the original.",
+                url.display()
+            ))
+        })?),
+        None => None,
+    };
+    edit(&url, |mut root| {
+        if current_statusline(&root).is_none() {
+            return Ok(Edit::Keep);
+        }
+        match &restored {
+            Some(line) => root.insert("statusLine".into(), line.clone()),
+            None => root.remove("statusLine"),
+        };
+        Ok(Edit::Write(root))
+    })?;
+    if let Some(key) = key {
+        let _ = fs::remove_file(statusline_chain_path(&key));
+    }
+    Ok(())
+}
+
+/// "Connected", "Connected (in front of your own status line)", or "Not connected".
+pub fn statusline_status(settings: Option<&Path>) -> &'static str {
+    match read(&statusline_settings(settings)).ok().as_ref().and_then(current_statusline) {
+        None => "Not connected",
+        Some(Some(_)) => "Connected (in front of your own status line)",
+        Some(None) => "Connected",
+    }
+}
+
 /// Only dedicated hook files may be deleted; a general settings file (Claude's) is kept.
 fn owns_whole_file(url: &Path) -> bool {
     url.file_name().and_then(|n| n.to_str()) == Some("hooks.json")
@@ -267,7 +542,9 @@ fn removing_ours(hooks: &Map<String, Value>) -> Map<String, Value> {
             .iter()
             .filter_map(|group| {
                 let Some(entries) = group.get("hooks").and_then(Value::as_array) else {
-                    return Some(group.clone());
+                    // A flat entry (Cursor's shape) is itself a hook.
+                    let ours = group.get("command").and_then(Value::as_str).is_some_and(is_ours);
+                    return (!ours).then(|| group.clone());
                 };
                 let remaining: Vec<Value> = entries
                     .iter()
@@ -437,6 +714,15 @@ pub struct AgentHook {
 pub const HOOK_TTL: f64 = 1200.0;
 pub const HOOK_HARD_CAP: f64 = 28800.0;
 
+/// The last component of a path, ignoring trailing separators.
+fn folder_name(path: &str) -> String {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
 impl AgentHook {
     pub fn run(&self) {
         // Read everything: a large tool input or output cut short would fail to parse and skip the renewal.
@@ -448,10 +734,58 @@ impl AgentHook {
             .and_then(|e| e.get("hook_event_name"))
             .and_then(Value::as_str)
             .map(String::from);
+        if self.agent == HookAgent::Cursor {
+            self.handle_cursor(event.as_ref(), name.as_deref());
+            // Cursor reads JSON from every hook; a prompt hook must say whether to continue.
+            if name.as_deref() == Some("beforeSubmitPrompt") {
+                println!("{{\"continue\":true}}");
+            } else {
+                println!("{{}}");
+            }
+            return;
+        }
         self.handle(event.as_ref(), name.as_deref());
         // Codex requires JSON on stdout from Stop hooks; an empty object means "carry on".
         if self.agent == HookAgent::Codex && name.as_deref() == Some("Stop") {
             println!("{{}}");
+        }
+    }
+
+    /// Cursor sends `conversation_id`, `generation_id`, `model`, and `workspace_roots`. Prompts and
+    /// stops are recorded for usage tracking even when Barista isn't running.
+    fn handle_cursor(&self, event: Option<&Value>, name: Option<&str>) {
+        let (Some(event), Some(name)) = (event, name) else { return };
+        let Some(conversation) = event.get("conversation_id").and_then(Value::as_str) else {
+            return;
+        };
+        let text = |key: &str| event.get(key).and_then(Value::as_str).filter(|v| !v.is_empty());
+        let generation = text("generation_id").unwrap_or("");
+        match name {
+            "beforeSubmitPrompt" => crate::usage::record_cursor("prompt", conversation, generation, text("model"), None),
+            "stop" => crate::usage::record_cursor("stop", conversation, generation, text("model"), text("status")),
+            _ => {}
+        }
+        let Some(key) = HookLeaseStore::key(&format!("cursor-{conversation}")) else {
+            return;
+        };
+        let store = HookLeaseStore::new(&self.socket_path);
+        let folder = event
+            .get("workspace_roots")
+            .and_then(Value::as_array)
+            .and_then(|roots| roots.first())
+            .and_then(Value::as_str)
+            .map(folder_name)
+            .unwrap_or_default();
+        let title = if folder.is_empty() {
+            "Cursor".to_string()
+        } else {
+            format!("Cursor · {}", folder.chars().take(80).collect::<String>())
+        };
+        match name {
+            "beforeSubmitPrompt" => self.ensure(&key, &store, &title, true),
+            "postToolUse" | "afterAgentResponse" => self.ensure(&key, &store, &title, false),
+            "stop" | "sessionEnd" => self.release(&key, &store),
+            _ => {}
         }
     }
 
@@ -468,17 +802,7 @@ impl AgentHook {
         };
         let Some(key) = HookLeaseStore::key(&raw) else { return };
         let store = HookLeaseStore::new(&self.socket_path);
-        let folder = event
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(|cwd| {
-                cwd.trim_end_matches(['/', '\\'])
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .unwrap_or("")
-                    .to_string()
-            })
-            .unwrap_or_default();
+        let folder = event.get("cwd").and_then(Value::as_str).map(folder_name).unwrap_or_default();
         let title = if folder.is_empty() {
             self.agent.display_name().to_string()
         } else {
@@ -688,6 +1012,11 @@ mod tests {
         assert!(is_ours("\"C:\\Program Files\\Barista\\barista.exe\" hook --agent codex"));
         assert!(is_ours("barista hook"));
         assert!(is_ours("/usr/bin/barista hook"));
+        assert!(is_ours(
+            "& \"C:/Users/me/AppData/Local/Programs/Barista/barista.exe\" hook --agent cursor"
+        ));
+        assert!(is_ours(&command("/opt/barista", HookAgent::Cursor)));
+        assert!(!is_ours("& echo barista hook --agent cursor"));
         assert!(!is_ours("echo barista hook"));
         assert!(!is_ours("say done"));
         assert!(!is_ours("bin/barista hook"), "relative paths aren't ours");
@@ -715,6 +1044,72 @@ mod tests {
         let after: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
         assert_eq!(after, original);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn codex_hooks_are_labeled_and_cleaned_up() {
+        let directory = std::env::temp_dir().join(format!("barista-codex-{}", new_id()));
+        fs::create_dir_all(&directory).unwrap();
+        let settings = directory.join("hooks.json");
+        install("/opt/barista", HookAgent::Codex, Some(&settings)).unwrap();
+        let root: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(root["description"], json!(CODEX_FILE_DESCRIPTION));
+        assert_eq!(
+            root["hooks"]["SessionEnd"][0]["hooks"][0]["statusMessage"],
+            json!("Barista: end this conversation\u{2019}s awake session")
+        );
+        assert!(is_fully_installed("/opt/barista", HookAgent::Codex, Some(&settings)));
+        // A 0.0.7 install without messages still works, so it still counts as connected...
+        let mut old = root.clone();
+        old["hooks"]["Stop"][0]["hooks"][0].as_object_mut().unwrap().remove("statusMessage");
+        fs::write(&settings, old.to_string()).unwrap();
+        assert!(is_fully_installed("/opt/barista", HookAgent::Codex, Some(&settings)));
+        // ...but a different label means another copy wrote it.
+        old["hooks"]["Stop"][0]["hooks"][0]["statusMessage"] = json!("something else");
+        fs::write(&settings, old.to_string()).unwrap();
+        assert!(!is_fully_installed("/opt/barista", HookAgent::Codex, Some(&settings)));
+        // The user's own hook keeps the file, but Barista's description goes.
+        let user = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "notify-send done"}]}]}});
+        fs::write(&settings, user.to_string()).unwrap();
+        install("/opt/barista", HookAgent::Codex, Some(&settings)).unwrap();
+        uninstall(HookAgent::Codex, Some(&settings)).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(&settings).unwrap()).unwrap(), user);
+        fs::remove_file(&settings).unwrap();
+        install("/opt/barista", HookAgent::Codex, Some(&settings)).unwrap();
+        uninstall(HookAgent::Codex, Some(&settings)).unwrap();
+        assert!(!settings.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn powershell_commands_quote_literally() {
+        // What `command()` writes for Cursor on Windows: nothing in a literal string expands.
+        let path = "C:/Users/o'neil/$(evil)/`x/barista.exe";
+        let quoted = format!("& '{}' hook --agent cursor", path.replace('\'', "''"));
+        assert_eq!(quoted, "& 'C:/Users/o''neil/$(evil)/`x/barista.exe' hook --agent cursor");
+        assert!(is_ours(&quoted));
+        assert!(is_ours("& \"C:/Program Files/Barista/barista.exe\" hook --agent cursor"));
+        assert!(
+            !is_ours("& 'C:/a'b/barista.exe' hook --agent cursor"),
+            "a lone apostrophe isn't a literal string"
+        );
+        assert!(!is_ours("& 'C:/x/not-barista.exe' hook --agent cursor"));
+        if cfg!(windows) {
+            assert_eq!(command(path, HookAgent::Cursor), quoted);
+        }
+    }
+
+    #[test]
+    fn status_line_commands_and_keys() {
+        assert_eq!(fnv1a_key(""), "cbf29ce484222325");
+        assert_eq!(fnv1a_key("a"), "af63dc4c8601ec8c");
+        let plain = statusline_command("/opt/barista", None);
+        let chained = statusline_command("/opt/barista", Some("0123456789abcdef"));
+        assert!(is_our_statusline(&plain) && is_our_statusline(&chained));
+        assert_eq!(our_statusline(&chained), Some(Some("0123456789abcdef".to_string())));
+        assert_eq!(our_statusline(&plain), Some(None));
+        assert!(!is_our_statusline("'/opt/barista' statusline --chain nothex"));
+        assert!(!is_our_statusline("echo hi"));
     }
 
     #[test]

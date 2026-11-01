@@ -1,0 +1,24 @@
+{
+  "comment": "barista usage --period all --json, with HOME=Tests/fixtures/usage/home and BARISTA_DATA_DIR holding Tests/fixtures/usage/data. See docs/USAGE.md.",
+  "totalTokens": 6747,
+  "estimatedCost": 0.024278,
+  "agents": {
+    "claude": {"sessions": 2, "requests": 4, "turns": 0, "activeSeconds": 0, "inputTokens": 36, "outputTokens": 351,
+               "cacheReadTokens": 1000, "cacheWriteTokens": 2100, "totalTokens": 3487, "unpricedTokens": 2, "estimatedCost": 0.021338,
+               "models": [
+                 {"model": "claude-opus-5-5", "sessions": 1, "requests": 1, "totalTokens": 3110, "unpricedTokens": 0, "estimatedCost": 0.01824},
+                 {"model": "claude-sonnet-4-5-20250929", "sessions": 1, "requests": 1, "totalTokens": 220, "unpricedTokens": 0, "estimatedCost": 0.00306},
+                 {"model": "claude-haiku-5-5", "sessions": 1, "requests": 1, "totalTokens": 155, "unpricedTokens": 0, "estimatedCost": 0.000038},
+                 {"model": "claude-test-unpriced", "sessions": 1, "requests": 1, "totalTokens": 2, "unpricedTokens": 2, "estimatedCost": null}]},
+    "codex": {"sessions": 1, "requests": 3, "turns": 0, "activeSeconds": 0, "inputTokens": 700, "outputTokens": 160,
+              "cacheReadTokens": 2400, "cacheWriteTokens": 0, "totalTokens": 3260, "unpricedTokens": 110, "estimatedCost": 0.00294,
+              "models": [
+                {"model": "gpt-6.1-sol", "sessions": 1, "requests": 2, "totalTokens": 3150, "unpricedTokens": 0, "estimatedCost": 0.00294},
+                {"model": "codex-auto-review", "sessions": 1, "requests": 1, "totalTokens": 110, "unpricedTokens": 110, "estimatedCost": null}]},
+    "cursor": {"sessions": 2, "requests": 0, "turns": 2, "activeSeconds": 330, "inputTokens": 0, "outputTokens": 0,
+               "cacheReadTokens": 0, "cacheWriteTokens": 0, "totalTokens": 0, "unpricedTokens": 0, "estimatedCost": null,
+               "models": [
+                 {"model": "claude-4.5-sonnet", "sessions": 1, "turns": 1, "totalTokens": 0, "estimatedCost": null},
+                 {"model": "unknown", "sessions": 1, "turns": 1, "totalTokens": 0, "estimatedCost": null}]}
+  }
+}

@@ -38,7 +38,37 @@ final class AppRuntime: ObservableObject {
     var onAppearanceChange: (() -> Void)?
     var onShowPanel: (() -> Void)?
     var onShowSettings: (() -> Void)?
+    var onShowUsage: (() -> Void)?
+    /// "Claude 24% · ChatGPT 6%": each plan's most-used current window, for the panel.
+    var limitsSummary: String? {
+        let parts = (usage?.limits ?? []).compactMap { plan -> String? in
+            guard plan.available, let top = plan.windows.max(by: { $0.usedPercent < $1.usedPercent }) else { return nil }
+            let name = plan.agent == .claude ? "Claude" : plan.agent == .codex ? "ChatGPT" : plan.name
+            return "\(name) \(Int(top.usedPercent.rounded()))%"
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
     @Published private(set) var agentStatus: [HookAgent: AgentStatus] = [:]
+    /// Today, this week, and this month, from local agent logs. Computed off the main thread.
+    @Published private(set) var usage: UsageReport?
+    @Published private(set) var isRefreshingUsage = false
+    private var usageTimer: Timer?
+    /// Apps without hooks that Barista keeps the Mac awake for while they're busy (Cowork, ChatGPT).
+    private var activityTimer: Timer?
+    private var activityTrackers: [String: ActivityTracker] = [:]
+    private var activityLeases: [String: String] = [:]
+    /// When each app's current burst of activity began: the 8-hour cap covers the burst, not each session.
+    private var activityBurstStart: [String: Date] = [:]
+    /// Apps whose session you stopped: they wait for a quiet spell before starting another.
+    private var activityStopped: Set<String> = []
+    private var isSamplingActivity = false
+    func watches(_ app: WatchedApp) -> Bool { defaults.object(forKey: "watch.\(app.id)") as? Bool ?? true }
+    func setWatches(_ app: WatchedApp, _ enabled: Bool) {
+        defaults.set(enabled, forKey: "watch.\(app.id)")
+        if !enabled, let id = activityLeases.removeValue(forKey: app.id) { session.cancel(id: id) }
+        if !enabled { activityBurstStart[app.id] = nil; activityTrackers[app.id] = nil }
+        objectWillChange.send()
+    }
     @Published var checksForUpdates: Bool { didSet { defaults.set(checksForUpdates, forKey: "checksForUpdates"); scheduleUpdateChecks() } }
     @Published private(set) var availableUpdate: AvailableUpdate?
     @Published private(set) var updateStatus: String?
@@ -139,6 +169,90 @@ final class AppRuntime: ObservableObject {
         refreshAgentStatus()
         scheduleUpdateChecks()
         refreshPermissions()
+        refreshUsage()
+        let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }
+        timer.tolerance = 30
+        RunLoop.main.add(timer, forMode: .common)
+        usageTimer = timer
+        let activity = Timer(timeInterval: ActivityPolicy.sampleInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sampleActivity() }
+        }
+        activity.tolerance = 2
+        RunLoop.main.add(activity, forMode: .common)
+        activityTimer = activity
+    }
+
+    /// Samples watched apps' CPU off the main thread, then starts, renews, or lets lapse their sessions.
+    private func sampleActivity() {
+        let apps = WatchedApp.all.filter { watches($0) }
+        guard !apps.isEmpty, !isSamplingActivity else { return }
+        isSamplingActivity = true
+        Task.detached(priority: .utility) {
+            let table = ProcessTable.snapshot()
+            let trees = apps.map { app in (app, ProcessTable.tree(of: app, in: table)) }
+            let now = Date()
+            await MainActor.run {
+                self.isSamplingActivity = false
+                for (app, tree) in trees { self.update(app, root: tree.root, cpu: tree.members, now: now) }
+            }
+        }
+    }
+
+    private func update(_ app: WatchedApp, root: Int32?, cpu: [Int32: Double], now: Date) {
+        // Turned off while this sample was being taken: never start (or keep) a session for it.
+        guard watches(app) else {
+            if let id = activityLeases.removeValue(forKey: app.id) { session.cancel(id: id) }
+            activityTrackers[app.id] = nil
+            activityBurstStart[app.id] = nil
+            activityStopped.remove(app.id)
+            return
+        }
+        var tracker = activityTrackers[app.id] ?? ActivityTracker()
+        let busy = tracker.record(cpu, at: now)
+        activityTrackers[app.id] = tracker
+        // A burst ends after a quiet spell, or when the app isn't running.
+        let quiet = root == nil || (!busy && now.timeIntervalSince(tracker.lastBusy ?? .distantPast) >= ActivityPolicy.quietBeforeRestart)
+        if quiet { activityBurstStart[app.id] = nil }
+        if let id = activityLeases[app.id], !session.sessions.contains(where: { $0.id == id }) {
+            // Ended. If you stopped it (or battery protection did), don't restart it during this burst.
+            let reason = session.history.first { $0.id == id }?.reason
+            if reason != .expired && reason != .processExited { activityStopped.insert(app.id) }
+            activityLeases[app.id] = nil
+        }
+        if activityStopped.contains(app.id) {
+            if quiet { activityStopped.remove(app.id) }
+            return
+        }
+        guard busy, let root else { return }
+        let burstStart = activityBurstStart[app.id] ?? now
+        activityBurstStart[app.id] = burstStart
+        if let id = activityLeases[app.id] {
+            session.renew(id: id, seconds: ActivityPolicy.lease)
+            return
+        }
+        // A new session within a long burst gets only what's left of the burst's 8 hours.
+        let remaining = ActivityPolicy.hardCap - now.timeIntervalSince(burstStart)
+        guard remaining > 1 else {
+            activityStopped.insert(app.id)
+            return
+        }
+        if let lease = try? session.acquire(title: app.title, source: .application, duration: min(ActivityPolicy.lease, remaining),
+                                            display: false, processID: root, maxDuration: remaining) {
+            activityLeases[app.id] = lease.id
+        }
+    }
+    /// Re-reads agent logs in the background (skipped if a refresh ran in the last minute, unless forced).
+    func refreshUsage(force: Bool = false) {
+        guard !isRefreshingUsage else { return }
+        if !force, let usage, Date().timeIntervalSince(usage.generatedAt) < 60 { return }
+        isRefreshingUsage = true
+        Task.detached(priority: .utility) {
+            let report = UsageStore.report(periods: [.today, .week, .month])
+            await MainActor.run {
+                self.usage = report
+                self.isRefreshingUsage = false
+            }
+        }
     }
     func shutdown() {
         session.stop(reason: .appQuit)
@@ -248,6 +362,14 @@ final class AppRuntime: ObservableObject {
         return String(decoding: data, as: UTF8.self)
     }
     func status(of agent: HookAgent) -> AgentStatus { agentStatus[agent] ?? .notFound }
+    /// Adds Barista's status line to Claude Code (keeping any existing one in front of it).
+    func addClaudeStatusLine() {
+        do {
+            try ClaudeStatusLine.install(cliPath: cliPath)
+            notice = "Added to Claude Code’s status line. Your Claude limits appear here after Claude Code’s next reply."
+        } catch { notice = "Couldn’t update Claude Code settings: \(error.localizedDescription)" }
+        objectWillChange.send()
+    }
     func refreshAgentStatus() {
         for agent in HookAgent.allCases {
             if !AgentHooks.installedCommands(agent: agent).isEmpty {
@@ -266,7 +388,10 @@ final class AppRuntime: ObservableObject {
         let agents = agentsToSuggest
         for agent in agents { setConnected(agent, true) }
         if agents.count > 1 {
-            notice = "Claude Code and Codex connected. One step left for Codex: type /hooks in Codex and trust Barista’s hooks."
+            let names = ListFormatter.localizedString(byJoining: agents.map(\.displayName))
+            notice = agents.contains(.codex)
+                ? "\(names) connected. One step left for Codex: type /hooks in Codex and trust Barista’s hooks."
+                : "\(names) connected."
         }
     }
     func dismissAgentSuggestion() {
@@ -277,12 +402,17 @@ final class AppRuntime: ObservableObject {
         do {
             if connected {
                 try AgentHooks.install(cliPath: cliPath, agent: agent)
+                // Claude Code reports your plan limits only to its status line.
+                if agent == .claude { try ClaudeStatusLine.install(cliPath: cliPath) }
                 if !agentAccess { agentAccess = true }
-                notice = agent == .claude
-                    ? "Claude Code connected. New prompts keep your Mac awake until Claude finishes."
-                    : "Codex connected. One more step: Codex runs new hooks only after you trust them. In Codex, type /hooks and trust Barista’s hooks. Until then, Codex won’t keep your Mac awake."
+                switch agent {
+                case .claude: notice = "Claude Code connected. New prompts keep your Mac awake until Claude finishes."
+                case .codex: notice = "Codex connected. One more step: Codex runs new hooks only after you trust them. In Codex, type /hooks and trust Barista’s hooks. Until then, Codex won’t keep your Mac awake."
+                case .cursor: notice = "Cursor connected. Its agent keeps your Mac awake while it works, and its turns appear under Usage."
+                }
             } else {
                 try AgentHooks.uninstall(agent: agent)
+                if agent == .claude { try ClaudeStatusLine.uninstall() }
                 notice = "\(agent.displayName) disconnected."
             }
         } catch { notice = "Couldn’t update \(agent.displayName) settings: \(error.localizedDescription)" }

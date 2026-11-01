@@ -39,7 +39,7 @@ Each conversation (`session_id`) gets its own lease, tied to the Claude Code pro
 
 ## Codex hooks (ChatGPT and the Codex CLI)
 
-In the app choose **Settings → Agents → ChatGPT Codex → Connect**, or run `barista hooks install --agent codex`. This writes the same five events to `~/.codex/hooks.json` with the command `barista hook --agent codex` (10-second timeout; 3 seconds for `SessionEnd`, Codex’s maximum).
+In the app choose **Settings → Agents → ChatGPT Codex → Connect**, or run `barista hooks install --agent codex`. This writes the same five events to `~/.codex/hooks.json` with the command `barista hook --agent codex`. Each entry has a `statusMessage`, which Codex shows while the hook runs and uses to title it in its review list (otherwise it shows just “Hook 1”…“Hook 5”): `UserPromptSubmit` “Barista: keep this computer awake while Codex works”, `PreToolUse` “Barista: keep the computer awake during this tool call”, `PostToolUse` “Barista: renew the awake session after this tool call”, `Stop` “Barista: let the computer sleep now that Codex is done”, `SessionEnd` “Barista: end this conversation’s awake session”. When Barista creates the file it also sets the top-level `description` to “Barista keeps this computer awake while Codex works, then lets it sleep. https://github.com/cb-117/barista”, and removes exactly that description when disconnecting. Hooks written by 0.0.7 (without these messages) still count as connected; reconnecting or `barista setup` adds the labels, after which Codex asks you to review them once (10-second timeout; 3 seconds for `SessionEnd`, Codex’s maximum).
 
 Codex runs new or changed hooks only after you trust them: type `/hooks` in Codex and trust Barista’s hooks once. Until then Codex skips them silently and doesn’t keep the Mac awake. Barista never trusts its own hooks for you.
 
@@ -50,6 +50,25 @@ Differences from Claude Code:
 - Codex runs `SessionEnd` when a conversation is archived, deleted, Codex quits, or it’s idle for 30 minutes.
 
 Disconnecting removes Barista’s entries, and deletes `hooks.json` if nothing else is left in it.
+
+## Cowork and the ChatGPT app
+
+The Claude desktop app (Cowork, and anything else it runs) and the ChatGPT desktop app have no hooks Barista can connect to, so Barista watches how busy they are. Each can be turned off in Settings (the tray menu on Windows); both are on by default. Neither app exists for Linux.
+
+- Every 10 seconds Barista sums the CPU time of the app's main process (macOS: `Claude.app/Contents/MacOS/Claude`, `ChatGPT.app/Contents/MacOS/ChatGPT`; Windows: `claude.exe` under an `AnthropicClaude` folder, `ChatGPT.exe`), all its descendants, and, on macOS, every process macOS reports the app as responsible for (this includes Cowork's VM).
+- The app is **busy** when that adds up to at least 10% of one core over the last 30 seconds (idle, both apps use about 1–2%). Processes that started since the previous sample count from zero.
+- While busy, Barista holds an app-owned session titled “Claude app” or “ChatGPT app” (display allowed to sleep, tied to the app's process, 8-hour cap) and renews it to 5 minutes from each busy sample, so pauses while the agent waits on the server don't let the computer sleep. It lapses on its own 5 minutes after the app goes quiet, and ends when the app quits.
+- If you stop that session (or battery protection does), Barista doesn't start another until the app has been quiet for 2 minutes.
+- The 8-hour cap covers the whole burst of activity, not each session: when it's reached, Barista waits for 2 quiet minutes before starting again. Turning an app off cancels its session and discards any sample in progress.
+- Agent work in the ChatGPT app runs on Codex, so Codex's hooks (below) also cover it and its tokens appear under Codex in usage. Busy-watching adds keep-awake for everything else the app does.
+
+## Cursor hooks
+
+`barista hooks install --agent cursor` (or **Settings → Agents → Cursor → Connect**) writes `beforeSubmitPrompt`, `postToolUse`, `afterAgentResponse`, `stop`, and `sessionEnd` hooks to `~/.cursor/hooks.json` with the command `barista hook --agent cursor`. A prompt acquires the conversation's lease (titled “Cursor · <folder>”), tool calls and replies renew it under the same rules as Claude's tool events, and `stop` or `sessionEnd` releases it. The hook prints `{"continue":true}` for `beforeSubmitPrompt` and `{}` otherwise, always exits 0, and appends each prompt and stop (time, conversation and generation IDs, model, status; never prompt text) to `cursor-usage.jsonl` for usage tracking. Uninstalling removes only Barista's entries.
+
+## Usage
+
+`barista usage [--period today|week|month|all] [--json]` and the MCP tool `barista_usage` (`period`, default `week`) report sessions, requests, and tokens per agent and model, with costs estimated at API list prices. They read local logs in the calling process and never need the app. The JSON shape and counting rules are in [USAGE.md](USAGE.md). Treat costs as estimates, not a bill.
 
 ## MCP setup
 
@@ -78,6 +97,7 @@ Tools:
 | `barista_extend` | Add `seconds` to a live session within its original hard limit. |
 | `barista_release` | Release your own ID. Repeated release is safe. |
 | `barista_history` | Read the last 20 local completion summaries. |
+| `barista_usage` | Sessions, requests, and tokens per agent and model for `today`, `week` (default), `month`, or `all`, with estimated API-price costs. |
 
 **Agent behavior:** acquire only for active work that needs the Mac awake. Keep the returned ID. Heartbeat well before expiry (for example every 60 seconds for a 300-second lease). Release on success, failure, cancellation, or when waiting for user input. Do not stop another owner’s session. If your lease disappears because the user stopped it or battery protection ended it, do not automatically reacquire to override that choice. If work legitimately needs a new session, let the user initiate or authorize that work.
 

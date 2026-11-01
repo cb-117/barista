@@ -51,6 +51,18 @@ struct CoffeeSettingsView: View {
             Section {
                 agentRow(.claude)
                 agentRow(.codex)
+                agentRow(.cursor)
+                ForEach(WatchedApp.all.filter(\.isInstalled), id: \.id) { app in
+                    Toggle(isOn: Binding(get: { runtime.watches(app) }, set: { runtime.setWatches(app, $0) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(app == .cowork ? "Claude app (Cowork)" : "ChatGPT app")
+                            Text(app == .cowork
+                                 ? "Awake while Cowork, or anything else in the Claude app, is working."
+                                 : "Awake while the ChatGPT app is working, including tasks it runs on this Mac.")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
                 Toggle("Allow local CLI and MCP access", isOn: $runtime.agentAccess)
                 HStack {
                     Button("Copy CLI path") { runtime.copy(runtime.cliPath, message: "CLI path copied. Run it with help to see commands.") }
@@ -61,9 +73,14 @@ struct CoffeeSettingsView: View {
                     }
                 }
             } header: { Text("Agents") } footer: {
-                Text("Everything stays on this Mac. No network port or account. Codex asks you to trust new hooks once: type /hooks in Codex.")
+                Text("Everything stays on this Mac. No network port or account. Codex asks you to trust new hooks once: type /hooks in Codex. The Claude and ChatGPT apps have no hooks, so Barista watches how busy they are and keeps the Mac awake until they’ve been quiet for 5 minutes.")
             }
 
+            Section {
+                Button("Open Usage & Limits…") { runtime.onShowUsage?() }
+            } header: { Text("Usage & limits") } footer: {
+                Text("Your Claude and ChatGPT plan limits, and tokens per agent, in one window.")
+            }
             Section {
                 Toggle("Check for updates automatically", isOn: $runtime.checksForUpdates)
                 HStack {
@@ -114,7 +131,7 @@ struct CoffeeSettingsView: View {
         .formStyle(.grouped)
         .onAppear { runtime.refreshPermissions() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in runtime.refreshPermissions() }
-        .frame(width: 460, height: 720)
+        .frame(width: 460, height: 760)
         .tint(CoffeeTheme.accent)
         .onAppear { runtime.refreshAgentStatus() }
     }
@@ -123,7 +140,7 @@ struct CoffeeSettingsView: View {
         let status = runtime.status(of: agent)
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(agent == .claude ? "Claude Code" : "ChatGPT Codex")
+                Text(agent == .codex ? "ChatGPT Codex" : agent.displayName)
                 Text(agentDetail(agent, status)).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -146,6 +163,9 @@ struct CoffeeSettingsView: View {
         case (_, .moved): "The connection is incomplete or points to an older copy. Reconnect to repair it."
         case (.claude, .disconnected): "Adds hooks to ~/.claude/settings.json. No MCP setup needed."
         case (.codex, .disconnected): "Adds hooks to ~/.codex/hooks.json for Codex in ChatGPT and the Codex CLI."
+        case (.cursor, .connected): "Awake while Cursor’s agent works, and its turns appear under Usage."
+        case (.cursor, .disconnected): "Adds hooks to ~/.cursor/hooks.json. Cursor picks them up on its own."
+        case (.cursor, .notFound): "Cursor isn’t set up for this user."
         case (.claude, .notFound): "Claude Code isn’t installed for this user."
         case (.codex, .notFound): "Codex isn’t set up for this user. Open Codex in ChatGPT once, then connect."
         }

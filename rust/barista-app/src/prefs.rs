@@ -17,6 +17,9 @@ pub struct Prefs {
     pub launch_at_login_choice_made: bool,
     /// Your last timer, in seconds; -1 means "until stopped".
     pub last_session_seconds: f64,
+    /// Keep awake while the Claude app (Cowork) or the ChatGPT app is busy.
+    pub watch_cowork: bool,
+    pub watch_chatgpt: bool,
 }
 
 impl Default for Prefs {
@@ -32,6 +35,8 @@ impl Default for Prefs {
             dismissed_update: None,
             launch_at_login_choice_made: false,
             last_session_seconds: 1800.0,
+            watch_cowork: true,
+            watch_chatgpt: true,
         }
     }
 }

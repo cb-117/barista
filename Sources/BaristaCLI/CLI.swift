@@ -17,7 +17,7 @@ struct Options {
             arguments = Array(arguments[..<separator])
         }
         let booleanFlags: Set<String> = ["--json", "--display", "--all", "--no-launch"]
-        let valueFlags: Set<String> = ["--socket", "--name", "--minutes", "--seconds", "--ttl", "--max-awake", "--pid", "--progress", "--message", "--settings", "--agent"]
+        let valueFlags: Set<String> = ["--socket", "--name", "--minutes", "--seconds", "--ttl", "--max-awake", "--pid", "--progress", "--message", "--settings", "--agent", "--period", "--chain"]
         var index = 0
         while index < arguments.count {
             let token = arguments[index]
@@ -122,6 +122,47 @@ struct CoffeeCLI {
                 MCPServer(connection: connection).run()
                 return
             }
+            if options.command == "usage" {
+                // Reads local logs directly; never needs the app.
+                try options.validate(values: ["--period"])
+                var periods: [UsagePeriod] = [.today, .week, .month]
+                if let name = options.values["--period"] {
+                    guard let period = UsagePeriod(rawValue: name) else { throw CoffeeError.message("--period must be today, week, month, or all.") }
+                    periods = [period]
+                }
+                let report = UsageStore.report(periods: periods)
+                print(options.flags.contains("--json") ? report.json() : report.text(detailed: options.values["--period"] != nil))
+                return
+            }
+            if options.command == "statusline" {
+                if let action = options.positionals.first {
+                    try options.validate(values: ["--settings"], positionalCount: 1)
+                    let url = options.values["--settings"].map { URL(fileURLWithPath: $0) }
+                    let path = (url ?? HookAgent.claude.defaultSettingsURL).path
+                    switch action {
+                    case "install":
+                        let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+                        try ClaudeStatusLine.install(cliPath: cli, settings: url)
+                        print("Added Claude plan limits to Claude Code’s status line: \(path)")
+                        if ClaudeStatusLine.status(settings: url) == .chained { print("Your own status line still shows; Barista runs it.") }
+                    case "uninstall":
+                        try ClaudeStatusLine.uninstall(settings: url)
+                        print("Removed Barista from Claude Code’s status line: \(path)")
+                    case "status":
+                        switch ClaudeStatusLine.status(settings: url) {
+                        case .connected: print("Connected")
+                        case .chained: print("Connected (in front of your own status line)")
+                        case .notConnected: print("Not connected")
+                        }
+                    default: throw CoffeeError.message("Use: barista statusline install|uninstall|status [--settings PATH]")
+                    }
+                    return
+                }
+                // Run by Claude Code as its status line: never fail, never block it.
+                try? options.validate(values: ["--chain"])
+                StatusLine.run(chain: options.values["--chain"])
+                exit(0)
+            }
             if options.command == "hook-wait" {
                 // Spawned by the Stop hook; detached, silent, and never fails loudly.
                 try? options.validate()
@@ -145,7 +186,7 @@ struct CoffeeCLI {
                 let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
                 let agents: [HookAgent]
                 if let name = options.values["--agent"] {
-                    guard let agent = HookAgent(rawValue: name) else { throw CoffeeError.message("--agent must be claude or codex.") }
+                    guard let agent = HookAgent(rawValue: name) else { throw CoffeeError.message("--agent must be claude, codex, or cursor.") }
                     agents = [agent]
                 } else {
                     agents = HookAgent.allCases.filter(\.isInstalled)
@@ -154,7 +195,11 @@ struct CoffeeCLI {
                     try AgentHooks.install(cliPath: cli, agent: agent)
                     print("Connected \(agent.displayName) (\(agent.defaultSettingsURL.path))")
                 }
-                if agents.isEmpty { print("No Claude Code or Codex setup found for this user. Run barista setup again after using one of them.") }
+                if agents.contains(.claude) {
+                    try ClaudeStatusLine.install(cliPath: cli)
+                    print("Added Claude plan limits to Claude Code’s status line")
+                }
+                if agents.isEmpty { print("No Claude Code, Codex, or Cursor setup found for this user. Run barista setup again after using one of them.") }
                 let state = try connection.send(ControlRequest(action: .status)).state
                 print("Barista \(state?.version ?? BaristaVersion.current) is running in the menu bar (the coffee cup).")
                 if agents.contains(.codex) {
@@ -165,7 +210,7 @@ struct CoffeeCLI {
             if options.command == "hooks" {
                 try options.validate(values: ["--settings", "--agent"], positionalCount: 1)
                 guard let agent = HookAgent(rawValue: options.values["--agent"] ?? "claude") else {
-                    throw CoffeeError.message("--agent must be claude or codex.")
+                    throw CoffeeError.message("--agent must be claude, codex, or cursor.")
                 }
                 let url = options.values["--settings"].map { URL(fileURLWithPath: $0) } ?? agent.defaultSettingsURL
                 let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
@@ -181,8 +226,8 @@ struct CoffeeCLI {
                     let commands = AgentHooks.installedCommands(agent: agent, settings: url)
                     if commands.isEmpty { print("Not connected") }
                     else if AgentHooks.isFullyInstalled(cliPath: cli, agent: agent, settings: url) { print("Connected: \(commands.joined(separator: ", "))") }
-                    else { print("Needs repair (incomplete or another copy): run barista hooks install\(agent == .codex ? " --agent codex" : "")") }
-                default: throw CoffeeError.message("Use: barista hooks install|uninstall|status [--agent claude|codex] [--settings PATH]")
+                    else { print("Needs repair (incomplete or another copy): run barista hooks install\(agent == .claude ? "" : " --agent \(agent.rawValue)")") }
+                default: throw CoffeeError.message("Use: barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]")
                 }
                 return
             }
@@ -356,8 +401,10 @@ struct CoffeeCLI {
     barista history [--json]
     barista run [--name "Build"] [--display] [--max-awake 28800] -- COMMAND [ARG ...]
     barista mcp
-    barista hooks install|uninstall|status [--agent claude|codex] [--settings PATH]
-    barista setup [--agent claude|codex]
+    barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]
+    barista setup [--agent claude|codex|cursor]
+    barista usage [--period today|week|month|all] [--json]
+    barista statusline install|uninstall|status [--settings PATH]
     barista version
 
     Agent sessions default to screen-off-friendly, expire after 5 minutes without renewal,
@@ -366,7 +413,11 @@ struct CoffeeCLI {
     and releases its own session on completion. Other sessions remain active.
     Stopping a session never terminates the underlying command.
 
-    setup connects every agent it finds (Claude Code, Codex) and starts Barista.
+    setup connects every agent it finds (Claude Code, Codex, Cursor) and starts Barista.
+    usage reports plan limits, then sessions and tokens per agent and model from local logs,
+    with costs estimated at API list prices (not what a subscription charges).
+    statusline install makes Claude Code's status line show (and Barista record) your Claude
+    plan limits; an existing status line keeps working.
     hooks install connects Claude Code (or Codex with --agent codex, which then asks you to
     trust the hooks once with /hooks): prompts start a session, tool calls renew it,
     and the session ends when Claude finishes its turn or exits (or, if Claude left
@@ -390,6 +441,12 @@ struct AgentHook {
         let input = FileHandle.standardInput.readDataToEndOfFile()
         let event = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any]
         let name = event?["hook_event_name"] as? String
+        if agent == .cursor {
+            // Cursor reads JSON from every hook: carry on, and let the prompt through.
+            defer { print(name == "beforeSubmitPrompt" ? #"{"continue":true}"# : "{}") }
+            if let event, let name { cursor(event, name: name) }
+            return
+        }
         // Codex requires JSON on stdout from Stop hooks; an empty object means "carry on".
         defer { if agent == .codex && name == "Stop" { print("{}") } }
         guard let event, let name, let session = event["session_id"] as? String,
@@ -403,6 +460,31 @@ struct AgentHook {
         case "PreToolUse", "PostToolUse": ensure(key, store: store, title: title, userInitiated: false)
         case "Stop": stop(key, store: store)
         case "SessionEnd": release(key, store: store)
+        default: break
+        }
+    }
+
+    /// Cursor: records prompts and stops for usage tracking, and keeps the Mac awake per conversation.
+    private func cursor(_ event: [String: Any], name: String) {
+        guard let conversation = event["conversation_id"] as? String else { return }
+        let generation = event["generation_id"] as? String ?? ""
+        let model = event["model"] as? String
+        // Recorded first, so usage is tracked even when Barista isn't running.
+        switch name {
+        case "beforeSubmitPrompt":
+            UsageStore.recordCursor(event: "prompt", conversation: conversation, generation: generation, model: model, status: nil)
+        case "stop":
+            UsageStore.recordCursor(event: "stop", conversation: conversation, generation: generation, model: model, status: event["status"] as? String)
+        default: break
+        }
+        guard let key = HookLeaseStore.key("cursor-\(conversation)") else { return }
+        let store = HookLeaseStore(socketPath: socketPath)
+        let folder = ((event["workspace_roots"] as? [Any])?.first as? String).map { ($0 as NSString).lastPathComponent } ?? ""
+        let title = folder.isEmpty ? agent.displayName : "\(agent.displayName) · \(folder.prefix(80))"
+        switch name {
+        case "beforeSubmitPrompt": ensure(key, store: store, title: title, userInitiated: true)
+        case "postToolUse", "afterAgentResponse": ensure(key, store: store, title: title, userInitiated: false)
+        case "stop", "sessionEnd": release(key, store: store)
         default: break
         }
     }
@@ -527,5 +609,45 @@ struct HookWaiter {
         defer { argv.forEach { free($0) } }
         var pid: pid_t = 0
         return posix_spawn(&pid, executable, &actions, &attributes, &argv, environ) == 0
+    }
+}
+
+/// Claude Code's status line: records `rate_limits`, then shows your own status line or a short one.
+enum StatusLine {
+    static func run(chain: String?) {
+        let input = FileHandle.standardInput.readDataToEndOfFile()
+        let object = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any]
+        let limits = object?["rate_limits"] as? [String: Any]
+        if let limits { ClaudeLimits.record(limits) }
+        if let chain, let command = ClaudeStatusLine.saved(chain)?["command"] as? String {
+            FileHandle.standardOutput.write(runShell(command, input: input))
+            return
+        }
+        var parts: [String] = []
+        if let name = (object?["model"] as? [String: Any])?["display_name"] as? String { parts.append(name) }
+        let now = Date().timeIntervalSince1970
+        for (key, short) in [("five_hour", "5h"), ("seven_day", "7d")] {
+            guard let window = limits?[key] as? [String: Any], let used = window["used_percentage"] as? NSNumber else { continue }
+            if let resets = (window["resets_at"] as? NSNumber)?.doubleValue, resets <= now { continue }
+            parts.append("\(short) \(Int(used.doubleValue.rounded()))%")
+        }
+        print(parts.joined(separator: " · "))
+    }
+
+    /// Runs the user's own status line with the same input and returns what it printed.
+    private static func runShell(_ command: String, input: Data) -> Data {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        let stdin = Pipe(), stdout = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return Data() }
+        try? stdin.fileHandleForWriting.write(contentsOf: input)
+        try? stdin.fileHandleForWriting.close()
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return output
     }
 }

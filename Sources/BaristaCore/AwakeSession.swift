@@ -211,6 +211,17 @@ public final class AwakeSession: ObservableObject {
         guard candidate.timeIntervalSince(clock) <= 86400 else { throw CoffeeError.message("A session can have at most 24 hours remaining.") }
         sessions[index].expiresAt = sessions[index].hardDeadline.map { min($0, candidate) } ?? candidate
     }
+    /// Pushes a live session's expiry to `seconds` from now, within its hard cap. For app-owned
+    /// sessions (watched apps); agents use `heartbeat`. Returns false if the session has ended.
+    @discardableResult
+    public func renew(id: String, seconds: TimeInterval) -> Bool {
+        refresh()
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return false }
+        let candidate = clock.addingTimeInterval(seconds)
+        sessions[index].expiresAt = sessions[index].hardDeadline.map { min($0, candidate) } ?? candidate
+        sessions[index].lastHeartbeat = clock
+        return true
+    }
     public func heartbeat(id: String, seconds: TimeInterval = 300, progress: Double? = nil, message: String? = nil,
                           restartingCap: TimeInterval? = nil) throws -> CoffeeLease {
         refresh()

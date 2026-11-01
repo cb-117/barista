@@ -1,0 +1,6 @@
+{"conversation":"c1","event":"prompt","generation":"g1","model":"claude-4.5-sonnet","ts":"2026-10-30T13:00:00Z"}
+{"conversation":"c1","event":"stop","generation":"g1","model":"claude-4.5-sonnet","status":"completed","ts":"2026-10-30T13:05:00Z"}
+{"conversation":"c1","event":"prompt","generation":"g2","ts":"2026-10-30T13:10:00Z"}
+{"conversation":"c1","event":"stop","generation":"g2","status":"aborted","ts":"2026-10-30T13:10:30Z"}
+{"conversation":"c2","event":"prompt","generation":"g3","model":"gpt-6.1-sol","ts":"2026-10-30T14:00:00Z"}
+garbage line
