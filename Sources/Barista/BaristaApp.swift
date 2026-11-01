@@ -62,16 +62,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPanel(); return true }
 
+    /// What the status item last showed, so unchanged updates skip rebuilding the image and text.
+    private var shownStatus: [String]?
     private func updateStatus() {
         guard let button = item?.button else { return }
         let active = runtime.session.isActive
+        let title = active && runtime.showCountdown ? " \(runtime.session.menuBarCountdown)" : ""
+        let tip = active ? runtime.session.sessions.map(\.title).joined(separator: " · ") : "Barista · Right-click for quick timers"
+        let status = [active ? "1" : "0", title, tip, "\(runtime.session.sessions.count)"]
+        guard status != shownStatus else { return }
+        shownStatus = status
         let image = NSImage(systemSymbolName: active ? "cup.and.saucer.fill" : "cup.and.saucer", accessibilityDescription: "Barista")
         image?.isTemplate = true
         button.image = image
         button.imagePosition = .imageLeading
-        button.title = active && runtime.showCountdown ? " \(runtime.session.menuBarCountdown)" : ""
+        button.title = title
         button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        button.toolTip = active ? runtime.session.sessions.map(\.title).joined(separator: " · ") : "Barista · Right-click for quick timers"
+        button.toolTip = tip
         button.setAccessibilityLabel(active ? "Barista, \(runtime.session.sessions.count) awake sessions" : "Barista, resting")
     }
     @objc private func statusItemClicked() {

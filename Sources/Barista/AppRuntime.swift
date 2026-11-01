@@ -380,7 +380,9 @@ final class AppRuntime: ObservableObject {
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
             request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
             do {
-                let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+                let session = URLSession(configuration: .ephemeral)
+                defer { session.finishTasksAndInvalidate() }
+                let (data, response) = try await session.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 // 404 means nothing has been released yet.
                 guard status == 200 || status == 404 else { throw URLError(.badServerResponse) }

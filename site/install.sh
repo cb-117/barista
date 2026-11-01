@@ -9,6 +9,8 @@
 # Safe to re-run: an existing install is kept (Barista updates itself from its menu).
 set -eu
 
+# Everything runs from main, called on the last line, so a download cut short runs nothing.
+main() {
 base="https://github.com/cb-117/barista/releases/latest/download"
 
 [ "$(uname -s)" = "Darwin" ] || { echo "Barista is a macOS app." >&2; exit 1; }
@@ -43,3 +45,6 @@ else
 fi
 
 "$app/Contents/Helpers/barista" setup
+}
+
+main "$@"

@@ -2,9 +2,19 @@
 
 Barista exposes independent, expiring awake sessions to local agents. Prefer **command wrapping** for a discrete job, or **MCP tools** for a multi-step agent task.
 
+## Quick setup
+
+Not installed yet? With the user’s OK, run:
+
+```sh
+curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+```
+
+It installs the latest release to Applications (checked against the release’s SHA-256), connects Claude Code and Codex if they’re set up for this user, and starts Barista. Already installed: run `barista setup` (the CLI is `/Applications/Barista.app/Contents/Helpers/barista`). Codex then needs one manual step from the user: type `/hooks` in Codex and trust Barista’s hooks. A summary for agents is at https://cb-117.github.io/barista/llms.txt.
+
 ## Claude Code hooks (recommended)
 
-In the app choose **Settings → Agents → Connect**, or run `barista hooks install`. Use `hooks status` (reports *Needs repair* if any event is missing or points at another copy) or `hooks uninstall` to check or remove it, and `--settings PATH` to target a different settings file. Barista adds one `barista hook` command to each of these events in `~/.claude/settings.json`. Other hooks and settings are preserved, and the previous file is saved as `settings.json.barista-backup`.
+In the app choose **Settings → Agents → Claude Code → Connect**, or run `barista hooks install` (or `barista setup`). Use `hooks status` (reports *Needs repair* if any event is missing or points at another copy) or `hooks uninstall` to check or remove it, and `--settings PATH` to target a different settings file. Barista adds one `barista hook` command to each of these events in `~/.claude/settings.json`. Other hooks and settings are preserved, and the previous file is saved as `settings.json.barista-backup`.
 
 | Event | Effect |
 | --- | --- |

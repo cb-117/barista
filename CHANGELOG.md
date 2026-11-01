@@ -9,6 +9,24 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Changed
+- The built-in agent guide starts with one-step setup (`install.sh` or `barista setup`) for Claude Code and Codex.
+
+### Fixed
+- `barista run` works with interactive commands. Commands that prompt (`sudo`, `ssh`), open a pager, or read the terminal used to freeze while keeping the Mac awake; they now run in the foreground as usual, and Ctrl-C and Ctrl-Z reach them directly. Barista keeps the Mac awake until the command actually exits, even if it catches Ctrl-C and keeps going.
+- After Claude resumes a turn that was waiting on background commands, its session keeps its full 20-minute renewal instead of dropping back to two minutes.
+- Claude Code hooks no longer miss tool calls with very large inputs or outputs (over 1 MB).
+- Long-running helpers that Claude started, such as MCP servers, can no longer be mistaken for background commands, which could keep the Mac awake after Claude finished.
+- Connecting or disconnecting an agent no longer overwrites a settings change the agent saved at the same moment.
+- Disconnecting Codex no longer deletes a symlinked `hooks.json` (for example, one kept in a dotfiles repo); it’s emptied instead.
+- If macOS refuses to keep the Mac awake, the sessions that ended now appear in history and send notifications like any other ending.
+- Updates: if swapping in the new version fails and restoring the old one fails too, the old copy is kept instead of deleted. Downloads are size-checked before they’re loaded into memory.
+- The control socket stays responsive when a misbehaving local client opens many connections or sends slowly.
+- The installer script runs nothing if its download is cut off partway.
+
+### Changed
+- Lower idle energy use: when nothing is keeping the Mac awake, Barista no longer redraws the menu bar and panel every second, and its timer lets macOS batch wakeups.
+
 ## [0.0.5] - 2026-11-01
 
 ### Added

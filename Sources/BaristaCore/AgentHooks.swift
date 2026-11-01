@@ -90,33 +90,55 @@ public enum AgentHooks {
     }
 
     public static func install(cliPath: String, agent: HookAgent = .claude, settings: URL? = nil) throws {
-        let url = settings ?? agent.defaultSettingsURL
-        var root = try read(url)
-        var hooks = removingOurs(from: root["hooks"] as? [String: Any] ?? [:])
-        for event in events {
-            let entry: [String: Any] = ["type": "command", "command": command(cliPath: cliPath, agent: agent),
-                                        "timeout": agent.timeout(for: event)]
-            var group: [String: Any] = ["hooks": [entry]]
-            if toolEvents.contains(event) { group["matcher"] = "*" }
-            hooks[event] = (hooks[event] as? [[String: Any]] ?? []) + [group]
+        try edit(settings ?? agent.defaultSettingsURL) { root in
+            var root = root
+            var hooks = removingOurs(from: root["hooks"] as? [String: Any] ?? [:])
+            for event in events {
+                let entry: [String: Any] = ["type": "command", "command": command(cliPath: cliPath, agent: agent),
+                                            "timeout": agent.timeout(for: event)]
+                var group: [String: Any] = ["hooks": [entry]]
+                if toolEvents.contains(event) { group["matcher"] = "*" }
+                hooks[event] = (hooks[event] as? [[String: Any]] ?? []) + [group]
+            }
+            root["hooks"] = hooks
+            return .write(root)
         }
-        root["hooks"] = hooks
-        try write(root, to: url)
     }
 
     public static func uninstall(agent: HookAgent = .claude, settings: URL? = nil) throws {
         let url = settings ?? agent.defaultSettingsURL
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        var root = try read(url)
-        guard let existing = root["hooks"] as? [String: Any] else { return }
-        let hooks = removingOurs(from: existing)
-        if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
-        // A hooks file that held only Barista's entries (as Codex's usually does) goes away entirely.
-        if root.isEmpty, agentOwnsWholeFile(url) {
-            try FileManager.default.removeItem(at: url.resolvingSymlinksInPath())
+        try edit(url) { root in
+            var root = root
+            guard let existing = root["hooks"] as? [String: Any] else { return .keep }
+            let hooks = removingOurs(from: existing)
+            if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
+            // A hooks file that held only Barista's entries (as Codex's usually does) goes away entirely,
+            // unless it's a symlink (a dotfiles repo's file would go with it): then it's emptied instead.
+            let isLink = (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+            return root.isEmpty && agentOwnsWholeFile(url) && !isLink ? .delete : .write(root)
+        }
+    }
+
+    private enum Edit { case keep, write([String: Any]), delete }
+    /// The agent may save its settings while Barista edits them. If the file changed between reading
+    /// and writing, the edit is redone on the new contents, so the agent's change is never lost.
+    private static func edit(_ url: URL, _ change: ([String: Any]) throws -> Edit) throws {
+        // Follow dotfile symlinks so the link itself survives.
+        let url = url.resolvingSymlinksInPath()
+        for _ in 0..<3 {
+            let original = try? Data(contentsOf: url)
+            let result = try change(try parse(original, path: url.path))
+            if case .keep = result { return }
+            guard (try? Data(contentsOf: url)) == original else { continue }
+            switch result {
+            case .keep: return
+            case .delete: try FileManager.default.removeItem(at: url)
+            case .write(let root): try write(root, to: url)
+            }
             return
         }
-        try write(root, to: url)
+        throw CoffeeError.message("\(url.path) kept changing while Barista was editing it. Try again.")
     }
 
     /// Only dedicated hook files may be deleted; a general settings file (Claude's) is kept.
@@ -142,17 +164,17 @@ public enum AgentHooks {
     private static func read(_ url: URL) throws -> [String: Any] {
         let url = url.resolvingSymlinksInPath()
         guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
-        let data = try Data(contentsOf: url)
-        if data.allSatisfy({ [9, 10, 13, 32].contains($0) }) { return [:] }
+        return try parse(try Data(contentsOf: url), path: url.path)
+    }
+    private static func parse(_ data: Data?, path: String) throws -> [String: Any] {
+        guard let data, !data.allSatisfy({ [9, 10, 13, 32].contains($0) }) else { return [:] }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CoffeeError.message("\(url.path) isn’t valid JSON, so Barista left it unchanged.")
+            throw CoffeeError.message("\(path) isn’t valid JSON, so Barista left it unchanged.")
         }
         return object
     }
 
     private static func write(_ root: [String: Any], to url: URL) throws {
-        // Follow dotfile symlinks so the link itself survives.
-        let url = url.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: url.path) {
             let backup = url.appendingPathExtension("barista-backup")
@@ -241,14 +263,26 @@ extension SystemState {
         return pids.prefix(Int(bytes) / MemoryLayout<Int32>.size).filter { $0 > 0 }
     }
     /// The process's arguments joined by spaces, or nil if it can't be read.
+    /// KERN_PROCARGS2 is argc, the executable path, padding, the arguments, then the environment;
+    /// only the arguments are returned, so an environment variable can't make a process match.
     public static func commandLine(of pid: Int32) -> String? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
         var buffer = [UInt8](repeating: 0, count: size)
-        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
-        let text = buffer.prefix(size).dropFirst(MemoryLayout<Int32>.size).map { $0 == 0 ? UInt8(ascii: " ") : $0 }
-        return String(decoding: text, as: UTF8.self)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        let argc = buffer.withUnsafeBytes { Int($0.loadUnaligned(as: Int32.self)) }
+        var index = MemoryLayout<Int32>.size
+        while index < size && buffer[index] != 0 { index += 1 }  // executable path
+        while index < size && buffer[index] == 0 { index += 1 }  // padding
+        var arguments: [String] = []
+        while arguments.count < argc && index < size {
+            let start = index
+            while index < size && buffer[index] != 0 { index += 1 }
+            arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
+            index += 1
+        }
+        return arguments.joined(separator: " ")
     }
     /// This process and its ancestors, so a hook never counts its own shell as background work.
     public static func ancestry(of pid: Int32 = getpid()) -> Set<Int32> {

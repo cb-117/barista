@@ -33,6 +33,7 @@ public struct ControlClient: Sendable {
 public final class ControlServer {
     private var source: DispatchSourceRead?
     private var boundPath: String?
+    nonisolated static let maxConnections = 32
     public init() {}
 
     public func start(path: String = ControlEndpoint.path,
@@ -70,10 +71,21 @@ public final class ControlServer {
                   fcntl(fd, F_SETFL, O_NONBLOCK) == 0,
                   fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else { throw UnixWire.lastError() }
             let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: DispatchQueue.global(qos: .utility))
+            // Bounds open connections and blocked workers, so a stuck or flooding client
+            // can't exhaust descriptors or starve real heartbeats.
+            let slots = DispatchSemaphore(value: Self.maxConnections)
             source.setEventHandler { @Sendable in
                 while true {
                     let peer = accept(fd, nil, nil)
-                    if peer < 0 { break }
+                    if peer < 0 {
+                        // Out of descriptors: the listener stays readable, so pause instead of spinning.
+                        if errno == EMFILE || errno == ENFILE { usleep(100_000) }
+                        break
+                    }
+                    guard slots.wait(timeout: .now()) == .success else {
+                        Darwin.close(peer)
+                        continue
+                    }
                     DispatchQueue.global(qos: .utility).async {
                         do {
                             try UnixWire.configure(peer)
@@ -84,11 +96,13 @@ public final class ControlServer {
                                 let reply = await handler(request)
                                 if let data = try? CoffeeJSON.encoder().encode(reply) { try? UnixWire.write(data, to: peer) }
                                 Darwin.close(peer)
+                                slots.signal()
                             }
                         } catch {
                             let reply = ControlReply(ok: false, error: "Invalid control request: \(error.localizedDescription)")
                             if let data = try? CoffeeJSON.encoder().encode(reply) { try? UnixWire.write(data, to: peer) }
                             Darwin.close(peer)
+                            slots.signal()
                         }
                     }
                 }
@@ -158,10 +172,13 @@ private enum UnixWire {
             return fd
         } catch { Darwin.close(fd); throw error }
     }
-    static func read(from fd: Int32, limit: Int) throws -> Data {
+    static func read(from fd: Int32, limit: Int, deadline: TimeInterval = 5) throws -> Data {
         var data = Data()
         var bytes = [UInt8](repeating: 0, count: 4096)
+        // SO_RCVTIMEO bounds each recv; this bounds the whole message, so trickled bytes can't hold a worker.
+        let giveUp = Date().addingTimeInterval(deadline)
         while data.count <= limit {
+            guard Date() < giveUp else { throw CoffeeError.message("Control message took too long to arrive.") }
             let count = Darwin.recv(fd, &bytes, bytes.count, 0)
             if count < 0 {
                 if errno == EINTR { continue }

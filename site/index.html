@@ -6,7 +6,7 @@
 <title>Barista: keeps your Mac awake while the work brews</title>
 <meta name="description" content="A free, open-source Mac menu-bar app that keeps your Mac awake exactly as long as your timers, commands, and AI agents need, then lets it sleep.">
 <meta property="og:title" content="Barista: keeps your Mac awake while the work brews">
-<meta property="og:description" content="Free and open source. One-click Claude Code support, a CLI, and an MCP server. No cloud, no tracking.">
+<meta property="og:description" content="Free and open source. One-click Claude Code and ChatGPT Codex support, a CLI, and an MCP server. No cloud, no tracking.">
 <meta property="og:image" content="https://cb-117.github.io/barista/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -176,7 +176,7 @@
       <div class="card">
         <img src="assets/feature-agents.svg" alt="">
         <h3>Made for agents</h3>
-        <p>Connect Claude Code in one click. Commands and MCP agents check in while they work and are released when they’re done.</p>
+        <p>Connect Claude Code and ChatGPT Codex in one click, or let your agent install and connect Barista itself. Commands and MCP agents check in while they work and are released when they’re done.</p>
       </div>
       <div class="card">
         <img src="assets/feature-battery.svg" alt="">
@@ -228,7 +228,7 @@
     <div>
       <div class="kicker">For Claude Code, ChatGPT Codex &amp; friends</div>
       <h2>Your agent orders. Barista pours.</h2>
-      <p class="sub">Leaving Claude Code on a long refactor? Click <b>Connect</b> in Settings. A prompt opens an order, tool calls keep it going, and it closes when Claude finishes, or once any background commands it left running are done. Then your Mac can sleep.</p>
+      <p class="sub">Leaving Claude Code or Codex on a long refactor? Click <b>Connect</b> in Settings, or have your agent run the one-line installer. A prompt opens an order, tool calls keep it going, and it closes when the agent finishes (for Claude, once any background commands it left running are done too). Then your Mac can sleep.</p>
       <ul class="ticks">
         <li>One-click Claude Code hooks, with a backup of your settings</li>
         <li>One-click ChatGPT Codex hooks (approve them once with <code>/hooks</code>)</li>
@@ -263,10 +263,11 @@ Awake · 3 session(s) · display allowed to sleep
     <h2>Questions at the counter</h2>
     <details><summary>Is it really free?</summary><p>Yes. It’s MIT-licensed and open source, with no in-app purchases, accounts, or telemetry.</p></details>
     <details><summary>Does it keep my Mac awake with the lid closed?</summary><p>No. Barista prevents <em>idle</em> sleep. Closing the lid, choosing Sleep, or a dead battery still put the Mac to sleep. For lid-closed work, connect power and an external display.</p></details>
-    <details><summary>How is this different from <code>caffeinate</code> or Amphetamine?</summary><p>Those have one switch for the whole Mac. Barista tracks who needs the Mac awake and for how long, and ends each one on its own when that job finishes or stops checking in. It also connects to Claude Code in one click.</p></details>
+    <details><summary>How is this different from <code>caffeinate</code> or Amphetamine?</summary><p>Those have one switch for the whole Mac. Barista tracks who needs the Mac awake and for how long, and ends each one on its own when that job finishes or stops checking in. It also connects to Claude Code and ChatGPT Codex in one click.</p></details>
     <details><summary>Does anything leave my Mac?</summary><p>No personal data, ever. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions). The one network request is an optional once-a-day check with GitHub for a newer version. It sends nothing about you, and you can turn it off in Settings.</p></details>
+    <details><summary>Can my AI agent set it up for me?</summary><p>Yes. Ask Claude Code or Codex to install Barista. It reads <a href="llms.txt">llms.txt</a>, asks you first, then runs the one-line installer, which installs Barista and connects Claude Code and Codex. Codex then asks you to approve the new hooks once: type <code>/hooks</code> in Codex and trust Barista’s. Already installed? Run <code>barista setup</code> to connect agents you’ve added since.</p></details>
     <details><summary>How do I get updates?</summary><p>Barista checks for a new version once a day. When one is out, click <b>Update</b> in its panel: it downloads the update, checks its signature, installs it, and relaunches, and anything that was keeping your Mac awake keeps going. You can also check right away in Settings → Updates.</p></details>
-    <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet, so macOS says it can’t verify Barista the first time. Click <b>Done</b>, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. You only do this once: in-app updates don’t ask again.</p></details>
+    <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet, so macOS says it can’t verify Barista the first time. Click <b>Done</b>, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. You only do this once: in-app updates don’t ask again. Installing with the Terminal command (<code>curl -fsSL https://cb-117.github.io/barista/install.sh | sh</code>) skips this step.</p></details>
   </div>
 </section>
 

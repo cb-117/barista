@@ -261,14 +261,10 @@ struct CoffeeCLI {
         // Only the initial acquire may open Barista; maintenance never reopens an app the user quit.
         let connection = AgentConnection(path: connection.path, autoLaunch: false)
         defer { _ = try? connection.send(ControlRequest(action: .release, id: lease.id)) }
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        child.arguments = options.child
-        child.standardInput = FileHandle.standardInput
-        child.standardOutput = FileHandle.standardOutput
-        child.standardError = FileHandle.standardError
-        try child.run()
-        let pid = child.processIdentifier
+        // Ignore these before spawning so none is lost; the child gets default handlers back.
+        let forwarded = [SIGTERM, SIGHUP]
+        for number in [SIGINT] + forwarded { signal(number, SIG_IGN) }
+        let pid = try spawnInForeground(["/usr/bin/env"] + options.child)
         let queue = DispatchQueue(label: "barista.command-heartbeat")
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 10, repeating: 10)
@@ -278,21 +274,50 @@ struct CoffeeCLI {
             if let reply = try? connection.send(ControlRequest(action: .heartbeat, id: lease.id, seconds: 45)), !reply.ok { timer.cancel() }
         }
         timer.resume()
+        // Ctrl-C reaches the child directly (it shares the terminal's foreground group), so only
+        // forward signals sent to this process by name. The session ends when the child exits,
+        // never earlier: a child that catches a signal and keeps working stays protected.
         var signals: [DispatchSourceSignal] = []
-        for number in [SIGINT, SIGTERM, SIGHUP] {
-            signal(number, SIG_IGN)
+        for number in forwarded {
             let source = DispatchSource.makeSignalSource(signal: number, queue: queue)
-            source.setEventHandler {
-                _ = try? connection.send(ControlRequest(action: .release, id: lease.id))
-                kill(pid, number)
-            }
+            source.setEventHandler { kill(pid, number) }
             source.resume()
             signals.append(source)
         }
-        child.waitUntilExit()
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
         timer.cancel()
         signals.forEach { $0.cancel() }
-        return child.terminationReason == .uncaughtSignal ? 128 + child.terminationStatus : child.terminationStatus
+        let signalNumber = status & 0x7f
+        return signalNumber == 0 ? (status >> 8) & 0xff : 128 + signalNumber
+    }
+
+    /// Spawns the command in this process's group, so it stays in the terminal's foreground job:
+    /// it can read the terminal, prompt for passwords, run pagers, and receive Ctrl-C and Ctrl-Z.
+    /// (Foundation's Process starts children in their own background group, which macOS stops
+    /// as soon as they touch the terminal.) Only stdin, stdout, and stderr are inherited.
+    private static func spawnInForeground(_ arguments: [String]) throws -> pid_t {
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        var all = sigset_t(), none = sigset_t()
+        sigfillset(&all)
+        sigemptyset(&none)
+        posix_spawnattr_setsigdefault(&attributes, &all)
+        posix_spawnattr_setsigmask(&attributes, &none)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
+            posix_spawn_file_actions_addinherit_np(&actions, descriptor)
+        }
+        var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        var pid: pid_t = 0
+        let result = posix_spawn(&pid, arguments[0], &actions, &attributes, &argv, environ)
+        guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: result) ?? .EIO) }
+        return pid
     }
 
     static let help = """
@@ -337,7 +362,8 @@ struct AgentHook {
     static let hardCap: Double = 28800
 
     func run() {
-        let input = FileHandle.standardInput.readData(ofLength: 1_048_576)
+        // Read everything: a large tool input or output cut short would fail to parse and skip the renewal.
+        let input = FileHandle.standardInput.readDataToEndOfFile()
         let event = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any]
         let name = event?["hook_event_name"] as? String
         // Codex requires JSON on stdout from Stop hooks; an empty object means "carry on".
@@ -447,6 +473,11 @@ struct HookWaiter {
             let keepGoing = (try? store.withLock(key) { () -> Bool in
                 guard let current = store.lease(for: key), current.id == start.id,
                       current.turnStarted == start.turnStarted else { return false }
+                // A tool call since Stop means Claude resumed this turn and renews the lease itself;
+                // a short "waiting" heartbeat now would cut its 20-minute lease to two minutes.
+                // Hooks hold this lock while renewing, so the check and the heartbeat can't interleave.
+                let status = try connection.send(ControlRequest(action: .status))
+                guard status.state?.sessions.first(where: { $0.id == start.id })?.message == Self.waitingMessage else { return false }
                 return try connection.send(ControlRequest(action: .heartbeat, id: start.id, seconds: Self.grace,
                                                           message: Self.waitingMessage)).ok
             }) ?? false

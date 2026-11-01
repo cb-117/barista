@@ -174,7 +174,11 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         # Stop while one of Claude's background commands still runs keeps the Mac awake for it...
         hook('UserPromptSubmit')
         background = subprocess.Popen(['/bin/sh', '-c', 'sleep 20; : /.claude/shell-snapshots/test'])
-        other_child = subprocess.Popen(['/bin/sleep', '20'])  # e.g. an MCP server: never counts
+        # e.g. an MCP server: never counts, even when its environment mentions a shell snapshot.
+        # (A non-Apple binary: macOS hides the environment of its own system binaries.)
+        other_child = subprocess.Popen([str(checks), '--serve', str(Path(temporary) / 'mcp-like.sock')],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       env={**os.environ, 'SNAPSHOT': '/.claude/shell-snapshots/env'})
         try:
             hook('Stop')
             [waiting] = claude_sessions()

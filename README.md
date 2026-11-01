@@ -71,17 +71,18 @@ Settings opens in its own window from the gear icon, the right-click menu, or �
 
 ## Claude Code
 
-Choose **Settings → Agents → Connect**, or run:
+Choose **Settings → Agents → Claude Code → Connect**, or run (the CLI is `/Applications/Barista.app/Contents/Helpers/barista`, or `build/barista` in a source checkout):
 
 ```sh
-build/barista hooks install     # status | uninstall
+barista setup                   # connects Claude Code and Codex, whichever are set up
+barista hooks install           # Claude Code only; also: status | uninstall
 ```
 
 This adds Barista hooks to `~/.claude/settings.json` and leaves your other settings and hooks in place. A backup is saved next to the file as `settings.json.barista-backup`. Each conversation gets its own session: a prompt starts it, tool calls renew it, and it ends when Claude finishes its turn or exits. If Claude finishes while commands it started in the background are still running (shown as “Waiting” in Claude Code and T3), the session stays on until they exit. If you stop it in Barista, it stays stopped until your next prompt. If you move the app or a hook goes missing, Settings shows **Repair**.
 
 ## ChatGPT Codex
 
-Choose **Settings → Agents → ChatGPT Codex → Connect**, or run `build/barista hooks install --agent codex`. This adds the same hooks to `~/.codex/hooks.json`, used by Codex in the ChatGPT app and the Codex CLI.
+Choose **Settings → Agents → ChatGPT Codex → Connect**, or run `barista hooks install --agent codex` (or `barista setup`). This adds the same hooks to `~/.codex/hooks.json`, used by Codex in the ChatGPT app and the Codex CLI.
 
 Codex asks you to approve new hooks once: type `/hooks` in Codex and trust Barista’s hooks. After that, each Codex task keeps your Mac awake while it works, shown as “Codex · <folder>”.
 
@@ -130,7 +131,7 @@ Sessions are visible and controllable in the app. The local control socket is re
 
 The only network requests Barista makes are for updates: an anonymous HTTPS request to GitHub’s public releases API at most once a day, and downloading an update when you click **Update**. They send no identifiers, usage, or session data. Turn automatic checks off in Settings → Updates.
 
-The build is ad-hoc signed for local use, and release builds aren’t notarized yet. After the first launch, allow the app in System Settings → Privacy & Security → **Open Anyway**. Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.
+The build is ad-hoc signed for local use, and release builds aren’t notarized yet. After the first launch, allow the app in System Settings → Privacy & Security → **Open Anyway**, or install with `install.sh`, which skips that step. Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.
 
 ## Verify
 

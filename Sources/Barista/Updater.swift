@@ -38,6 +38,7 @@ enum Updater {
         let target = try installLocation().get()
         let manager = FileManager.default
         let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
 
         let signature = try await fetch(signatureURL, session: session, limit: 4096)
         let archive = try await fetch(archiveURL, session: session, limit: 200 * 1024 * 1024)
@@ -63,11 +64,15 @@ enum Updater {
         try? await run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", fresh.path], failure: "")
 
         // Wait for this process to exit, swap bundles (restoring the old one if anything fails), relaunch.
+        // Cleanup happens only once a working app is back at the target path; if even restoring the
+        // old version fails, the work folder (holding it) is left in place rather than deleted.
         let script = """
         pid="$1"; target="$2"; fresh="$3"; work="$4"
         while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
         if mv "$target" "$work/previous.app"; then
-          if ! mv "$fresh" "$target"; then mv "$work/previous.app" "$target"; fi
+          if ! mv "$fresh" "$target"; then
+            mv "$work/previous.app" "$target" || exit 1
+          fi
         fi
         open "$target"
         rm -rf "$work"
@@ -87,11 +92,13 @@ enum Updater {
     private static func fetch(_ url: URL, session: URLSession, limit: Int) async throws -> Data {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
         request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await session.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= limit else {
-            throw Failure(message: "Couldn’t download the update. Try again later.", offerDownload: true)
-        }
-        return data
+        let failure = Failure(message: "Couldn’t download the update. Try again later.", offerDownload: true)
+        // Download to disk and check the size before reading it, so an oversized response never lands in memory.
+        let (file, response) = try await session.download(for: request)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? Int.max
+        guard (response as? HTTPURLResponse)?.statusCode == 200, size <= limit else { throw failure }
+        return try Data(contentsOf: file)
     }
 
     /// Runs a system tool without blocking the main thread.

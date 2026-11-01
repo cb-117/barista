@@ -8,7 +8,11 @@ public final class AwakeSession: ObservableObject {
     @Published public private(set) var history: [SessionCompletion] = []
     @Published public private(set) var error: String?
     @Published public private(set) var battery: BatteryState?
+    /// What the UI counts down from. Published only while sessions run, so an idle app
+    /// doesn't redraw the menu bar and panel every second.
     @Published public private(set) var currentDate: Date
+    /// The time every session decision uses; always current after `refresh()`.
+    private var clock: Date
     @Published public var batteryThreshold = 20 { didSet { refresh() } }
     @Published public var keepDisplayAwake = true {
         didSet {
@@ -42,7 +46,8 @@ public final class AwakeSession: ObservableObject {
         self.processIdentity = processIdentity
         self.batteryProvider = batteryProvider
         self.defaults = defaults
-        currentDate = now()
+        clock = now()
+        currentDate = clock
         battery = batteryProvider()
         if let data = defaults?.data(forKey: "sessionHistory"),
            let saved = try? CoffeeJSON.decoder().decode([SessionCompletion].self, from: data) {
@@ -52,6 +57,8 @@ public final class AwakeSession: ObservableObject {
             let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.refresh() }
             }
+            // Lets macOS coalesce wakeups; a countdown a fraction of a second late is invisible.
+            timer.tolerance = 0.2
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
@@ -114,7 +121,7 @@ public final class AwakeSession: ObservableObject {
         guard sessions.count < 64 || (replacingManual && manualSession != nil) else { throw CoffeeError.message("There are already 64 active sessions.") }
         let identity = processID.flatMap(processIdentity)
         guard processID == nil || identity != nil else { throw CoffeeError.message("That process is no longer running or cannot be inspected.") }
-        let start = currentDate
+        let start = clock
         let deadline = maxDuration.map { start.addingTimeInterval($0) }
         var expiry = duration.map { start.addingTimeInterval($0) }
         if let deadline { expiry = min(expiry ?? deadline, deadline) }
@@ -130,6 +137,7 @@ public final class AwakeSession: ObservableObject {
             assertionDisplay = desiredDisplay
         }
         sessions = existing + [lease]
+        currentDate = clock
         error = nil
         return lease
     }
@@ -152,7 +160,7 @@ public final class AwakeSession: ObservableObject {
     /// Active sessions, saved so the next copy of the app (relaunched by an update) can continue them.
     public func handoff() -> Data? {
         refresh()
-        return try? CoffeeJSON.encoder().encode(Handoff(sessions: sessions, stopToken: stopToken, savedAt: currentDate))
+        return try? CoffeeJSON.encoder().encode(Handoff(sessions: sessions, stopToken: stopToken, savedAt: clock))
     }
     /// Lets go of the power assertion for an update relaunch without ending sessions or recording history.
     public func suspendForHandoff() {
@@ -165,15 +173,16 @@ public final class AwakeSession: ObservableObject {
     public func restore(_ data: Data, maxAge: TimeInterval = 300) -> Int {
         refresh()
         guard sessions.isEmpty, let saved = try? CoffeeJSON.decoder().decode(Handoff.self, from: data),
-              currentDate.timeIntervalSince(saved.savedAt) <= maxAge, currentDate >= saved.savedAt else { return 0 }
+              clock.timeIntervalSince(saved.savedAt) <= maxAge, clock >= saved.savedAt else { return 0 }
         let live = saved.sessions.filter { lease in
-            if let end = lease.expiresAt, end <= currentDate { return false }
+            if let end = lease.expiresAt, end <= clock { return false }
             if let pid = lease.processID { return processIdentity(pid) == lease.processIdentity }
             return true
         }
         stopToken = saved.stopToken
         guard !live.isEmpty else { return 0 }
         sessions = live
+        currentDate = clock
         reconcilePower()
         return sessions.count
     }
@@ -199,7 +208,7 @@ public final class AwakeSession: ObservableObject {
             throw CoffeeError.message("Session has ended or has no timer.")
         }
         let candidate = expiry.addingTimeInterval(seconds)
-        guard candidate.timeIntervalSince(currentDate) <= 86400 else { throw CoffeeError.message("A session can have at most 24 hours remaining.") }
+        guard candidate.timeIntervalSince(clock) <= 86400 else { throw CoffeeError.message("A session can have at most 24 hours remaining.") }
         sessions[index].expiresAt = sessions[index].hardDeadline.map { min($0, candidate) } ?? candidate
     }
     public func heartbeat(id: String, seconds: TimeInterval = 300, progress: Double? = nil, message: String? = nil,
@@ -212,18 +221,21 @@ public final class AwakeSession: ObservableObject {
             throw CoffeeError.message("Status messages must fit on one line and be at most 200 characters.")
         }
         guard let index = sessions.firstIndex(where: { $0.id == id && $0.isTask }) else { throw CoffeeError.message("Agent session not found. It may have expired; acquire a new session.") }
-        if let restartingCap { sessions[index].hardDeadline = currentDate.addingTimeInterval(restartingCap) }
-        let candidate = currentDate.addingTimeInterval(seconds)
+        if let restartingCap { sessions[index].hardDeadline = clock.addingTimeInterval(restartingCap) }
+        let candidate = clock.addingTimeInterval(seconds)
         sessions[index].expiresAt = sessions[index].hardDeadline.map { min($0, candidate) } ?? candidate
-        sessions[index].lastHeartbeat = currentDate
+        sessions[index].lastHeartbeat = clock
         if let progress { sessions[index].progress = progress }
         if let message { sessions[index].message = message }
         return sessions[index]
     }
 
     public func refresh() {
-        currentDate = now()
-        battery = batteryProvider()
+        clock = now()
+        // Assign only on change: every assignment of a published property redraws the UI.
+        let battery = batteryProvider()
+        if battery != self.battery { self.battery = battery }
+        defer { if !sessions.isEmpty && currentDate != clock { currentDate = clock } }
         if batteryBlocked {
             // Entering protection revokes lapsed turns even when no session is active.
             if !wasBatteryBlocked { revokeAgentTurns() }
@@ -237,7 +249,7 @@ public final class AwakeSession: ObservableObject {
             return processIdentity(pid) != lease.processIdentity
         }.map(\.id))
         finish(ids: exited, reason: .processExited)
-        let expired = Set(sessions.filter { $0.expiresAt.map { $0 <= currentDate } ?? false }.map(\.id))
+        let expired = Set(sessions.filter { $0.expiresAt.map { $0 <= clock } ?? false }.map(\.id))
         finish(ids: expired, reason: .expired)
         reconcilePower()
     }
@@ -291,7 +303,7 @@ public final class AwakeSession: ObservableObject {
         sessions.removeAll { ids.contains($0.id) }
         for lease in finished {
             let completion = SessionCompletion(id: lease.id, title: lease.title, source: lease.source,
-                                               startedAt: lease.startedAt, endedAt: currentDate, reason: reason)
+                                               startedAt: lease.startedAt, endedAt: clock, reason: reason)
             history.insert(completion, at: 0)
             onCompletion?(completion)
         }
@@ -319,15 +331,11 @@ public final class AwakeSession: ObservableObject {
                 powerRetryPending = true
                 return
             }
+            // Nothing is held: end every session the normal way (history, notifications,
+            // stop token), which also leaves power deactivated.
             power.deactivate()
             assertionDisplay = nil
-            let finished = sessions
-            sessions = []
-            for lease in finished {
-                history.insert(SessionCompletion(id: lease.id, title: lease.title, source: lease.source,
-                                                 startedAt: lease.startedAt, endedAt: currentDate, reason: .powerError), at: 0)
-            }
-            history = Array(history.prefix(20))
+            finish(ids: Set(sessions.map(\.id)), reason: .powerError)
             self.error = error.localizedDescription
         }
     }
