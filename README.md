@@ -28,12 +28,17 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 - A coffee-cup menu-bar control with one simple panel: pick 15m, 1h, 4h, or ∞ and press **Keep awake**. **More** has custom minutes, an end time, and “while an app runs.”
 - **Right-click** the cup for one-click timers. **Option-click** toggles your last session.
 - **One-click Claude Code support:** Settings → Agents → **Connect**. Your Mac stays awake while Claude works and can sleep once it finishes. No MCP setup needed.
-- Tasks that keep the Mac awake (agents, commands, watched apps) appear under the main button with live progress and individual stop buttons. Settings shows the last sessions.
+- Tasks that keep the Mac awake (agents, commands, watched apps) appear in the panel with live progress and individual stop buttons, and in the right-click menu. The menu bar shows your own timer’s time left, or how many tasks are running. Settings shows the last sessions.
 - **Task-owned sessions:** commands renew their own short leases and release them on exit. Agents heartbeat during work and release when done. A missing heartbeat or watched process exit ends the session automatically.
 - Separate display control. Agent/command sessions allow the display to sleep by default.
 - Battery protection: stops awake sessions at 20% while on battery by default, with a configurable cutoff. Your actual work continues; awake sessions do not restart automatically.
 - Launch at login, configurable global shortcut, Option-click quick toggle, optional completion notifications, and saved preferences.
 - A bundled CLI and stdio MCP server. No third-party runtime, API key, cloud account, simulated input, or network listener.
+- Update notices: once a day Barista checks GitHub for a newer release and shows a Download link in the panel. Turn it off or check now in Settings → Updates.
+
+## Install
+
+Download the latest `Barista-<version>.zip` from [Releases](https://github.com/cb-117/barista/releases/latest), unzip it, and drag **Barista** to Applications. Builds aren’t notarized yet, so the first time you open it, go to System Settings → Privacy & Security and click **Open Anyway**.
 
 ## Build and run
 
@@ -81,6 +86,17 @@ build/barista status --json
 
 See [the agent guide](docs/AGENTS.md) for MCP setup, all commands, ownership rules, JSON responses, hard limits, and sandbox considerations. Settings also has **Copy CLI path** and **Copy MCP setup**.
 
+## Releasing
+
+The version lives in one place: `Sources/BaristaCore/Version.swift`. `scripts/build-app.sh` stamps it into the app, and `barista version` prints it.
+
+1. Bump `BaristaVersion.current` (for example `0.0.1` → `0.0.2`).
+2. Commit and push to `main`.
+
+The **Release** workflow notices the new version, runs the checks, builds a universal app, and publishes `v0.0.2` on GitHub Releases with the zip and its SHA-256. Pushes that don’t change the version don’t create a release. Running apps see the update within a day, or right away from Settings → Updates → **Check now**.
+
+Every push to `main` also attaches a universal `Barista.zip` to its **CI** run (kept for 30 days), so you can try any commit without releasing it.
+
 ## Limits and privacy
 
 This prevents **idle sleep**. It does not override closing a laptop lid, choosing Sleep, shutdown, or a depleted battery. Timers use wall-clock deadlines, so manual sleep does not pause them. Watched-app sessions last exactly as long as the app runs (no time cap) and track process lifetime, not whether the app is doing useful work. Use the command runner or agent heartbeats for precise job lifetimes.
@@ -88,6 +104,8 @@ This prevents **idle sleep**. It does not override closing a laptop lid, choosin
 Agent leases default to five minutes and an eight-hour hard cap. Commands renew a 45-second lease every ten seconds, tied to the runner’s PID and process start time. TTL and hard limits cannot exceed 24 hours. An explicit Stop or battery cutoff cannot be reversed by a heartbeat. Never reacquire automatically to override a user’s Stop.
 
 Sessions are visible and controllable in the app. The local control socket is restricted to your user account; no TCP port is opened. History stores only the last 20 task names, start/end times, and completion reasons in local preferences. Command arguments/output are not recorded. Active sessions are never restored after an app restart. You can clear history or disable agent access in Settings.
+
+The only network request Barista makes is the optional update check: an anonymous HTTPS request to GitHub’s public releases API, at most once a day. It sends no identifiers, usage, or session data. Turn it off in Settings → Updates.
 
 The build is ad-hoc signed for local use, and release builds aren’t notarized yet. After the first launch, allow the app in System Settings → Privacy & Security → **Open Anyway**. Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.
 

@@ -15,4 +15,12 @@ jobs:
       - name: CLI, MCP, and hook integration
         run: python3 Tests/agent_integration.py
       - name: App bundle
-        run: zsh scripts/build-app.sh
+        run: zsh scripts/build-app.sh --universal
+      - name: Zip app
+        run: ditto -c -k --sequesterRsrc --keepParent build/Barista.app Barista.zip
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Barista-${{ github.sha }}
+          path: Barista.zip
+          retention-days: 30

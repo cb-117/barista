@@ -109,6 +109,10 @@ struct CoffeeCLI {
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
             let connection = AgentConnection(path: options.values["--socket"] ?? ControlEndpoint.path,
                                              autoLaunch: !options.flags.contains("--no-launch"))
+            if options.command == "version" || options.command == "--version" {
+                print("barista \(BaristaVersion.current)")
+                return
+            }
             if options.command == "help" || options.command == "--help" || options.command == "-h" {
                 print(help)
                 return
@@ -268,6 +272,7 @@ struct CoffeeCLI {
     barista run [--name "Build"] [--display] [--max-awake 28800] -- COMMAND [ARG ...]
     barista mcp
     barista hooks install|uninstall|status [--settings PATH]
+    barista version
 
     Agent sessions default to screen-off-friendly, expire after 5 minutes without renewal,
     and have an 8-hour hard limit (--max-awake accepts seconds, up to 24 hours).

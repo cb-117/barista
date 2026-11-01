@@ -20,9 +20,14 @@ final class AppRuntime: ObservableObject {
     var onShowPanel: (() -> Void)?
     var onShowSettings: (() -> Void)?
     @Published private(set) var claudeStatus: ClaudeStatus = .notFound
+    @Published var checksForUpdates: Bool { didSet { defaults.set(checksForUpdates, forKey: "checksForUpdates"); scheduleUpdateChecks() } }
+    @Published private(set) var availableUpdate: AvailableUpdate?
+    @Published private(set) var updateStatus: String?
+    @Published private(set) var isCheckingForUpdates = false
     private let defaults = UserDefaults.standard
     private let server = ControlServer()
     private var shortcut: GlobalHotKey?
+    private var updateTimer: Timer?
 
     init() {
         let defaults = UserDefaults.standard
@@ -31,6 +36,7 @@ final class AppRuntime: ObservableObject {
         shortcutEnabled = defaults.object(forKey: "shortcutEnabled") as? Bool ?? true
         shortcutChoice = defaults.string(forKey: "shortcutChoice") ?? "controlOptionCommand"
         agentAccess = defaults.object(forKey: "agentAccess") as? Bool ?? true
+        checksForUpdates = defaults.object(forKey: "checksForUpdates") as? Bool ?? true
         notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
         session.keepDisplayAwake = defaults.object(forKey: "keepDisplayAwake") as? Bool ?? true
         session.batteryThreshold = defaults.object(forKey: "batteryThreshold") as? Int ?? 20
@@ -95,6 +101,7 @@ final class AppRuntime: ObservableObject {
         configureShortcut()
         configureAgentAccess()
         refreshClaudeStatus()
+        scheduleUpdateChecks()
     }
     func shutdown() {
         session.stop(reason: .appQuit)
@@ -202,6 +209,66 @@ final class AppRuntime: ObservableObject {
             for lease in session.sessions where lease.isTask { session.cancel(id: lease.id) }
         }
     }
+    // MARK: Updates
+
+    /// The update to show in the panel, unless the user dismissed that version.
+    var visibleUpdate: AvailableUpdate? {
+        guard let update = availableUpdate, defaults.string(forKey: "dismissedUpdate") != update.version else { return nil }
+        return update
+    }
+    func dismissUpdate() {
+        defaults.set(availableUpdate?.version, forKey: "dismissedUpdate")
+        objectWillChange.send()
+    }
+    func openUpdate() {
+        guard let update = availableUpdate else { return }
+        NSWorkspace.shared.open(update.downloadURL ?? update.pageURL)
+    }
+    private func scheduleUpdateChecks() {
+        updateTimer?.invalidate()
+        updateTimer = nil
+        guard checksForUpdates else { return }
+        // Check hourly whether a day has passed, so sleep and restarts don't skip or repeat checks.
+        let timer = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkForUpdatesIfDue() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.checkForUpdatesIfDue() }
+    }
+    private func checkForUpdatesIfDue() {
+        guard checksForUpdates else { return }
+        let last = defaults.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
+        guard Date().timeIntervalSince(last) >= 86400 else { return }
+        checkForUpdates(userInitiated: false)
+    }
+    /// Asks GitHub for the latest release. Sends no identifiers beyond a standard HTTPS request.
+    func checkForUpdates(userInitiated: Bool) {
+        guard !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+        if userInitiated { updateStatus = "Checking…" }
+        Task { @MainActor in
+            defer { isCheckingForUpdates = false }
+            var request = URLRequest(url: UpdateCheck.latestReleaseURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
+            do {
+                let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                // 404 means nothing has been released yet.
+                guard status == 200 || status == 404 else { throw URLError(.badServerResponse) }
+                defaults.set(Date(), forKey: "lastUpdateCheck")
+                availableUpdate = status == 200 ? UpdateCheck.newerRelease(in: data) : nil
+                if userInitiated {
+                    updateStatus = availableUpdate.map { "Barista \($0.version) is available." } ?? "You’re up to date (\(BaristaVersion.current))."
+                    if availableUpdate != nil { defaults.removeObject(forKey: "dismissedUpdate") }
+                }
+            } catch {
+                if userInitiated { updateStatus = "Couldn’t reach GitHub. Try again later." }
+            }
+        }
+    }
+
     private func configureShortcut() {
         shortcut?.unregister()
         shortcut = nil

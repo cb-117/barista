@@ -46,7 +46,7 @@ struct MCPServer {
                     result = [
                         "protocolVersion": Self.versions.contains(requested) ? requested : Self.versions[0],
                         "capabilities": ["tools": ["listChanged": false]],
-                        "serverInfo": ["name": "barista", "title": "Barista", "version": "1.0.0"],
+                        "serverInfo": ["name": "barista", "title": "Barista", "version": BaristaVersion.current],
                         "instructions": "Keep this Mac awake only during active work. Acquire a named session, renew it with heartbeats (default TTL: 300 seconds), report progress, and release your own ID when done or waiting for the user. Sessions stop on expiry, process exit, battery protection, or the user's Stop action. Never reacquire to override a user's Stop. Display stays off-friendly by default. No lid-closed sleep override."
                     ]
                 case "ping": result = [:]

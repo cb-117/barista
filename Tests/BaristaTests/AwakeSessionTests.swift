@@ -168,6 +168,46 @@ private func expect(_ condition: @autoclosure () -> Bool, file: StaticString = #
     precondition(condition(), "Session check failed", file: file, line: line)
 }
 
+@MainActor
+func menuBarShowsTimerOrTaskCount() {
+    var now = Date(timeIntervalSince1970: 1000)
+    let session = AwakeSession(power: FakePower(), schedulesTimer: false, now: { now }, batteryProvider: { nil })
+    _ = try? session.acquire(title: "Claude Code", source: .agent, duration: 1200)
+    expect(session.menuBarCountdown == "1 task")
+    _ = try? session.acquire(title: "make test", source: .command, duration: 300)
+    expect(session.menuBarCountdown == "2 tasks")
+    session.start(duration: 600)
+    now = now.addingTimeInterval(30)
+    session.refresh()
+    expect(session.menuBarCountdown == "10m")
+    session.stop()
+}
+
+func updateCheckComparesReleases() {
+    expect(UpdateCheck.isVersion("v0.0.2", newerThan: "0.0.1"))
+    expect(UpdateCheck.isVersion("0.1", newerThan: "0.0.9"))
+    expect(UpdateCheck.isVersion("1.10.0", newerThan: "1.9.9"))
+    expect(!UpdateCheck.isVersion("v0.0.1", newerThan: "0.0.1"))
+    expect(!UpdateCheck.isVersion("0.0.1.0", newerThan: "0.0.1"))
+    expect(!UpdateCheck.isVersion("0.0.0", newerThan: "0.0.1"))
+    expect(!UpdateCheck.isVersion("nightly", newerThan: "0.0.1"))
+    expect(!UpdateCheck.isVersion("1.0-beta", newerThan: "0.0.1"))
+    func release(_ fields: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: fields) }
+    let newer = release(["tag_name": "v0.2.0", "html_url": "https://github.com/cb-117/barista/releases/tag/v0.2.0",
+                         "assets": [["browser_download_url": "https://github.com/cb-117/barista/releases/download/v0.2.0/Barista-0.2.0.zip"]]])
+    let update = UpdateCheck.newerRelease(in: newer, than: "0.0.1")
+    expect(update?.version == "0.2.0")
+    expect(update?.downloadURL?.lastPathComponent == "Barista-0.2.0.zip")
+    expect(UpdateCheck.newerRelease(in: newer, than: "0.2.0") == nil)
+    expect(UpdateCheck.newerRelease(in: release(["tag_name": "v9.0.0", "prerelease": true]), than: "0.0.1") == nil)
+    // Release data can't send the app to an arbitrary site.
+    let hostile = release(["tag_name": "v9.0.0", "html_url": "https://evil.example/x",
+                           "assets": [["browser_download_url": "http://github.com/x.zip"]]])
+    expect(UpdateCheck.newerRelease(in: hostile, than: "0.0.1")?.pageURL == UpdateCheck.releasesPage)
+    expect(UpdateCheck.newerRelease(in: hostile, than: "0.0.1")?.downloadURL == nil)
+    expect(UpdateCheck.newerRelease(in: Data("not json".utf8), than: "0.0.1") == nil)
+}
+
 @main
 struct SessionChecks {
     @MainActor static func main() async throws {
@@ -188,7 +228,9 @@ struct SessionChecks {
         failedDowngradeKeepsOtherSessionsProtected()
         stopTokenAndTurnCap()
         customDurationRejectsInvalidText()
-        print("Passed all 8 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, and custom-duration input.")
+        menuBarShowsTimerOrTaskCount()
+        updateCheckComparesReleases()
+        print("Passed all 10 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, custom-duration input, menu-bar text, and update checks.")
         try await runTaskSessionChecks()
         if CommandLine.arguments.contains("--power") {
             try checkNativePowerAssertions()

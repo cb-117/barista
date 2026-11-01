@@ -86,14 +86,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.performClose(nil)
         let session = runtime.session
         let menu = NSMenu()
+        let tasks = session.sessions.filter { $0.source != .manual }
+        if !tasks.isEmpty {
+            menu.addItem(NSMenuItem(title: "Keeping your Mac awake", action: nil, keyEquivalent: ""))
+            for lease in tasks {
+                let item = NSMenuItem(title: lease.title, action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                submenu.addItem(action("Stop keeping awake") { session.cancel(id: lease.id) })
+                item.submenu = submenu
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
         if let manual = session.manualSession {
             let remaining = manual.expiresAt.map { _ in "\(session.menuBarCountdown) left" } ?? "Until stopped"
-            menu.addItem(NSMenuItem(title: "Awake · \(remaining)", action: nil, keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Your timer · \(remaining)", action: nil, keyEquivalent: ""))
             if manual.expiresAt != nil { menu.addItem(action("Add 15 minutes") { session.addTime(900) }) }
             menu.addItem(action("Stop") { session.stopManual() })
         } else {
-            let header = NSMenuItem(title: session.isActive ? "Kept awake by \(session.sessions.count) task(s)" : "Keep awake for", action: nil, keyEquivalent: "")
-            menu.addItem(header)
+            menu.addItem(NSMenuItem(title: "Keep awake for", action: nil, keyEquivalent: ""))
             for (title, seconds) in [("15 minutes", 900.0), ("1 hour", 3600), ("4 hours", 14400)] {
                 menu.addItem(action(title) { [weak self] in self?.runtime.startManual(seconds: seconds) })
             }

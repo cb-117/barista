@@ -51,12 +51,15 @@ struct CoffeePopover: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             if let notice = runtime.notice { NoticeBanner(text: notice) { runtime.notice = nil } }
+            if let update = runtime.visibleUpdate { UpdateBanner(update: update, runtime: runtime) }
             if session.batteryBlocked {
                 Label("Battery protection is on. Connect power to start a session.", systemImage: "battery.25")
                     .font(.system(size: 11)).foregroundStyle(accent)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
             }
+            // With no timer of your own, what's keeping the Mac awake matters most: show it first.
+            if session.manualSession == nil && !tasks.isEmpty { taskList }
             if let manual = session.manualSession { manualCard(manual) } else { durationPicker }
             HStack {
                 Text("Keep display on").font(.system(size: 12))
@@ -69,7 +72,7 @@ struct CoffeePopover: View {
                 Text(error).font(.caption).foregroundStyle(.red).accessibilityLabel("Error: \(error)")
             }
             primaryButton
-            if !tasks.isEmpty { taskList }
+            if session.manualSession != nil && !tasks.isEmpty { taskList }
             footer
         }
         .padding(18)
@@ -211,7 +214,7 @@ struct CoffeePopover: View {
 
     private var taskList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Also keeping your Mac awake").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            Text(session.manualSession == nil ? "Keeping your Mac awake" : "Also keeping your Mac awake").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             ScrollView {
                 VStack(spacing: 6) { ForEach(tasks) { TaskRow(lease: $0, session: session) } }
             }
@@ -261,6 +264,23 @@ struct NoticeBanner: View {
             Spacer(minLength: 0)
             Button(action: dismiss) { Image(systemName: "xmark.circle.fill") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Dismiss notice")
+        }
+        .padding(10).background(CoffeeTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+struct UpdateBanner: View {
+    let update: AvailableUpdate
+    let runtime: AppRuntime
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(CoffeeTheme.accent)
+            Text("Barista \(update.version) is available").font(.system(size: 11, weight: .medium))
+            Spacer(minLength: 0)
+            Button("Download") { runtime.openUpdate() }
+                .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(CoffeeTheme.accent)
+            Button { runtime.dismissUpdate() } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Dismiss update")
         }
         .padding(10).background(CoffeeTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
     }

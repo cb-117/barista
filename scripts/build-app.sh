@@ -32,6 +32,12 @@ lipo -create "${launcher_binaries[@]}" -output "$launcher/Contents/MacOS/Barista
 cp Support/LauncherInfo.plist "$launcher/Contents/Info.plist"
 cp Support/Barista.icns "$staging/Contents/Resources/Barista.icns"
 cp Support/Info.plist "$staging/Contents/Info.plist"
+# The version lives only in Sources/BaristaCore/Version.swift; stamp it into both bundles.
+version="$(sed -n 's/.*static let current = "\(.*\)".*/\1/p' Sources/BaristaCore/Version.swift)"
+[[ -n "$version" ]] || { print -u2 "Couldn't read the version from Version.swift"; exit 1; }
+for plist in "$staging/Contents/Info.plist" "$launcher/Contents/Info.plist"; do
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" -c "Set :CFBundleVersion $version" "$plist"
+done
 cp docs/AGENTS.md "$staging/Contents/Resources/AgentGuide.md"
 codesign --force --sign - --options runtime "$staging/Contents/Helpers/barista"
 codesign --force --sign - --options runtime "$launcher"
@@ -50,5 +56,5 @@ else
     mv "$staging" "$PWD/build/Barista.app"
 fi
 ln -sfn Barista.app/Contents/Helpers/barista "$PWD/build/barista"
-print "Built: $PWD/build/Barista.app"
+print "Built: $PWD/build/Barista.app ($version)"
 print "Agent CLI: $PWD/build/barista"

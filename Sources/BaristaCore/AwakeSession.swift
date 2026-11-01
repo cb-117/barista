@@ -77,11 +77,15 @@ public final class AwakeSession: ObservableObject {
         if seconds >= 3600 { return String(format: "%d:%02d:%02d", seconds / 3600, seconds % 3600 / 60, seconds % 60) }
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
+    /// Your own timer shows its time left. Commands and agents renew a short lease while they
+    /// work, so their expiry means nothing to a person; show how many are running instead.
     public var menuBarCountdown: String {
-        if sessions.count > 1 { return "\(sessions.count) tasks" }
-        if isIndefinite { return "∞" }
-        let minutes = Int(ceil(remaining / 60))
-        return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+        if let manual = manualSession {
+            guard let end = manual.expiresAt else { return "∞" }
+            let minutes = Int(ceil(max(0, end.timeIntervalSince(currentDate)) / 60))
+            return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+        }
+        return sessions.count == 1 ? "1 task" : "\(sessions.count) tasks"
     }
 
     public func start(duration: TimeInterval?) {
@@ -203,7 +207,7 @@ public final class AwakeSession: ObservableObject {
     }
     public func snapshot() -> SessionSnapshot {
         refresh()
-        return SessionSnapshot(version: "1.0.0", awake: isActive, displayAwake: assertionDisplay == true,
+        return SessionSnapshot(version: BaristaVersion.current, awake: isActive, displayAwake: assertionDisplay == true,
                                battery: battery, batteryThreshold: batteryThreshold, batteryBlocked: batteryBlocked,
                                sessions: sessions, history: history, error: error, stopToken: stopToken)
     }

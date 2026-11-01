@@ -52,6 +52,23 @@ struct CoffeeSettingsView: View {
             }
 
             Section {
+                Toggle("Check for updates automatically", isOn: $runtime.checksForUpdates)
+                HStack {
+                    Button("Check now") { runtime.checkForUpdates(userInitiated: true) }
+                        .disabled(runtime.isCheckingForUpdates)
+                    if let status = runtime.updateStatus {
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let update = runtime.availableUpdate {
+                        Button("Download \(update.version)") { runtime.openUpdate() }
+                    }
+                }
+            } header: { Text("Updates") } footer: {
+                Text("Once a day, Barista asks GitHub whether there’s a newer release. Nothing about you or your Mac is sent.")
+            }
+
+            Section {
                 if session.history.isEmpty {
                     Text("Nothing yet").foregroundStyle(.secondary)
                 }
@@ -72,11 +89,11 @@ struct CoffeeSettingsView: View {
                     if !session.history.isEmpty { Button("Clear") { session.clearHistory() }.buttonStyle(.link) }
                 }
             } footer: {
-                Text("Barista \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · Prevents idle sleep. Closing the lid or choosing Sleep still sleeps your Mac.")
+                Text("Barista \(BaristaVersion.current) · Prevents idle sleep. Closing the lid or choosing Sleep still sleeps your Mac.")
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 620)
+        .frame(width: 460, height: 680)
         .tint(CoffeeTheme.accent)
         .onAppear { runtime.refreshClaudeStatus() }
     }
