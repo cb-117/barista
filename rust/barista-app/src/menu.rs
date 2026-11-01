@@ -317,7 +317,12 @@ pub fn handle(app: &Shared, id: &str) -> bool {
     match command {
         "quit" => return true,
         "dismiss-notice" => state.notice = None,
-        "start" => state.start_manual(argument.parse::<f64>().ok()),
+        "start" => match argument.parse::<f64>() {
+            // Presets and custom minutes from the panel: 1 minute to 24 hours.
+            Ok(seconds) if (60.0..=86400.0).contains(&seconds) => state.start_manual(Some(seconds)),
+            Ok(_) => state.notice = Some("Choose from 1 to 1,440 minutes.".into()),
+            Err(_) => state.start_manual(None),
+        },
         "add" => state.session.add_time(argument.parse().unwrap_or(900.0)),
         "stop-manual" => state.session.stop_manual(),
         "cancel" => state.session.cancel(argument),
@@ -425,6 +430,29 @@ fn copy(text: &str) -> std::result::Result<(), String> {
     clipboard.set_text(text.to_string()).map_err(|error| error.to_string())
 }
 
+/// An agent's totals for a period show any use.
+fn agent_active(agent: &serde_json::Value) -> bool {
+    ["totalTokens", "turns", "sessions", "requests"]
+        .iter()
+        .any(|key| agent[*key].as_u64().unwrap_or(0) > 0)
+}
+
+/// Any plan limits known, or any agent activity in any period.
+fn has_activity(report: &serde_json::Value) -> bool {
+    let limits = report["limits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|limit| limit["available"].as_bool() == Some(true));
+    let used = report["periods"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|period| period["agents"].as_array().into_iter().flatten())
+        .any(agent_active);
+    limits || used
+}
+
 /// Plan limits, then today, this week, and this month per agent, plus a signature of what it shows.
 fn usage_menu(report: Option<&serde_json::Value>, loading: bool) -> (Vec<Entry>, String) {
     use barista_core::usage::{limit_summary, summary};
@@ -436,16 +464,39 @@ fn usage_menu(report: Option<&serde_json::Value>, loading: bool) -> (Vec<Entry>,
         } else {
             "No usage yet".to_string()
         }),
+        Some(report) if !has_activity(report) => {
+            lines.push("No Claude Code, Codex, or Cursor activity on this computer yet".to_string());
+        }
         Some(report) => {
-            lines.push("Limits".to_string());
-            for limit in report["limits"].as_array().into_iter().flatten() {
-                lines.push(format!("{} · {}", limit["name"].as_str().unwrap_or(""), limit_summary(limit)));
+            let limits: Vec<&serde_json::Value> = report["limits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|limit| limit["available"].as_bool() == Some(true))
+                .collect();
+            if !limits.is_empty() {
+                lines.push("Limits".to_string());
+                for limit in limits {
+                    lines.push(format!("{} · {}", limit["name"].as_str().unwrap_or(""), limit_summary(limit)));
+                }
             }
             for period in report["periods"].as_array().into_iter().flatten() {
-                lines.push(String::new());
-                lines.push(period["label"].as_str().unwrap_or("").to_string());
-                for agent in period["agents"].as_array().into_iter().flatten() {
-                    lines.push(format!("{}: {}", agent["name"].as_str().unwrap_or(""), summary(agent)));
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
+                let label = period["label"].as_str().unwrap_or("").to_string();
+                let active: Vec<String> = period["agents"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|agent| agent_active(agent))
+                    .map(|agent| format!("{}: {}", agent["name"].as_str().unwrap_or(""), summary(agent)))
+                    .collect();
+                if active.is_empty() {
+                    lines.push(format!("{label}: no activity"));
+                } else {
+                    lines.push(label);
+                    lines.extend(active);
                 }
             }
         }
@@ -467,4 +518,218 @@ fn usage_menu(report: Option<&serde_json::Value>, loading: bool) -> (Vec<Entry>,
     }
     lines.push(format!("{loading}{offer}"));
     (menu, lines.join("\u{1f}"))
+}
+
+/// Windows' right-click menu when the panel is available: just the essentials. Everything else lives
+/// in the panel (left-click).
+pub fn build_short(app: &Shared) -> Model {
+    let full = build(app);
+    let state = lock(app);
+    let session = &state.session;
+    let mut menu = Vec::new();
+    let mut signature = vec![full.tooltip.clone(), full.title.clone()];
+    if let Some(manual) = session.manual_session() {
+        let remaining = if manual.expires_at.is_some() {
+            format!("{} left", session.countdown_label())
+        } else {
+            "until stopped".into()
+        };
+        menu.push(label(&format!("Your timer · {remaining}")));
+        if manual.expires_at.is_some() {
+            menu.push(item("add:900", "Add 15 minutes"));
+        }
+        menu.push(item("stop-manual", "Stop"));
+        signature.push(remaining);
+    } else {
+        menu.push(label("Keep awake for"));
+        let enabled = !session.battery_blocked();
+        for (id, text) in [
+            ("start:900", "15 minutes"),
+            ("start:3600", "1 hour"),
+            ("start:14400", "4 hours"),
+            ("start:forever", "Until stopped"),
+        ] {
+            menu.push(Entry::Item {
+                id: id.into(),
+                text: text.into(),
+                enabled,
+            });
+        }
+        signature.push(format!("idle {enabled}"));
+    }
+    if session.is_active() {
+        menu.push(item("stop-all", "Stop all"));
+    }
+    menu.push(Entry::Separator);
+    menu.push(item("panel:open", "Open Barista"));
+    menu.push(item("quit", "Quit Barista"));
+    signature.push(session.is_active().to_string());
+    Model {
+        entries: menu,
+        signature: signature.join("\u{1f}"),
+        tooltip: full.tooltip,
+        title: full.title,
+        active: full.active,
+    }
+}
+
+/// A one-line summary of plan limits for the panel's footer ("Claude 24% · ChatGPT 6%"), else
+/// today's tokens, else nothing.
+#[cfg(windows)]
+fn usage_summary(report: Option<&serde_json::Value>) -> Option<String> {
+    let report = report?;
+    let mut parts = Vec::new();
+    for (agent, short, preferred) in [("claude", "Claude", "five_hour"), ("codex", "ChatGPT", "primary")] {
+        let Some(limit) = report["limits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|limit| limit["agent"] == agent && limit["available"].as_bool() == Some(true))
+        else {
+            continue;
+        };
+        let windows: Vec<&serde_json::Value> = limit["windows"].as_array().into_iter().flatten().collect();
+        let window = windows.iter().find(|w| w["id"] == preferred).or_else(|| windows.first());
+        if let Some(percent) = window.and_then(|w| w["usedPercent"].as_f64()) {
+            parts.push(format!("{short} {}%", percent.round() as i64));
+        }
+    }
+    if !parts.is_empty() {
+        return Some(parts.join(" · "));
+    }
+    let today = report["periods"].as_array()?.iter().find(|p| p["id"] == "today")?;
+    let tokens = today["totalTokens"].as_u64().unwrap_or(0);
+    (tokens > 0).then(|| format!("Today {} tokens", barista_core::usage::format_tokens(tokens)))
+}
+
+#[cfg(windows)]
+thread_local! {
+    /// Whether to offer Claude Code's status line, and when that was last read: it reads Claude
+    /// Code's settings from disk, too slow to repeat every second the panel is open.
+    static STATUSLINE_OFFER: std::cell::Cell<Option<(std::time::Instant, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Forget cached panel facts (after a command, which may have changed them).
+#[cfg(windows)]
+pub fn invalidate_panel_cache() {
+    STATUSLINE_OFFER.with(|offer| offer.set(None));
+}
+
+#[cfg(windows)]
+fn statusline_offer() -> bool {
+    STATUSLINE_OFFER.with(|cache| match cache.get() {
+        Some((read, offer)) if read.elapsed() < std::time::Duration::from_secs(30) => offer,
+        _ => {
+            let offer = HookAgent::Claude.is_installed() && barista_core::hooks::statusline_status(None) == "Not connected";
+            cache.set(Some((std::time::Instant::now(), offer)));
+            offer
+        }
+    })
+}
+
+/// Everything the Windows panel shows, as JSON for its page (see assets/panel.html). Nothing in it
+/// changes by itself from one second to the next (countdowns are end times the page counts down
+/// to), so the panel can skip posting an unchanged snapshot.
+#[cfg(windows)]
+pub fn panel_state(app: &Shared) -> serde_json::Value {
+    use serde_json::json;
+    let offer = statusline_offer();
+    let mut state = lock(app);
+    state.session.refresh();
+    let state = &*state;
+    let session = &state.session;
+    let manual = session.manual_session().map(|lease| {
+        json!({
+            "indefinite": lease.expires_at.is_none(),
+            "total": lease.expires_at.map(|end| (end - lease.started_at).max(1.0)),
+            "endsAt": lease.expires_at.map(|end| (end * 1000.0) as i64),
+        })
+    });
+    let tasks: Vec<serde_json::Value> = session
+        .sessions()
+        .iter()
+        .filter(|lease| lease.source != SessionSource::Manual)
+        .map(|lease| {
+            let display = if lease.keep_display_awake {
+                "display on"
+            } else {
+                "display may sleep"
+            };
+            // A timed lease counts down on the page ("12:34 left · display on") from endsAt.
+            let (until, ends_at) = match (lease.source, lease.expires_at) {
+                (SessionSource::Application, Some(_)) => (Some("While it’s busy"), None),
+                (SessionSource::Application, None) => (Some("Until the app quits"), None),
+                (SessionSource::Command, _) => (Some("Until the command finishes"), None),
+                (_, Some(end)) => (None, Some((end * 1000.0) as i64)),
+                (_, None) => (Some("Until stopped"), None),
+            };
+            let detail = lease.message.clone().or_else(|| until.map(|until| format!("{until} · {display}")));
+            json!({
+                "id": lease.id,
+                "title": lease.title,
+                "source": lease.source.as_str(),
+                "message": lease.message,
+                "progress": lease.progress,
+                "detail": detail,
+                "endsAt": ends_at,
+                "display": display,
+            })
+        })
+        .collect();
+    let history: Vec<serde_json::Value> = session
+        .history()
+        .iter()
+        .take(10)
+        .map(|event| json!({"title": event.title, "reason": event.reason.label(), "endedAt": (event.ended_at * 1000.0) as i64}))
+        .collect();
+    let agents: Vec<serde_json::Value> = state
+        .agents
+        .iter()
+        .map(|(agent, status)| {
+            let status = match status {
+                AgentStatus::Connected => "connected",
+                AgentStatus::Moved => "moved",
+                AgentStatus::Disconnected => "disconnected",
+                AgentStatus::NotFound => "notFound",
+            };
+            let name = if *agent == HookAgent::Codex {
+                "ChatGPT Codex"
+            } else {
+                agent.display_name()
+            };
+            json!({"key": agent.name(), "name": name, "status": status})
+        })
+        .collect();
+    let prefs = &state.prefs;
+    json!({
+        "version": VERSION,
+        "awake": session.is_active(),
+        "notice": state.notice,
+        "error": session.error,
+        "update": state.visible_update().map(|update| json!({"version": update.version})),
+        "updateStatus": state.update_status,
+        "batteryBlocked": session.battery_blocked(),
+        "batteryThreshold": session.battery_threshold(),
+        "manual": manual,
+        "tasks": tasks,
+        "sessionCount": session.sessions().len(),
+        "history": history,
+        "prefs": {
+            "keepDisplayAwake": prefs.keep_display_awake,
+            "batteryThreshold": prefs.battery_threshold,
+            "notifications": prefs.notifications_enabled,
+            "checksForUpdates": prefs.checks_for_updates,
+            "agentAccess": prefs.agent_access,
+            "claudeAccountLimits": prefs.claude_account_limits,
+            "watchCowork": prefs.watch_cowork,
+            "watchChatgpt": prefs.watch_chatgpt,
+            "launchAtLogin": state.launch_at_login,
+        },
+        "agents": agents,
+        "usage": state.usage,
+        "usageLoading": state.usage_loading,
+        "usageSummary": usage_summary(state.usage.as_ref()),
+        "usageHasActivity": state.usage.as_ref().map(has_activity).unwrap_or(false),
+        "statuslineOffer": offer,
+    })
 }

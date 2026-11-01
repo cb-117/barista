@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Everything is inline; nothing is ever loaded from anywhere. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Barista</title>
+<style>
+  :root {
+    /* WCAG AA (4.5:1) checked for every pairing in both themes: white on --accent is 5.73:1 (hover
+       6.57:1); --accent-text is 5.95:1 on --bg, 5.45:1 on --card, 4.72:1 on --accent-soft over --card.
+       Dark: --accent-text is 7.15:1 on --bg, 6.13:1 on --card, 4.88:1 on --accent-soft over --card. */
+    --accent: #A84A1F;
+    --accent-hover: #9A431E;
+    --accent-text: #9E4620;
+    --accent-soft: rgba(199, 90, 43, 0.12);
+    --bg: #F9F9F9;
+    --card: #EFEFEF;
+    --card-hover: #E7E7E7;
+    --text: #1F1F1F;
+    --muted: #6B6B6B;
+    --line: rgba(0, 0, 0, 0.08);
+    --track: #DDDDDD;
+    --ok: #2EA043;
+    --warn: #C2410C;
+    --radius: 10px;
+    font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #202020;
+      --card: #2C2C2C;
+      --card-hover: #343434;
+      --text: #F1F1F1;
+      --muted: #A3A3A3;
+      --line: rgba(255, 255, 255, 0.08);
+      --track: #3D3D3D;
+      --accent-soft: rgba(199, 90, 43, 0.22);
+      --accent-text: #F0956A;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-size: 14px; -webkit-font-smoothing: antialiased; user-select: none; overflow: hidden; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+  /* Notices and errors can be selected and copied (Ctrl+C). */
+  .selectable { user-select: text; -webkit-user-select: text; cursor: text; }
+  .view { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 18px 18px 12px; gap: 12px; overflow-y: auto; }
+  .view > * { flex-shrink: 0; }
+  .view[hidden] { display: none; }
+  .view::-webkit-scrollbar { width: 8px; }
+  .view::-webkit-scrollbar-thumb { background: var(--track); border-radius: 4px; }
+
+  header { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .brand { font-weight: 700; font-size: 18px; letter-spacing: -0.2px; }
+  .cup { width: 26px; height: 26px; color: var(--accent-text); flex: none; }
+  .pill { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--track); }
+  .dot.on { background: var(--ok); }
+  .back { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); }
+  .back:hover { background: var(--card); color: var(--text); }
+  .title { font-weight: 600; font-size: 16px; }
+
+  .banner { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: var(--radius); background: var(--accent-soft); font-size: 12.5px; line-height: 1.35; }
+  .banner .text { flex: 1; }
+  .banner .action { color: var(--accent-text); font-weight: 600; white-space: nowrap; }
+  .banner .close { color: var(--muted); }
+
+  .chips { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .chip { height: 38px; border-radius: 8px; background: var(--card); font-weight: 600; border: 1px solid transparent; }
+  .chip:hover { background: var(--card-hover); }
+  .chip[aria-pressed="true"] { border-color: var(--accent-text); color: var(--accent-text); background: var(--accent-soft); }
+  .chip:disabled { opacity: 0.45; cursor: default; }
+  .custom { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .custom input { width: 84px; height: 32px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); padding: 0 8px; font: inherit; }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; }
+  .row .label { display: flex; flex-direction: column; gap: 2px; }
+  .row .hint { font-size: 12px; color: var(--muted); }
+  .switch { position: relative; width: 40px; height: 22px; border-radius: 11px; background: var(--track); flex: none; transition: background 0.15s; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.3); transition: transform 0.15s; }
+  .switch[aria-checked="true"] { background: var(--accent); }
+  .switch[aria-checked="true"]::after { transform: translateX(18px); }
+
+  .primary { height: 44px; border-radius: var(--radius); background: var(--accent); color: #fff; font-weight: 600; font-size: 15px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .primary:hover { background: var(--accent-hover); }
+  .primary:disabled { opacity: 0.5; cursor: default; }
+  .primary svg { width: 18px; height: 18px; }
+
+  .timer { background: var(--card); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .countdown { font-size: 44px; font-weight: 300; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .bar > div { height: 100%; background: var(--muted); border-radius: 3px; }
+  .bar.accent > div { background: var(--accent); }
+  .bar.warn > div { background: var(--warn); }
+  .timer .meta { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 13px; }
+  .link { color: var(--accent-text); font-weight: 600; }
+
+  .section-title { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .card { background: var(--card); border-radius: var(--radius); padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start; }
+  .card .icon { width: 18px; height: 18px; color: var(--accent-text); flex: none; margin-top: 1px; }
+  .card .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .card .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .detail { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .x { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); flex: none; }
+  .x:hover { background: var(--card-hover); color: var(--text); }
+  .note { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+  .empty { color: var(--muted); font-size: 13px; line-height: 1.45; padding: 14px; background: var(--card); border-radius: var(--radius); }
+
+  footer { margin-top: auto; display: flex; align-items: center; gap: 6px; padding-top: 8px; color: var(--muted); font-size: 13px; }
+  footer .text-button { padding: 4px 6px; border-radius: 6px; }
+  footer .text-button:hover { background: var(--card); color: var(--text); }
+  footer .usage { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  footer .spacer { flex: 1; }
+  .icon-button { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); flex: none; }
+  .icon-button:hover { background: var(--card); color: var(--text); }
+  .icon-button svg, .back svg, .x svg { width: 16px; height: 16px; }
+
+  .segmented { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--card); border-radius: 8px; padding: 3px; gap: 3px; }
+  .segmented button { height: 28px; border-radius: 6px; font-size: 13px; color: var(--muted); }
+  .segmented button[aria-pressed="true"] { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.12); }
+  .limit { display: flex; flex-direction: column; gap: 6px; }
+  .limit .head { display: flex; justify-content: space-between; gap: 8px; }
+  .limit .head .source { color: var(--muted); font-size: 12px; }
+  .window { display: flex; flex-direction: column; gap: 4px; }
+  .window .line { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .agent { display: flex; flex-direction: column; gap: 4px; }
+  .agent .top { display: flex; justify-content: space-between; gap: 8px; }
+  .agent .cost { font-variant-numeric: tabular-nums; }
+  .model { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; padding-left: 10px; }
+  .model span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .group { display: flex; flex-direction: column; gap: 6px; background: var(--card); border-radius: var(--radius); padding: 10px 12px; }
+  .group-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; margin: 4px 2px 0; }
+  .group .row + .row { border-top: 1px solid var(--line); padding-top: 6px; }
+  .small-button { padding: 5px 10px; border-radius: 6px; background: var(--bg); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  .small-button:hover { background: var(--card-hover); }
+  .small-button.accent { color: var(--accent-text); }
+  select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; height: 30px; padding: 0 6px; }
+  .history { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+  .history span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history span:last-child { color: var(--muted); white-space: nowrap; }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* High contrast themes: the system colors replace ours, so state has to show without them. */
+  @media (forced-colors: active) {
+    .switch { border: 1px solid ButtonText; background: Canvas; }
+    .switch::after { background: ButtonText; box-shadow: none; top: 2px; left: 2px; }
+    .switch[aria-checked="true"] { background: Highlight; border-color: Highlight; }
+    .switch[aria-checked="true"]::after { background: HighlightText; }
+    .chip, .primary, .small-button, .segmented button, .text-button, .icon-button, .back, .x, .link, .banner .action { border: 1px solid ButtonText; color: ButtonText; background: ButtonFace; forced-color-adjust: none; }
+    .chip[aria-pressed="true"], .segmented button[aria-pressed="true"] { background: Highlight; color: HighlightText; border-color: Highlight; }
+    .chip:disabled, .primary:disabled { color: GrayText; border-color: GrayText; opacity: 1; }
+    .bar { border: 1px solid CanvasText; }
+    .bar > div, .bar.accent > div, .bar.warn > div { background: Highlight; forced-color-adjust: none; }
+    .dot { border: 1px solid CanvasText; }
+    .dot.on { background: Highlight; forced-color-adjust: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<section id="main" class="view" aria-label="Barista"></section>
+<section id="usage" class="view" aria-label="Usage and limits" hidden></section>
+<section id="settings" class="view" aria-label="Settings" hidden></section>
+
+<script>
+"use strict";
+
+// ---- Icons (inline SVG, no external resources) --------------------------------------------------
+const ICONS = {
+  cup: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 9h12v4a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V9Zm12 1h1.5a2.5 2.5 0 0 1 0 5H16v-1.6h1.5a.9.9 0 0 0 0-1.8H16V10ZM3 19.5h14a.5.5 0 0 1 0 1H3a.5.5 0 0 1 0-1Z"/></svg>',
+  cupOutline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4.5 9.5h11v3.5a4.5 4.5 0 0 1-4.5 4.5H9A4.5 4.5 0 0 1 4.5 13V9.5Z"/><path d="M15.5 10.5h1.8a2.2 2.2 0 0 1 0 4.4h-1.8"/><path d="M3.5 20h13"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.3Z"/></svg>',
+  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>',
+  sparkle: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l1.7 5.2a3 3 0 0 0 1.9 1.9l5.2 1.7-5.2 1.7a3 3 0 0 0-1.9 1.9L12 20.1l-1.7-5.2a3 3 0 0 0-1.9-1.9L3.2 11.3l5.2-1.7a3 3 0 0 0 1.9-1.9L12 2.5Z"/></svg>',
+  terminal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7 10l3 2.5L7 15M12.5 15H17"/></svg>',
+  app: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 9h17"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+};
+
+// ---- Bridge to Barista ---------------------------------------------------------------------------
+const host = window.chrome && window.chrome.webview;
+let state = null;
+const ui = { view: "main", choice: "3600", custom: "45", more: false, period: "week" };
+try { const saved = JSON.parse(localStorage.getItem("barista-panel") || "{}"); Object.assign(ui, saved, { view: "main" }); } catch (_) {}
+function remember() { try { localStorage.setItem("barista-panel", JSON.stringify({ choice: ui.choice, custom: ui.custom, period: ui.period })); } catch (_) {} }
+
+function send(cmd) {
+  if (host) host.postMessage({ cmd });
+  else mockCommand(cmd);
+}
+
+// ---- Small helpers --------------------------------------------------------------------------------
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key === "html") node.innerHTML = value; // Only ever our own ICONS.
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else if (key === "text") node.textContent = value;
+    else node.setAttribute(key, value === true ? "" : value);
+  }
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+function button(cls, label, cmd, props) {
+  return el("button", Object.assign({ class: cls, type: "button", onclick: typeof cmd === "function" ? cmd : () => send(cmd) }, props || {}), label);
+}
+function iconButton(icon, label, cmd, cls) {
+  return button(cls || "icon-button", null, cmd, { html: ICONS[icon], "aria-label": label, title: label });
+}
+function toggle(checked, cmd, label) {
+  return el("button", { class: "switch", role: "switch", type: "button", "aria-checked": checked ? "true" : "false", "aria-label": label, onclick: () => send(cmd) });
+}
+function bar(fraction, cls) {
+  const inner = el("div");
+  inner.style.width = `${Math.round(Math.max(0, Math.min(1, fraction || 0)) * 100)}%`;
+  return el("div", { class: `bar ${cls || ""}`, role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round((fraction || 0) * 100)) }, inner);
+}
+function clock(seconds) {
+  const s = Math.max(0, Math.ceil(seconds));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
+}
+function timeOfDay(ms) { return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+function relative(ms) {
+  const minutes = Math.round((Date.now() - ms) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return new Date(ms).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+function resetText(window) {
+  if (window.reset) return "Reset";
+  if (!window.resetsAt) return "";
+  const at = new Date(window.resetsAt);
+  const soon = at - Date.now() < 86400000;
+  return "Resets " + (soon ? at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : at.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }));
+}
+function tokens(n) {
+  if (n < 1000) return String(n);
+  if (n < 1e6) return `${(n / 1e3).toFixed(1)}K`;
+  if (n < 1e9) return `${(n / 1e6).toFixed(1)}M`;
+  return `${(n / 1e9).toFixed(1)}B`;
+}
+function cost(value) {
+  if (value === null || value === undefined) return "no price";
+  if (value > 0 && value < 0.01) return "<$0.01";
+  return `~$${value.toFixed(2)}`;
+}
+function duration(seconds) { return seconds >= 3600 ? `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m` : `${Math.floor(seconds / 60)}m`; }
+function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
+
+// ---- Views ----------------------------------------------------------------------------------------
+const CHIPS = [["900", "15m", "15 minutes"], ["3600", "1h", "1 hour"], ["14400", "4h", "4 hours"], ["forever", "∞", "Until stopped"], ["more", "More", "Custom minutes"]];
+
+function banners() {
+  const list = [];
+  if (state.notice) list.push(el("div", { class: "banner", role: "status" }, el("span", { class: "text selectable", text: state.notice }), iconButton("close", "Dismiss", "dismiss-notice", "x close")));
+  if (state.error) list.push(el("div", { class: "banner", role: "alert" }, el("span", { class: "text selectable", text: state.error })));
+  if (state.update) list.push(el("div", { class: "banner" },
+    el("span", { class: "text", text: `Barista ${state.update.version} is available.` }),
+    button("action", "Download", "open-update"),
+    iconButton("close", "Not now", "dismiss-update", "x close")));
+  if (state.batteryBlocked) list.push(el("div", { class: "banner" }, el("span", { class: "text", text: `Battery protection is on. Connect power to start a session (it stops at ${state.batteryThreshold}%).` })));
+  return list;
+}
+
+function header() {
+  return el("header", null,
+    el("span", { class: "cup", html: state.awake ? ICONS.cup : ICONS.cupOutline }),
+    el("span", { class: "brand", text: "Barista" }),
+    el("span", { class: "pill" }, el("span", { class: `dot ${state.awake ? "on" : ""}` }), state.awake ? "Awake" : "Resting"));
+}
+
+function timerCard(manual) {
+  if (manual.indefinite) {
+    return el("div", { class: "timer" },
+      el("div", { class: "countdown", text: "∞" }),
+      el("div", { class: "meta" }, el("span", { text: "Until you stop it" })));
+  }
+  const remaining = Math.max(0, (manual.endsAt - Date.now()) / 1000);
+  const elapsed = manual.total ? 1 - remaining / manual.total : 0;
+  return el("div", { class: "timer" },
+    el("div", { class: "countdown", id: "countdown", text: clock(remaining), "aria-live": "off" }),
+    Object.assign(bar(elapsed), { id: "countdown-bar" }),
+    el("div", { class: "meta" },
+      el("span", { text: `Until ${timeOfDay(manual.endsAt)}` }),
+      button("link", [el("span", { html: ICONS.plus, style: "display:inline-block;width:14px;height:14px;vertical-align:-2px;margin-right:4px" }), "15 min"], "add:900", { "aria-label": "Add 15 minutes" })));
+}
+
+function chips() {
+  const blocked = state.batteryBlocked;
+  const row = el("div", { class: "chips", role: "group", "aria-label": "How long" },
+    CHIPS.map(([value, label, name]) => {
+      const pressed = value === "more" ? ui.more : (!ui.more && ui.choice === value);
+      return el("button", { class: "chip", type: "button", "aria-pressed": pressed ? "true" : "false", "aria-label": name, title: name, disabled: blocked,
+        onclick: () => { if (value === "more") { ui.more = true; } else { ui.more = false; ui.choice = value; } remember(); render(); } }, label);
+    }));
+  const parts = [row];
+  if (ui.more) {
+    const input = el("input", { type: "number", min: "1", max: "1440", step: "1", value: ui.custom, "aria-label": "Minutes",
+      oninput: (event) => { ui.custom = event.target.value; remember(); },
+      onkeydown: (event) => { if (event.key === "Enter") start(); } });
+    parts.push(el("label", { class: "custom" }, "Keep awake for", input, "minutes"));
+    setTimeout(() => { if (document.activeElement === document.body) input.focus(); }, 0);
+  }
+  return parts;
+}
+
+function start() {
+  if (ui.more) {
+    const minutes = Math.round(Number(ui.custom));
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { flash("Choose from 1 to 1,440 minutes."); return; }
+    send(`start:${minutes * 60}`);
+  } else {
+    send(`start:${ui.choice}`);
+  }
+}
+
+let flashText = null;
+function flash(text) { flashText = text; render(); setTimeout(() => { flashText = null; render(); }, 2500); }
+
+// Barista sends end times, not seconds left, so its state only changes when something real does;
+// the page counts down itself (see the interval below).
+function taskDetail(task) {
+  if (task.message) return task.message;
+  if (task.endsAt) return `${clock((task.endsAt - Date.now()) / 1000)} left · ${task.display}`;
+  return task.detail;
+}
+
+function taskCard(task) {
+  const icon = task.source === "command" ? "terminal" : task.source === "application" ? "app" : "sparkle";
+  const detail = taskDetail(task);
+  return el("div", { class: "card" },
+    el("span", { class: "icon", html: ICONS[icon] }),
+    el("div", { class: "body" },
+      el("span", { class: "name", text: task.title, title: task.title }),
+      el("span", { class: "detail", text: detail, title: detail, "data-task": task.endsAt && !task.message ? task.id : null }),
+      typeof task.progress === "number" ? bar(task.progress) : null),
+    iconButton("close", `Stop keeping awake for ${task.title}`, `cancel:${task.id}`, "x"));
+}
+
+function renderMain(root) {
+  const manual = state.manual;
+  const tasks = state.tasks || [];
+  const display = el("div", { class: "row" },
+    el("span", { text: "Keep display on" }),
+    toggle(state.prefs.keepDisplayAwake, "toggle:display", "Keep display on"));
+  const primary = manual
+    ? button("primary", [el("span", { html: ICONS.stop }), "Stop"], "stop-manual")
+    : button("primary", [el("span", { html: ICONS.cup }), "Keep awake"], start, { disabled: state.batteryBlocked });
+  const showStopAll = state.sessionCount > 1 || (state.awake && !manual);
+  const footer = el("footer", null,
+    showStopAll ? button("text-button", "Stop all", "stop-all", { title: "End every awake session. Commands and agents keep running." }) : null,
+    button("text-button usage", state.usageSummary || "Usage & limits", () => go("usage"), { title: "Usage & limits" }),
+    el("span", { class: "spacer" }),
+    iconButton("gear", "Settings", () => go("settings")),
+    iconButton("power", "Quit Barista", "quit"));
+  fill(root, 
+    header(),
+    ...banners(),
+    manual ? timerCard(manual) : null,
+    ...(manual ? [] : chips()),
+    flashText ? el("div", { class: "note selectable", role: "status", text: flashText }) : null,
+    display,
+    primary,
+    tasks.length ? el("div", { class: "section-title", text: manual ? "Also keeping your PC awake" : "Keeping your PC awake" }) : null,
+    ...tasks.map(taskCard),
+    footer);
+}
+
+function limitBlock(limit) {
+  const observed = limit.observedAt ? ` · ${relative(Date.parse(limit.observedAt))}` : "";
+  const windows = (limit.windows || []).map((window) => {
+    const used = window.reset ? 0 : window.usedPercent;
+    const dollars = typeof window.usedUSD === "number" && typeof window.limitUSD === "number" ? ` ($${window.usedUSD.toFixed(2)} of $${window.limitUSD.toFixed(2)})` : "";
+    return el("div", { class: "window" },
+      bar(used / 100, used >= 80 ? "warn" : "accent"),
+      el("div", { class: "line" }, el("span", { text: `${window.label} · ${Math.round(used)}% used${dollars}` }), el("span", { text: resetText(window) })));
+  });
+  const details = [];
+  if (limit.plan) details.push(`Plan: ${limit.plan}`);
+  if (limit.credits) details.push(limit.credits.unlimited ? "Unlimited credits" : `${Math.round(Number(limit.credits.balance || 0))} credits`);
+  return el("div", { class: "group limit" },
+    el("div", { class: "head" }, el("span", { class: "name", text: limit.name }), el("span", { class: "source", text: `${limit.source || ""}${observed}` })),
+    ...windows,
+    details.length ? el("div", { class: "note", text: details.join(" · ") }) : null);
+}
+
+function agentBlock(agent) {
+  const isCursor = agent.agent === "cursor";
+  const detail = isCursor
+    ? `${plural(agent.sessions, "session")} · ${plural(agent.turns, "turn")} · ${duration(agent.activeSeconds)} active`
+    : `${plural(agent.sessions, "session")} · ${tokens(agent.totalTokens)} tokens`;
+  return el("div", { class: "group agent" },
+    el("div", { class: "top" }, el("span", { class: "name", text: agent.name }), isCursor ? null : el("span", { class: "cost", text: cost(agent.estimatedCost), title: "Estimated at API list prices" })),
+    el("span", { class: "note", text: detail }),
+    ...(agent.models || []).slice(0, 4).map((model) => el("div", { class: "model" },
+      el("span", { text: model.model, title: model.model }),
+      el("span", { text: isCursor ? plural(model.turns, "turn") : `${tokens(model.totalTokens)} · ${cost(model.estimatedCost)}` }))));
+}
+
+function active(agent) { return ["totalTokens", "turns", "sessions", "requests"].some((key) => (agent[key] || 0) > 0); }
+
+function renderUsage(root) {
+  const report = state.usage;
+  const head = el("header", null,
+    iconButton("back", "Back", () => go("main"), "back"),
+    el("span", { class: "title", text: "Usage & limits" }),
+    el("span", { class: "spacer", style: "flex:1" }),
+    iconButton("refresh", state.usageLoading ? "Refreshing" : "Refresh", "usage-refresh", `icon-button ${state.usageLoading ? "spin" : ""}`));
+  const body = [];
+  if (!report) {
+    body.push(el("div", { class: "empty", text: state.usageLoading ? "Reading agent logs…" : "No usage yet." }));
+  } else if (!state.usageHasActivity) {
+    body.push(el("div", { class: "empty", text: "No Claude Code, Codex, or Cursor activity on this PC yet. Connect an agent in Settings, and its sessions, tokens, and plan limits show up here." }));
+  } else {
+    const limits = (report.limits || []).filter((limit) => limit.available);
+    if (limits.length) {
+      body.push(el("div", { class: "group-title", text: "Plan limits" }), ...limits.map(limitBlock));
+    } else {
+      body.push(el("div", { class: "note", text: "Plan limits appear after your next Claude Code or Codex task." }));
+    }
+    const periods = (report.periods || []).filter((period) => ["today", "week", "month"].includes(period.id));
+    if (periods.length) {
+      if (!periods.some((period) => period.id === ui.period)) ui.period = periods[0].id;
+      body.push(el("div", { class: "segmented", role: "group", "aria-label": "Period" },
+        periods.map((period) => el("button", { type: "button", "aria-pressed": period.id === ui.period ? "true" : "false",
+          onclick: () => { ui.period = period.id; remember(); render(); } }, period.label))));
+      const period = periods.find((p) => p.id === ui.period);
+      const agents = (period.agents || []).filter(active);
+      if (agents.length) body.push(...agents.map(agentBlock));
+      else body.push(el("div", { class: "empty", text: `No agent activity ${period.id === "today" ? "today" : period.id === "week" ? "this week" : "this month"}.` }));
+    }
+  }
+  if (state.statuslineOffer) body.push(button("small-button accent", "Add live limits to Claude Code’s status line", "statusline-install"));
+  body.push(el("div", { class: "note", text: "Costs are estimates at API list prices, not your subscription bill. Everything is read on this PC." }));
+  fill(root, head, ...banners(), ...body);
+}
+
+function settingRow(label, hint, control) {
+  return el("div", { class: "row" }, el("span", { class: "label" }, el("span", { text: label }), hint ? el("span", { class: "hint", text: hint }) : null), control);
+}
+
+function renderSettings(root) {
+  const p = state.prefs;
+  const head = el("header", null, iconButton("back", "Back", () => go("main"), "back"), el("span", { class: "title", text: "Settings" }));
+  const battery = el("select", { "aria-label": "Battery protection", onchange: (event) => send(`battery:${event.target.value}`) },
+    [0, 10, 15, 20, 30].map((value) => el("option", { value: String(value), selected: p.batteryThreshold === value }, value === 0 ? "Never" : `${value}%`)));
+  const agentRows = (state.agents || []).map((agent) => {
+    const hint = { connected: "Keeps your PC awake while it works", moved: "Incomplete or points to another copy", disconnected: "Not connected", notFound: "Not set up for this user" }[agent.status];
+    const control = agent.status === "connected" ? button("small-button", "Disconnect", `disconnect:${agent.key}`)
+      : agent.status === "notFound" ? null
+      : button("small-button accent", agent.status === "moved" ? "Repair" : "Connect", `connect:${agent.key}`);
+    return settingRow(agent.name, hint, control);
+  });
+  const history = (state.history || []).map((event) => el("div", { class: "history" }, el("span", { text: `${event.title} · ${event.reason}` }), el("span", { text: relative(event.endedAt) })));
+  fill(root, 
+    head,
+    ...banners(),
+    el("div", { class: "group-title", text: "General" }),
+    el("div", { class: "group" },
+      settingRow("Launch at login", null, toggle(p.launchAtLogin, "toggle:login", "Launch at login")),
+      settingRow("Notify me when sessions end", null, toggle(p.notifications, "toggle:notifications", "Notify me when sessions end")),
+      settingRow("Keep the display on", "During your own timers", toggle(p.keepDisplayAwake, "toggle:display", "Keep the display on during my timers")),
+      settingRow("Battery protection", "Stop sessions on battery at", battery)),
+    el("div", { class: "group-title", text: "Agents" }),
+    el("div", { class: "group" },
+      ...agentRows,
+      settingRow("Claude app (Cowork)", "Awake while it’s working", toggle(p.watchCowork, "toggle:watch-cowork", "Keep awake while the Claude app works")),
+      settingRow("ChatGPT app", "Awake while it’s working", toggle(p.watchChatgpt, "toggle:watch-chatgpt", "Keep awake while the ChatGPT app works")),
+      settingRow("Claude plan limits", "From your Claude account, read-only", toggle(p.claudeAccountLimits, "toggle:claude-account", "Show Claude plan limits from your Claude account")),
+      settingRow("Local agent access", "CLI, MCP, and hooks", toggle(p.agentAccess, "toggle:agents", "Local agent access")),
+      el("div", { class: "row" }, button("small-button", "Copy CLI path", "copy:cli"), button("small-button", "Copy MCP setup", "copy:mcp"))),
+    el("div", { class: "group-title", text: "Updates" }),
+    el("div", { class: "group" },
+      settingRow("Check for updates daily", null, toggle(p.checksForUpdates, "toggle:updates", "Check for updates daily")),
+      settingRow(state.updateStatus || `Barista ${state.version}`, null, button("small-button", "Check now", "check-updates"))),
+    history.length ? el("div", { class: "group-title", text: "Recent sessions" }) : null,
+    history.length ? el("div", { class: "group" }, ...history, el("div", { class: "row" }, el("span"), button("small-button", "Clear", "clear-history"))) : null,
+    el("div", { class: "note", text: `Barista ${state.version} · prevents idle sleep only. Closing a laptop lid or choosing Sleep still sleeps your PC.` }));
+}
+
+function fill(root, ...children) {
+  root.replaceChildren(...children.flat().filter((child) => child !== null && child !== undefined && child !== false));
+}
+
+function go(view) {
+  ui.view = view;
+  render();
+  const root = document.getElementById(view);
+  root.scrollTop = 0;
+  const first = root.querySelector("button, input, select");
+  if (first) first.focus({ preventScroll: true });
+}
+
+function render() {
+  if (!state) return;
+  for (const view of ["main", "usage", "settings"]) document.getElementById(view).hidden = view !== ui.view;
+  const root = document.getElementById(ui.view);
+  // Keep focus on the same control across redraws.
+  const focused = document.activeElement && root.contains(document.activeElement)
+    ? (document.activeElement.getAttribute("aria-label") || document.activeElement.textContent) : null;
+  if (ui.view === "usage") renderUsage(root);
+  else if (ui.view === "settings") renderSettings(root);
+  else renderMain(root);
+  if (focused) {
+    const match = [...root.querySelectorAll("button, input, select")].find((node) => (node.getAttribute("aria-label") || node.textContent) === focused);
+    if (match) match.focus({ preventScroll: true });
+  }
+}
+
+// Countdowns tick here, from end times; Barista only sends state when it changes.
+setInterval(() => {
+  if (!state) return;
+  const manual = state.manual;
+  const node = document.getElementById("countdown");
+  if (node && manual && !manual.indefinite) {
+    const remaining = Math.max(0, (manual.endsAt - Date.now()) / 1000);
+    node.textContent = clock(remaining);
+    const fill = document.querySelector("#countdown-bar > div");
+    if (fill && manual.total) {
+      const fraction = Math.max(0, Math.min(1, 1 - remaining / manual.total));
+      fill.style.width = `${Math.round(fraction * 100)}%`;
+      fill.parentElement.setAttribute("aria-valuenow", String(Math.round(fraction * 100)));
+    }
+  }
+  for (const detail of document.querySelectorAll("[data-task]")) {
+    const task = (state.tasks || []).find((t) => t.id === detail.dataset.task);
+    if (task) { const text = taskDetail(task); detail.textContent = text; detail.title = text; }
+  }
+}, 250);
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (ui.view !== "main") go("main"); else send("panel:hide");
+  }
+});
+document.addEventListener("contextmenu", (event) => event.preventDefault());
+
+// ---- Standalone preview (no WebView2): mock state, commands logged to the console ----------------
+let mock = null;
+function mockState() {
+  const now = Date.now();
+  return {
+    version: "0.0.10", awake: true, notice: null, error: null, update: { version: "0.0.11" }, updateStatus: null,
+    batteryBlocked: false, batteryThreshold: 20,
+    manual: { indefinite: false, total: 3600, endsAt: now + 3132000 },
+    tasks: [
+      { id: "a", title: "Claude Code · Caffienate", source: "agent", message: "Refactoring the auth module", progress: 0.6, detail: "Refactoring the auth module" },
+      { id: "d", title: "Tea break", source: "agent", message: null, progress: null, endsAt: now + 754000, display: "display on", detail: null },
+      { id: "b", title: "make test", source: "command", message: null, progress: null, detail: "Until the command finishes · display may sleep" },
+      { id: "c", title: "ChatGPT app", source: "application", message: null, progress: null, detail: "While it’s busy · display may sleep" },
+    ],
+    sessionCount: 4,
+    history: [{ title: "Claude Code · reporting", reason: "Work finished", endedAt: now - 1800000 }, { title: "My coffee break", reason: "Timer finished", endedAt: now - 7200000 }],
+    prefs: { keepDisplayAwake: true, batteryThreshold: 20, notifications: false, checksForUpdates: true, agentAccess: true, claudeAccountLimits: true, watchCowork: true, watchChatgpt: true, launchAtLogin: true },
+    agents: [{ key: "claude", name: "Claude Code", status: "connected" }, { key: "codex", name: "ChatGPT Codex", status: "disconnected" }, { key: "cursor", name: "Cursor", status: "notFound" }],
+    usageLoading: false, usageSummary: "Claude 24% · ChatGPT 6%", usageHasActivity: true, statuslineOffer: false,
+    usage: {
+      limits: [
+        { agent: "claude", name: "Claude plan", available: true, source: "Claude account", observedAt: new Date(now - 120000).toISOString(), plan: null, credits: null,
+          windows: [{ id: "five_hour", label: "Session", usedPercent: 24, resetsAt: new Date(now + 9000000).toISOString(), reset: false },
+                    { id: "seven_day", label: "Weekly", usedPercent: 8, resetsAt: new Date(now + 6 * 86400000).toISOString(), reset: false },
+                    { id: "extra_usage", label: "Extra usage", usedPercent: 5, usedUSD: 12.5, limitUSD: 250, resetsAt: null, reset: false }] },
+        { agent: "codex", name: "ChatGPT plan", available: true, source: "Codex", observedAt: new Date(now - 1500000).toISOString(), plan: "prolite", credits: { balance: "75000.0000000000", unlimited: false },
+          windows: [{ id: "primary", label: "Weekly", usedPercent: 86, resetsAt: new Date(now + 3 * 86400000).toISOString(), reset: false }] },
+        { agent: "cursor", name: "Cursor", available: false, windows: [] },
+      ],
+      periods: ["today", "week", "month"].map((id, index) => ({
+        id, label: { today: "Today", week: "This week", month: "This month" }[id],
+        agents: [
+          { agent: "claude", name: "Claude Code", sessions: 7 * (index + 1), requests: 900, turns: 0, activeSeconds: 0, totalTokens: 158800000 * (index + 1), estimatedCost: 60.1 * (index + 1),
+            models: [{ model: "claude-opus-5-5", totalTokens: 158600000 * (index + 1), estimatedCost: 60.07 * (index + 1) }, { model: "claude-haiku-5-5", totalTokens: 193900, estimatedCost: 0.02 }] },
+          { agent: "codex", name: "Codex", sessions: 9, requests: 300, turns: 0, activeSeconds: 0, totalTokens: 25000000, estimatedCost: 6,
+            models: [{ model: "gpt-6.1-sol", totalTokens: 15700000, estimatedCost: 3.32 }, { model: "codex-auto-review", totalTokens: 505900, estimatedCost: null }] },
+          { agent: "cursor", name: "Cursor", sessions: 0, requests: 0, turns: 0, activeSeconds: 0, totalTokens: 0, estimatedCost: null, models: [] },
+        ],
+      })),
+    },
+  };
+}
+function mockCommand(cmd) {
+  console.log("Barista command:", cmd);
+  const [command, argument] = cmd.split(/:(.*)/s);
+  const p = mock.prefs;
+  if (command === "start") {
+    const seconds = argument === "forever" ? null : Number(argument);
+    mock.manual = seconds ? { indefinite: false, total: seconds, endsAt: Date.now() + seconds * 1000 } : { indefinite: true };
+    mock.awake = true;
+  } else if (command === "stop-manual") { mock.manual = null; mock.awake = mock.tasks.length > 0; }
+  else if (command === "add" && mock.manual && !mock.manual.indefinite) { mock.manual.endsAt += 900000; mock.manual.total += 900; }
+  else if (command === "cancel") { mock.tasks = mock.tasks.filter((t) => t.id !== argument); }
+  else if (command === "stop-all") { mock.tasks = []; mock.manual = null; mock.awake = false; }
+  else if (command === "toggle") {
+    const key = { display: "keepDisplayAwake", login: "launchAtLogin", notifications: "notifications", updates: "checksForUpdates", agents: "agentAccess", "claude-account": "claudeAccountLimits", "watch-cowork": "watchCowork", "watch-chatgpt": "watchChatgpt" }[argument];
+    if (key) p[key] = !p[key];
+  } else if (command === "battery") { p.batteryThreshold = Number(argument); }
+  else if (command === "dismiss-update") { mock.update = null; }
+  else if (command === "dismiss-notice") { mock.notice = null; }
+  else if (command === "copy") { mock.notice = argument === "mcp" ? "MCP setup copied." : "CLI path copied."; }
+  mock.sessionCount = mock.tasks.length + (mock.manual ? 1 : 0);
+  state = JSON.parse(JSON.stringify(mock));
+  render();
+}
+
+// The window fits the content: report the active view's natural height whenever it changes
+// (to the app; in a browser preview, to data-height on <html> so it can be checked).
+let reportedHeight = 0;
+function reportHeight() {
+  const view = document.getElementById(ui.view);
+  if (!view) return;
+  const style = getComputedStyle(view);
+  const items = [...view.children].filter((child) => !child.hidden && getComputedStyle(child).display !== "none");
+  const gap = parseFloat(style.rowGap) || 0;
+  const height = Math.ceil(items.reduce((sum, child) => sum + child.getBoundingClientRect().height, 0)
+    + gap * Math.max(0, items.length - 1) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom));
+  if (Math.abs(height - reportedHeight) <= 2) return;
+  reportedHeight = height;
+  if (host) host.postMessage({ cmd: "panel:height:" + height });
+  else document.documentElement.dataset.height = String(height);
+}
+new ResizeObserver(reportHeight).observe(document.body);
+new MutationObserver(() => requestAnimationFrame(reportHeight)).observe(document.body, { subtree: true, childList: true, attributes: true });
+
+if (host) {
+  // Barista posts only when its state changed; skip a repeat anyway (no redraw, focus and scroll stay).
+  let lastJson = null;
+  host.addEventListener("message", (event) => {
+    const json = JSON.stringify(event.data);
+    if (json === lastJson) return;
+    lastJson = json;
+    state = event.data;
+    render();
+  });
+  host.postMessage({ cmd: "panel:ready" });
+} else {
+  mock = mockState();
+  if (new URLSearchParams(location.search).has("empty")) {
+    Object.assign(mock, { awake: false, manual: null, tasks: [], sessionCount: 0, update: null, usageSummary: null, usageHasActivity: false, history: [] });
+  }
+  const view = new URLSearchParams(location.search).get("view");
+  if (["usage", "settings"].includes(view)) ui.view = view;
+  state = JSON.parse(JSON.stringify(mock));
+  render();
+}
+</script>
+</body>
+</html>

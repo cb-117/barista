@@ -9,6 +9,14 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Added
+- **Windows: a real Barista panel.** Click the cup in the notification area for a panel like the Mac app’s: your timer with 15m, 1h, 4h, ∞, or custom minutes, Keep awake and Stop, the tasks keeping your PC awake with their own stop buttons, a Usage & Limits view, and Settings. It follows Windows’ light or dark mode, sizes itself to fit, and closes when you click elsewhere or press Esc. Right-click the cup for a short menu. It uses WebView2, built into Windows 11 and current Windows 10; without it, the menu works as before.
+- **Windows: an installer.** `Barista-Setup.exe` installs for just you (no admin needed) or for everyone on the PC (Program Files), adds Barista to the Start menu and your PATH, starts it when you sign in, connects Claude Code, Codex, and Cursor, and starts Barista. Uninstall from Settings → Apps; it disconnects Barista from your coding agents first. Upgrades keep your startup and agent choices. For an all-users install, each person’s Barista sets up its own startup the first time they open it, and uninstalling disconnects every user’s coding agents. The PowerShell one-liner now runs this installer, and Barista’s update notice on Windows downloads it. The installer isn’t code-signed yet, so Windows SmartScreen may ask you to confirm (More info → Run anyway).
+
+### Fixed
+- Windows: “Usage & Limits” showed as “Usage  Limits” in the tray menu.
+- The Usage & Limits menu shows one line when there’s no agent activity on the computer, instead of rows of dashes.
+
 ## [0.0.10] - 2026-11-01
 
 ### Security

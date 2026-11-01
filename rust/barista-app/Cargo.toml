@@ -32,4 +32,16 @@ libc = "0.2"
 tray-icon = { version = "0.26", default-features = false }
 winreg = "0.56"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+# The panel: WebView2 (built into Windows 11 and current Windows 10) through its COM API directly.
+# Not wry: wry's Linux backend would put GTK and glib back into Cargo.lock.
+webview2-com = "0.39"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 

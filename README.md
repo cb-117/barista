@@ -57,7 +57,7 @@ After that, Barista updates itself: when a new version is out, click **Update** 
 
 Barista also runs on Windows 10/11 and Linux (x86_64 and arm64), built in Rust from [`rust/`](rust/README.md). It's the same Barista: a coffee cup in the notification area (Windows) or system tray (Linux) with quick timers, your tasks, Stop all, battery protection, launch at login, and notifications, plus the same `barista` CLI, `barista run`, MCP server, and one-click Claude Code and Codex hooks. Agents and scripts work the same on every platform.
 
-Windows, in PowerShell (no administrator rights needed):
+Windows: download **Barista-Setup.exe** from the [latest release](https://github.com/cb-117/barista/releases/latest) (it asks whether to install for just you or for everyone on the PC), or in PowerShell (no administrator rights needed):
 
 ```powershell
 irm https://baristatime.app/install.ps1 | iex
@@ -73,7 +73,7 @@ Both check the download against the release’s SHA-256, install `barista` and `
 
 On Linux the tray icon is a StatusNotifierItem (no GTK needed), shown by KDE Plasma, Ubuntu, Xfce, and most desktops; on stock GNOME install the AppIndicator extension, and on trays that only support XEmbed (i3bar, dwm, tint2) run `snixembed`. Left-click or right-click the cup for the menu; the time left appears in the icon’s tooltip. Without a graphical session (a server, WSL, SSH), `barista-app` runs headless and the CLI, hooks, and MCP keep working. Linux keeps the computer awake through the desktop’s power service (GNOME, KDE, and others) and a systemd-logind idle inhibitor; Windows uses a system power request (it shows in `powercfg /requests`).
 
-What’s different from the Mac app: the panel is a menu (no custom minutes, end time, or “while an app runs”; use `barista start --pid` for that), there’s no global shortcut, and updates download from the release page instead of installing in place.
+What’s different from the Mac app: on Windows, clicking the cup opens a panel much like the Mac’s; on Linux it opens a menu. Neither has an end-time picker or “while an app runs” (use `barista start --pid` for that) or a global shortcut, and updates download from the release page instead of installing in place.
 
 ## Build and run
 

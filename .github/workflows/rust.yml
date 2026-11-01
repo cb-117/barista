@@ -43,6 +43,24 @@ jobs:
       - name: Release build
         working-directory: rust
         run: cargo build --workspace --release
+      - name: Windows installer (build)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Select-String -Path Sources/BaristaCore/Version.swift -Pattern 'static let current = "(.+)"').Matches[0].Groups[1].Value
+          installer\windows\build-installer.ps1 -Version $version -SourceDir rust\target\release -OutputDir installer-out
+      - name: Windows installer smoke test (install, upgrade, uninstall)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: installer\windows\test-installer.ps1 -Setup (Get-ChildItem installer-out\Barista-Setup-*.exe | Select-Object -First 1).FullName
+      - name: Upload installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: barista-installer-${{ github.sha }}
+          path: installer-out/Barista-Setup-*.exe
+          retention-days: 30
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:

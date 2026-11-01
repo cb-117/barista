@@ -10,10 +10,14 @@ use std::time::{Duration, Instant};
 
 /// What the platform's tray reports to the loop.
 pub enum UserEvent {
-    /// A menu entry was chosen; the id is a command for `menu::handle`.
+    /// A menu entry (or the Windows panel) chose a command for `menu::handle`. Ids starting with
+    /// `panel:` are for the panel itself.
     Menu(String),
     /// The menu is about to show, so usage in it should be fresh.
     Opened,
+    /// Windows: the cup was left-clicked, at this rectangle (x, y, width, height in physical pixels).
+    #[cfg(windows)]
+    Toggle(Option<(i32, i32, i32, i32)>),
 }
 
 /// Runs the tray until Quit. `wait` blocks for up to a second and returns the next tray event while
@@ -21,7 +25,16 @@ pub enum UserEvent {
 fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: impl FnMut(&Receiver<UserEvent>) -> Option<UserEvent>) -> ! {
     let (sender, events) = std::sync::mpsc::channel::<UserEvent>();
     let icons = menu::icons();
-    let model = menu::build(&app);
+    // Windows: left-click opens the panel and right-click shows a short menu; if the panel can't
+    // run (no WebView2), both fall back to the full menu, as on Linux.
+    #[cfg(windows)]
+    let panel = crate::panel::Panel::new(sender.clone());
+    #[cfg(windows)]
+    let mut short_menu = panel.is_some();
+    #[cfg(not(windows))]
+    let short_menu = false;
+    let build = |short: bool| if short { menu::build_short(&app) } else { menu::build(&app) };
+    let model = build(short_menu);
     let tray = backend::Tray::create(&model, &icons, sender);
     if tray.is_none() {
         eprintln!("barista-app: couldn't show the tray icon. Barista keeps running.");
@@ -40,6 +53,64 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
         match wait(&events) {
             // Usage shown in a menu that's opening should be at most a minute old.
             Some(UserEvent::Opened) => refresh_usage(&app, Duration::from_secs(60)),
+            #[cfg(windows)]
+            Some(UserEvent::Toggle(anchor)) => match &panel {
+                Some(panel) if !panel.failed() => {
+                    panel.toggle(anchor.map(|(x, y, width, height)| crate::panel::Anchor { x, y, width, height }));
+                    if panel.visible() {
+                        refresh_usage(&app, Duration::from_secs(60));
+                        panel.post(&menu::panel_state(&app));
+                    }
+                }
+                _ => {
+                    // No panel: the full menu, with usage at most a minute old.
+                    refresh_usage(&app, Duration::from_secs(60));
+                    if let Some(tray) = &tray {
+                        let model = build(short_menu);
+                        tray.show(&model, &icons);
+                        shown = model.signature;
+                        tray.show_menu();
+                    }
+                }
+            },
+            #[cfg(windows)]
+            Some(UserEvent::Menu(id)) if id.starts_with("panel:") => {
+                if let Some(panel) = &panel {
+                    match id.as_str() {
+                        "panel:open" => {
+                            let anchor = tray.as_ref().and_then(|tray| tray.anchor());
+                            panel.show(anchor.map(|(x, y, width, height)| crate::panel::Anchor { x, y, width, height }));
+                            refresh_usage(&app, Duration::from_secs(60));
+                            panel.post(&menu::panel_state(&app));
+                        }
+                        "panel:hide" => panel.hide(),
+                        height if height.starts_with("panel:height:") => {
+                            if let Ok(logical) = height["panel:height:".len()..].parse::<f64>() {
+                                panel.set_height(logical);
+                            }
+                        }
+                        "panel:ready" => {
+                            panel.page_ready();
+                            panel.post(&menu::panel_state(&app));
+                        }
+                        "panel:process-failed" => panel.reset(),
+                        "panel:failed" => {
+                            // No WebView2: the tray menu takes over everything, starting with the
+                            // click that tried to open the panel.
+                            panel.hide();
+                            short_menu = false;
+                            refresh_usage(&app, Duration::from_secs(60));
+                            if let Some(tray) = &tray {
+                                let model = build(short_menu);
+                                tray.show(&model, &icons);
+                                shown = model.signature;
+                                tray.show_menu();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Some(UserEvent::Menu(id)) => {
                 if menu::handle(&app, &id) {
                     lock(&app).shutdown();
@@ -48,6 +119,13 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
                     std::process::exit(0);
                 }
                 shown.clear(); // Redraw right away.
+                #[cfg(windows)]
+                {
+                    menu::invalidate_panel_cache();
+                    if let Some(panel) = panel.as_ref().filter(|panel| panel.visible()) {
+                        panel.post(&menu::panel_state(&app));
+                    }
+                }
             }
             None => {}
         }
@@ -56,11 +134,17 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
             last_agent_refresh = Instant::now();
         }
         if let Some(tray) = &tray {
-            let model = menu::build(&app);
+            let model = build(short_menu);
             if model.signature != shown {
                 tray.show(&model, &icons);
                 shown = model.signature;
             }
+        }
+        // The open panel follows Barista's state (posted only when it changed; the page counts
+        // down by itself).
+        #[cfg(windows)]
+        if let Some(panel) = panel.as_ref().filter(|panel| panel.visible()) {
+            panel.post(&menu::panel_state(&app));
         }
     }
 }
@@ -110,7 +194,7 @@ pub fn run(app: Shared, server: ControlServer, background: bool) -> ! {
 mod backend {
     use super::{Entry, Icons, Model, Sender, UserEvent};
     use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-    use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
+    use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
     /// Per-monitor DPI awareness (so menus aren't blurry on scaled displays) and dark popup menus in
     /// dark mode, as tao used to set up. Every function is looked up at run time, with the same
@@ -206,15 +290,20 @@ mod backend {
         Icon::from_rgba(pixels.clone(), icons.width, icons.height).ok()
     }
 
+    /// Windows menus treat "&" as a keyboard-shortcut marker; "&&" shows a literal "&".
+    fn escape(text: &str) -> String {
+        text.replace('&', "&&")
+    }
+
     fn append(entries: &[Entry], add: &mut dyn FnMut(&dyn IsMenuItem)) {
         for entry in entries {
             match entry {
-                Entry::Item { id, text, enabled } => add(&MenuItem::with_id(id.as_str(), text, *enabled, None)),
-                Entry::Check { id, text, checked } => add(&CheckMenuItem::with_id(id.as_str(), text, true, *checked, None)),
-                Entry::Label(text) => add(&MenuItem::new(text, false, None)),
+                Entry::Item { id, text, enabled } => add(&MenuItem::with_id(id.as_str(), escape(text), *enabled, None)),
+                Entry::Check { id, text, checked } => add(&CheckMenuItem::with_id(id.as_str(), escape(text), true, *checked, None)),
+                Entry::Label(text) => add(&MenuItem::new(escape(text), false, None)),
                 Entry::Separator => add(&PredefinedMenuItem::separator()),
                 Entry::Submenu { text, enabled, children } => {
-                    let submenu = Submenu::new(text, *enabled);
+                    let submenu = Submenu::new(escape(text), *enabled);
                     append(children, &mut |child| {
                         let _ = submenu.append(child);
                     });
@@ -238,11 +327,34 @@ mod backend {
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
                 let _ = menu_sender.send(UserEvent::Menu(event.id.0));
             }));
-            TrayIconEvent::set_event_handler(Some(move |_| {
-                let _ = sender.send(UserEvent::Opened);
+            TrayIconEvent::set_event_handler(Some(move |event| match event {
+                // Left-click opens the panel; right-click shows the menu (handled by tray-icon).
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    rect,
+                    ..
+                } => {
+                    let anchor = (
+                        rect.position.x as i32,
+                        rect.position.y as i32,
+                        rect.size.width as i32,
+                        rect.size.height as i32,
+                    );
+                    let _ = sender.send(UserEvent::Toggle(Some(anchor)));
+                }
+                TrayIconEvent::Click {
+                    button: MouseButton::Right,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => {
+                    let _ = sender.send(UserEvent::Opened);
+                }
+                _ => {}
             }));
             let mut builder = TrayIconBuilder::new()
                 .with_id("barista")
+                .with_menu_on_left_click(false)
                 .with_menu(Box::new(menu(&model.entries)))
                 .with_tooltip(&model.tooltip)
                 .with_title(&model.title);
@@ -250,6 +362,23 @@ mod backend {
                 builder = builder.with_icon(icon);
             }
             builder.build().ok().map(Tray)
+        }
+
+        /// Pops up the menu (used when the panel can't run).
+        pub fn show_menu(&self) {
+            self.0.show_menu();
+        }
+
+        /// The icon's rectangle (x, y, width, height in physical pixels), for placing the panel.
+        pub fn anchor(&self) -> Option<(i32, i32, i32, i32)> {
+            self.0.rect().map(|rect| {
+                (
+                    rect.position.x as i32,
+                    rect.position.y as i32,
+                    rect.size.width as i32,
+                    rect.size.height as i32,
+                )
+            })
         }
 
         pub fn show(&self, model: &Model, icons: &Icons) {

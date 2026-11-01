@@ -10,6 +10,9 @@ mod platform;
 mod prefs;
 #[cfg(any(windows, target_os = "linux"))]
 mod tray;
+// Windows: the panel that opens when you left-click the cup (WebView2).
+#[cfg(windows)]
+mod panel;
 
 use barista_core::activity::{self, ActivityTracker, WatchedApp};
 use barista_core::control::{default_path, ControlServer};
@@ -432,6 +435,9 @@ struct Options {
     background: bool,
     headless: bool,
     serve: Option<String>,
+    /// Set by the Windows installer when the user unchecked "Start Barista when I sign in":
+    /// remember that choice instead of turning Launch at login on for the first run.
+    login_choice_made: bool,
 }
 
 fn parse_options() -> Options {
@@ -445,6 +451,7 @@ fn parse_options() -> Options {
         background: arguments.iter().any(|a| a == "--background"),
         headless: serve.is_some() || arguments.iter().any(|a| a == "--headless") || no_display,
         serve,
+        login_choice_made: arguments.iter().any(|a| a == "--login-choice-made"),
     }
 }
 
@@ -514,6 +521,10 @@ fn main() {
 
     if !ephemeral {
         let mut state = lock(&app);
+        if options.login_choice_made && !state.prefs.launch_at_login_choice_made {
+            state.prefs.launch_at_login_choice_made = true;
+            state.save();
+        }
         state.enable_launch_at_login_on_first_run();
         state.launch_at_login = platform::launches_at_login();
         state.refresh_agents();

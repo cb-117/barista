@@ -87,6 +87,21 @@ jobs:
           fi
           rm -rf "dist/$name"
           ls -l dist
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ needs.version.outputs.version }}'
+          $setup = installer\windows\build-installer.ps1 -Version $version -SourceDir rust\target\release -OutputDir dist | Select-Object -Last 1
+          # Stable name, so install.ps1 can always fetch the latest.
+          Copy-Item $setup 'dist\Barista-Setup.exe'
+          Get-ChildItem dist
+      # Before the artifact is uploaded, so a broken Setup never reaches the release.
+      - name: Windows installer smoke test (install, upgrade, uninstall)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: installer\windows\test-installer.ps1 -Setup "dist\Barista-Setup-${{ needs.version.outputs.version }}.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: portable-${{ matrix.platform }}
@@ -142,7 +157,8 @@ jobs:
           cp "$dmg" Barista.dmg   # stable names, so the website and install.sh can fetch the latest
           cp "$zip" Barista.zip
           portable=(portable/*)
-          [ "${#portable[@]}" -eq 6 ] || { echo "Expected 6 Windows/Linux packages, found: ${portable[*]}"; exit 1; }
+          # 2 per Linux architecture (versioned + stable tarball) and 4 for Windows (zip and installer, each versioned + stable).
+          [ "${#portable[@]}" -eq 8 ] || { echo "Expected 8 Windows/Linux packages, found: ${portable[*]}"; exit 1; }
           mv portable/* .
           portable=("${portable[@]#portable/}")
           shasum -a 256 "$dmg" "$zip" Barista.dmg Barista.zip "${portable[@]}" > SHA256SUMS.txt
@@ -163,7 +179,7 @@ jobs:
 
           Works on Apple Silicon and Intel Macs running macOS 13 or later.
 
-          **Windows:** in PowerShell, \`irm https://baristatime.app/install.ps1 | iex\`, or download **barista-$version-windows-x86_64.zip**.
+          **Windows:** download and run **Barista-Setup-$version.exe** (installs for you, or for all users with administrator rights; adds Barista to startup and your PATH). Or in PowerShell: \`irm https://baristatime.app/install.ps1 | iex\`. A portable **barista-$version-windows-x86_64.zip** is also available.
 
           **Linux:** the same \`install.sh\` command, or download **barista-$version-linux-x86_64.tar.gz** (or \`-arm64\`). The tray icon uses StatusNotifierItem, built into KDE Plasma, Ubuntu, Xfce, and most desktops; on stock GNOME, install the AppIndicator extension. No GTK libraries are needed.
           NOTES

@@ -15,16 +15,21 @@ pub struct AvailableUpdate {
     pub download_url: Option<String>,
 }
 
-/// This platform's release asset, e.g. `barista-0.0.6-linux-x86_64.tar.gz`.
-pub fn asset_name(version: &str) -> String {
+/// This platform's release downloads, best first: on Windows the installer
+/// (`Barista-Setup-0.0.11.exe`), then the portable zip; on Linux the tarball
+/// (`barista-0.0.6-linux-x86_64.tar.gz`).
+pub fn asset_names(version: &str) -> Vec<String> {
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         other => other,
     };
     if cfg!(windows) {
-        format!("barista-{version}-windows-{arch}.zip")
+        vec![
+            format!("Barista-Setup-{version}.exe"),
+            format!("barista-{version}-windows-{arch}.zip"),
+        ]
     } else {
-        format!("barista-{version}-linux-{arch}.tar.gz")
+        vec![format!("barista-{version}-linux-{arch}.tar.gz")]
     }
 }
 
@@ -45,16 +50,15 @@ pub fn newer_release(data: &[u8], current: &str) -> Option<AvailableUpdate> {
         .filter(|u| trusted(u))
         .unwrap_or(RELEASES_PAGE)
         .to_string();
-    let wanted = asset_name(&version);
-    let download_url = release
-        .get("assets")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|asset| asset.get("name").and_then(Value::as_str) == Some(wanted.as_str()))
-        .and_then(|asset| asset.get("browser_download_url")?.as_str())
-        .filter(|u| trusted(u))
-        .map(String::from);
+    let assets: Vec<&Value> = release.get("assets").and_then(Value::as_array).into_iter().flatten().collect();
+    let download_url = asset_names(&version).iter().find_map(|wanted| {
+        assets
+            .iter()
+            .find(|asset| asset.get("name").and_then(Value::as_str) == Some(wanted.as_str()))
+            .and_then(|asset| asset.get("browser_download_url")?.as_str())
+            .filter(|u| trusted(u))
+            .map(String::from)
+    });
     Some(AvailableUpdate {
         version,
         page_url,
@@ -155,8 +159,30 @@ mod tests {
     }
 
     #[test]
+    fn prefers_the_installer_on_windows() {
+        let names = asset_names("9.0.0");
+        let asset = |name: &str| {
+            format!(r#"{{"name":"{name}","browser_download_url":"https://github.com/cb-117/barista/releases/download/v9.0.0/{name}"}}"#)
+        };
+        let all = names.iter().map(|n| asset(n)).collect::<Vec<_>>().join(",");
+        let release = format!(r#"{{"tag_name":"v9.0.0","assets":[{all}]}}"#);
+        let update = newer_release(release.as_bytes(), "0.0.5").unwrap();
+        assert!(update.download_url.unwrap().ends_with(&names[0]));
+        if cfg!(windows) {
+            assert_eq!(names[0], "Barista-Setup-9.0.0.exe");
+            // A release without the installer falls back to the zip.
+            let zip_only = format!(r#"{{"tag_name":"v9.0.0","assets":[{}]}}"#, asset(&names[1]));
+            assert!(newer_release(zip_only.as_bytes(), "0.0.5")
+                .unwrap()
+                .download_url
+                .unwrap()
+                .ends_with(".zip"));
+        }
+    }
+
+    #[test]
     fn finds_this_platforms_download() {
-        let name = asset_name("9.0.0");
+        let name = asset_names("9.0.0").last().unwrap().clone();
         let release = format!(
             r#"{{"tag_name":"v9.0.0","html_url":"https://github.com/cb-117/barista/releases/tag/v9.0.0",
             "assets":[{{"name":"{name}","browser_download_url":"https://github.com/cb-117/barista/releases/download/v9.0.0/{name}"}},
