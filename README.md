@@ -2,7 +2,7 @@
 
 # Barista ☕
 
-**Keeps your Mac awake while the work brews.** A free, open-source Mac menu-bar app for people, commands, and AI agents. [Website](https://cb-117.github.io/barista/) · [What’s new](CHANGELOG.md)
+**Keeps your Mac awake while the work brews.** A free, open-source Mac menu-bar app for people, commands, and AI agents. Also on [Windows and Linux](#windows-and-linux). [Website](https://cb-117.github.io/barista/) · [What’s new](CHANGELOG.md)
 
 Keep your Mac awake for a timer, until an app quits, or while a command or agent is actually working. Independent tasks share one power assertion; one task finishing never ends somebody else’s session.
 
@@ -49,6 +49,28 @@ curl -fsSL https://cb-117.github.io/barista/install.sh | sh
 The script installs the latest release to Applications after checking it against the release’s SHA-256, then runs `barista setup`. Already installed? Run `barista setup` (inside `Barista.app/Contents/Helpers/`) to connect any agents you’ve added since.
 
 After that, Barista updates itself: when a new version is out, click **Update** in its panel and it installs and relaunches.
+
+## Windows and Linux
+
+Barista also runs on Windows 10/11 and Linux (x86_64 and arm64), built in Rust from [`rust/`](rust/README.md). It's the same Barista: a coffee cup in the notification area (Windows) or system tray (Linux) with quick timers, your tasks, Stop all, battery protection, launch at login, and notifications, plus the same `barista` CLI, `barista run`, MCP server, and one-click Claude Code and Codex hooks. Agents and scripts work the same on every platform.
+
+Windows, in PowerShell (no administrator rights needed):
+
+```powershell
+irm https://cb-117.github.io/barista/install.ps1 | iex
+```
+
+Linux:
+
+```sh
+curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+```
+
+Both check the download against the release’s SHA-256, install `barista` and `barista-app` (Windows: `%LOCALAPPDATA%\Programs\Barista`, added to your PATH and Start menu; Linux: `~/.local/bin`, plus an app-menu entry), and run `barista setup`. Re-run to update; Barista’s menu tells you when a new version is out. Or download `barista-<version>-windows-x86_64.zip` or `barista-<version>-linux-<arch>.tar.gz` from the [latest release](https://github.com/cb-117/barista/releases/latest).
+
+On Linux the tray icon needs AppIndicator support: built into Ubuntu, KDE Plasma, Xfce, and most desktops; on stock GNOME install the AppIndicator extension. Without a graphical session (a server, WSL, SSH), `barista-app` runs headless and the CLI, hooks, and MCP keep working. Linux keeps the computer awake through the desktop’s power service (GNOME, KDE, and others) and a systemd-logind idle inhibitor; Windows uses a system power request (it shows in `powercfg /requests`).
+
+What’s different from the Mac app: the panel is a menu (no custom minutes, end time, or “while an app runs”; use `barista start --pid` for that), there’s no global shortcut, and updates download from the release page instead of installing in place.
 
 ## Build and run
 
@@ -115,6 +137,7 @@ The **Release** workflow notices the new version, runs the checks, builds a univ
 
 - `Barista-<version>.dmg` and `Barista.dmg` (the same disk image; the website links to the stable name)
 - `Barista-<version>.zip` and `Barista-<version>.zip.sig`, which the in-app updater uses
+- `barista-<version>-windows-x86_64.zip`, `barista-<version>-linux-x86_64.tar.gz`, and `barista-<version>-linux-arm64.tar.gz`, built from `rust/` (which reads the same version), plus copies without the version for `install.sh` and `install.ps1`
 - `SHA256SUMS.txt`
 
 The app installs an update only if the zip is signed with the release key. The private key is the `BARISTA_UPDATE_KEY` Actions secret (a backup is in the maintainer’s Keychain as “Barista update signing key”), and the public key is `UpdateSignature.publicKey` in `Sources/BaristaCore/UpdateCheck.swift`. The workflow refuses to publish if they don’t match. To package a disk image locally: `pip install dmgbuild==1.6.5`, then `zsh scripts/make-dmg.sh`. Pushes that don’t change the version don’t create a release. Running apps see the update within a day, or right away from Settings → Updates → **Check now**.
@@ -139,6 +162,14 @@ The build is ad-hoc signed for local use, and release builds aren’t notarized 
 swift build
 swift run BaristaChecks --power
 python3 Tests/agent_integration.py
+```
+
+For the Windows and Linux build (Rust 1.89+; on Linux also `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev`):
+
+```sh
+cd rust && cargo test --workspace && cargo build --workspace && cd ..
+python3 Tests/agent_integration.py --bin-dir rust/target/debug --service rust/target/debug/barista-app
+python3 Tests/portable_smoke.py --bin-dir rust/target/debug   # also runs on Windows
 ```
 
 `BaristaChecks` covers session expiration, independent owners, display aggregation, heartbeat expiry/hard caps, process reuse, battery protection, custom input, history, and concurrent real Unix-socket requests. `--power` briefly creates real macOS sleep-prevention assertions and confirms cleanup. The Python suite uses an isolated service with fake power assertions to exercise the CLI, command runner, JSON output, MCP handshake/tools/errors, user stops, and crash recovery.

@@ -9,6 +9,14 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-11-01
+
+### Fixed
+- Barista 0.0.6 quit immediately on launch (a crash while reading notification permissions). If 0.0.6 won't open for you, it can't update itself: download Barista again from the release page, or delete Barista from Applications and run the install command again.
+
+### Added
+- Barista for Windows and Linux, built in Rust: a coffee cup in the notification area or system tray with quick timers, your tasks, Stop all, battery protection, launch at login, notifications, and update checks, plus the same `barista` CLI, `barista run`, MCP server, and Claude Code and Codex hooks as the Mac app. Install with `irm https://cb-117.github.io/barista/install.ps1 | iex` on Windows, or the usual `install.sh` on Linux. Releases include Windows x86_64 and Linux x86_64/arm64 downloads.
+
 ## [0.0.6] - 2026-11-01
 
 ### Changed

@@ -12,6 +12,16 @@ curl -fsSL https://cb-117.github.io/barista/install.sh | sh
 
 It installs the latest release to Applications (checked against the release’s SHA-256), connects Claude Code and Codex if they’re set up for this user, and starts Barista. Already installed: run `barista setup` (the CLI is `/Applications/Barista.app/Contents/Helpers/barista`). Codex then needs one manual step from the user: type `/hooks` in Codex and trust Barista’s hooks. A summary for agents is at https://cb-117.github.io/barista/llms.txt.
 
+## Windows and Linux
+
+The Windows and Linux builds (see the README) speak the same protocol with the same commands, MCP tools, hooks, JSON, and limits as the Mac app. Differences:
+
+- The CLI is `barista` (Windows: `barista.exe`) on the PATH, installed next to `barista-app`, which it starts automatically when needed (`BARISTA_APP` overrides the path).
+- Control endpoint: Linux uses the same private Unix socket as macOS. Windows uses the named pipe `\\.\pipe\com.connorbescos.barista-<your user SID>`, whose access list allows only your account; remote clients are refused, and clients check that the pipe belongs to your account. Hook state lives in `%LOCALAPPDATA%\Barista`.
+- Hook commands quote the CLI path for each platform (Windows: `"C:/Users/…/barista.exe" hook`, accepted by both cmd.exe and Git Bash).
+- `barista run` runs the command directly (on Windows, `.cmd`/`.bat` scripts need `cmd /c`, for example `barista run -- cmd /c npm test`). On Windows, Ctrl-C reaches the command and `barista` waits for it to exit.
+- Background-command tracking after Claude’s `Stop` works on Linux; on Windows the session is released at `Stop`.
+
 ## Claude Code hooks (recommended)
 
 In the app choose **Settings → Agents → Claude Code → Connect**, or run `barista hooks install` (or `barista setup`). Use `hooks status` (reports *Needs repair* if any event is missing or points at another copy) or `hooks uninstall` to check or remove it, and `--settings PATH` to target a different settings file. Barista adds one `barista hook` command to each of these events in `~/.claude/settings.json`. Other hooks and settings are preserved, and the previous file is saved as `settings.json.barista-backup`.

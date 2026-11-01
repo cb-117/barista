@@ -1,0 +1,56 @@
+name: Windows and Linux
+# Builds and tests the Rust version of Barista (rust/) on Linux and Windows.
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Unit tests
+        working-directory: rust
+        run: cargo test --workspace
+      - name: Build
+        working-directory: rust
+        run: cargo build --workspace
+      - name: CLI, MCP, and hook integration (same suite as the Mac app)
+        if: runner.os == 'Linux'
+        run: python Tests/agent_integration.py --bin-dir rust/target/debug --service rust/target/debug/barista-app
+      - name: Portable smoke test
+        run: python Tests/portable_smoke.py --bin-dir rust/target/debug
+      - name: Lint
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets
+      - name: Release build
+        working-directory: rust
+        run: cargo build --workspace --release
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: barista-${{ runner.os }}-${{ github.sha }}
+          path: |
+            rust/target/release/barista
+            rust/target/release/barista-app
+            rust/target/release/barista.exe
+            rust/target/release/barista-app.exe
+          retention-days: 30

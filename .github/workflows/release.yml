@@ -1,6 +1,7 @@
 name: Release
 # Publishes a GitHub release whenever the version in Sources/BaristaCore/Version.swift
-# changes on main. Bump the version, push, and this builds and ships it.
+# changes on main. Bump the version, push, and this builds and ships it: the Mac app, plus
+# the Windows and Linux builds from rust/ (which read the same version).
 on:
   push:
     branches: [main]
@@ -11,10 +12,13 @@ concurrency:
   group: release
   cancel-in-progress: false
 jobs:
-  release:
-    runs-on: macos-15
+  version:
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
       - name: Read version
@@ -29,25 +33,97 @@ jobs:
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
+
+  portable:
+    needs: version
+    if: needs.version.outputs.publish == 'true'
+    strategy:
+      matrix:
+        include:
+          # Built on 22.04 so the binaries run on older glibc distributions too.
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-22.04-arm
+            platform: linux-arm64
+          - os: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable
+      - name: Test
+        working-directory: rust
+        run: |
+          cargo test --workspace
+          cargo build --workspace
+      - name: Integration
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            python Tests/agent_integration.py --bin-dir rust/target/debug --service rust/target/debug/barista-app
+          fi
+          python Tests/portable_smoke.py --bin-dir rust/target/debug
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          name="barista-$version-${{ matrix.platform }}"
+          (cd rust && cargo build --workspace --release)
+          mkdir -p "dist/$name"
+          cp LICENSE "dist/$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp rust/target/release/barista.exe rust/target/release/barista-app.exe "dist/$name/"
+            (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null && cp "$name.zip" "barista-${{ matrix.platform }}.zip")
+          else
+            cp rust/target/release/barista rust/target/release/barista-app rust/barista-app/assets/barista.png "dist/$name/"
+            (cd dist && tar -czf "$name.tar.gz" "$name" && cp "$name.tar.gz" "barista-${{ matrix.platform }}.tar.gz")
+          fi
+          rm -rf "dist/$name"
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ matrix.platform }}
+          path: dist/*
+          retention-days: 7
+
+  release:
+    needs: [version, portable]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
       - name: Changelog entry
-        if: steps.version.outputs.publish == 'true'
         run: zsh scripts/release-notes.sh > changes.md
       - name: Test
-        if: steps.version.outputs.publish == 'true'
         run: |
           swift build
           swift run BaristaChecks
           python3 Tests/agent_integration.py
       - name: Build universal app
-        if: steps.version.outputs.publish == 'true'
         run: zsh scripts/build-app.sh --universal
+      - name: Windows and Linux builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: portable-*
+          path: portable
+          merge-multiple: true
       - name: Package, sign, and publish
-        if: steps.version.outputs.publish == 'true'
         env:
           BARISTA_UPDATE_KEY: ${{ secrets.BARISTA_UPDATE_KEY }}
         run: |
           set -euo pipefail
-          version="${{ steps.version.outputs.version }}"
+          version="${{ needs.version.outputs.version }}"
           [ -n "$BARISTA_UPDATE_KEY" ] || { echo "The BARISTA_UPDATE_KEY secret is missing; refusing to ship an unsigned update."; exit 1; }
           zip="Barista-$version.zip"
           ditto -c -k --sequesterRsrc --keepParent build/Barista.app "$zip"
@@ -66,14 +142,18 @@ jobs:
           mv "build/$dmg" "$dmg"
           cp "$dmg" Barista.dmg   # stable names, so the website and install.sh can fetch the latest
           cp "$zip" Barista.zip
-          shasum -a 256 "$dmg" "$zip" Barista.dmg Barista.zip > SHA256SUMS.txt
+          portable=(portable/*)
+          [ "${#portable[@]}" -eq 6 ] || { echo "Expected 6 Windows/Linux packages, found: ${portable[*]}"; exit 1; }
+          mv portable/* .
+          portable=("${portable[@]#portable/}")
+          shasum -a 256 "$dmg" "$zip" Barista.dmg Barista.zip "${portable[@]}" > SHA256SUMS.txt
 
           cp changes.md notes.md
           cat >> notes.md <<NOTES
 
           ---
 
-          **New install:** download **$dmg**, open it, and drag **Barista** into Applications.
+          **New install (Mac):** download **$dmg**, open it, and drag **Barista** into Applications.
 
           This build isn't notarized yet. The first time you open it, macOS will block it: click **Done**,
           then go to **System Settings → Privacy & Security** and click **Open Anyway**.
@@ -83,6 +163,10 @@ jobs:
           **Already have Barista?** It will offer this update in its panel. Click **Update** and it installs and relaunches.
 
           Works on Apple Silicon and Intel Macs running macOS 13 or later.
+
+          **Windows:** in PowerShell, \`irm https://cb-117.github.io/barista/install.ps1 | iex\`, or download **barista-$version-windows-x86_64.zip**.
+
+          **Linux:** the same \`install.sh\` command, or download **barista-$version-linux-x86_64.tar.gz** (or \`-arm64\`). The tray icon needs AppIndicator support (built into Ubuntu, KDE, and most desktops; GNOME needs the AppIndicator extension).
           NOTES
-          gh release create "v$version" "$dmg" Barista.dmg "$zip" "$zip.sig" Barista.zip SHA256SUMS.txt --target "$GITHUB_SHA" \
+          gh release create "v$version" "$dmg" Barista.dmg "$zip" "$zip.sig" Barista.zip "${portable[@]}" SHA256SUMS.txt --target "$GITHUB_SHA" \
             --title "Barista $version" --notes-file notes.md

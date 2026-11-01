@@ -1,0 +1,19 @@
+# Barista for Windows and Linux. The Mac app is the Swift package at the repository root;
+# this workspace shares its behavior, wire format, CLI, MCP server, and agent hooks.
+[workspace]
+members = ["barista", "barista-app"]
+resolver = "2"
+
+[workspace.package]
+# The real version lives in Sources/BaristaCore/Version.swift; build.rs reads it from there.
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+rust-version = "1.89"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "s"

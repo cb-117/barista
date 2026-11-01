@@ -210,8 +210,10 @@ final class AppRuntime: ObservableObject {
         launchAtLogin = loginEnabled
         loginStatus = loginEnabled ? .on : (loginNeedsApproval ? .needsApproval : .off)
         // Read only the (Sendable) status on the callback's thread; older SDKs reject sending the
-        // non-Sendable settings object across actors.
-        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+        // non-Sendable settings object across actors. The closure must be @Sendable: written here
+        // it would otherwise be main-actor isolated, and macOS calls it on a background queue,
+        // which traps at runtime (the 0.0.6 launch crash).
+        UNUserNotificationCenter.current().getNotificationSettings { @Sendable [weak self] settings in
             let status = settings.authorizationStatus
             Task { @MainActor in
                 guard let self else { return }

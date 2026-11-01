@@ -14,6 +14,10 @@ curl -fsSL https://cb-117.github.io/barista/install.sh | sh
 
 This installs Barista.app to /Applications (or ~/Applications), verifies the download against the release's SHA-256 checksum, connects Claude Code and Codex if they're set up for this user, and starts the app in the menu bar. It's safe to re-run. Barista updates itself afterwards.
 
+## Install (Windows 10/11 and Linux)
+
+Barista also runs on Windows and Linux, with the same CLI, hooks, and MCP server. Ask the user first. Windows (PowerShell): `irm https://cb-117.github.io/barista/install.ps1 | iex`. Linux: the same `install.sh` command above. Both verify the download's SHA-256, put `barista` on the PATH (Windows: `%LOCALAPPDATA%\Programs\Barista`; Linux: `~/.local/bin`), and run `barista setup`.
+
 Codex asks users to approve new hooks once. After installing, tell the user to open Codex, type `/hooks`, and trust Barista's hooks. Never bypass that review for them.
 
 ## Use
@@ -22,7 +26,7 @@ Codex asks users to approve new hooks once. After installing, tell the user to o
 - Wrap a long command: `barista run --name "Build" -- make release` (awake for exactly as long as the command runs).
 - Check what's keeping the Mac awake: `barista status`.
 - Connect agents later: `barista setup`.
-- The CLI lives at `/Applications/Barista.app/Contents/Helpers/barista`.
+- The CLI lives at `/Applications/Barista.app/Contents/Helpers/barista` on macOS; on Windows and Linux it's `barista` on the PATH.
 - MCP: run `barista mcp` as a stdio MCP server; tools acquire, heartbeat, and release awake sessions.
 
 Barista prevents idle sleep only. Closing the lid or choosing Sleep still sleeps the Mac.

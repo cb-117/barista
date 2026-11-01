@@ -13,9 +13,11 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--bin-dir', type=Path, default=ROOT / '.build/debug')
+parser.add_argument('--service', type=Path, help='A binary that serves a fake-power control socket with --serve PATH '
+                    '(default: BaristaChecks in --bin-dir; the Rust build uses barista-app)')
 options = parser.parse_args()
 cli = options.bin_dir.resolve() / 'barista'
-checks = options.bin_dir.resolve() / 'BaristaChecks'
+checks = (options.service or options.bin_dir / 'BaristaChecks').resolve()
 
 with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
     path = str(Path(temporary) / 'control.sock')
