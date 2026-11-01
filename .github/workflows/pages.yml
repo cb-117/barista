@@ -22,6 +22,7 @@ jobs:
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: '4.156.0'
           command: deploy
 
   # The old address, cb-117.github.io/barista, stays up so installer one-liners already out in
