@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>Barista macOS app icon</title>
+  <desc>A cream rounded-square tile with a sculpted espresso cup, terminal prompt, and orange steam.</desc>
+  <defs>
+    <linearGradient id="tile" x1="200" y1="110" x2="810" y2="930" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF9EC"/><stop offset=".52" stop-color="#FFF5DE"/><stop offset="1" stop-color="#E9D3B4"/></linearGradient>
+    <linearGradient id="cup" x1="300" y1="410" x2="660" y2="780" gradientUnits="userSpaceOnUse"><stop stop-color="#563829"/><stop offset=".55" stop-color="#3B2419"/><stop offset="1" stop-color="#2B1A12"/></linearGradient>
+    <linearGradient id="steam" x1="455" y1="237" x2="526" y2="385" gradientUnits="userSpaceOnUse"><stop stop-color="#DF8652"/><stop offset="1" stop-color="#C75A2B"/></linearGradient>
+  </defs>
+  <rect x="104" y="115" width="816" height="816" rx="184" fill="#2B1A12" opacity=".08"/>
+  <rect x="104" y="104" width="816" height="816" rx="184" fill="url(#tile)"/>
+  <rect x="109" y="109" width="806" height="806" rx="179" stroke="#FFFFFF" stroke-opacity=".6" stroke-width="6"/>
+  <ellipse cx="508" cy="793" rx="258" ry="29" fill="#3B2419" opacity=".12"/>
+  <path d="M674 459h40c112 0 112 175 0 175h-40" stroke="#2B1A12" stroke-width="50"/>
+  <path d="M681 461h33c91 0 91 151 0 151" stroke="#563829" stroke-width="18" stroke-linecap="round"/>
+  <path d="M267 423h421v191c0 103-59 156-159 156h-103c-100 0-159-53-159-156Z" fill="url(#cup)"/>
+  <path d="M285 440h385" stroke="#73513A" stroke-width="13" stroke-linecap="round"/>
+  <path d="m380 521 66 65-66 65m131 0h72" stroke="#FFF5DE" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M484 239c-99 77 85 73-7 145" stroke="url(#steam)" stroke-width="34" stroke-linecap="round"/>
+  <path d="M285 799h411" stroke="#C75A2B" stroke-width="24" stroke-linecap="round"/>
+</svg>

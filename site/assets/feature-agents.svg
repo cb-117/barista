@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" fill="none">
+  <title>A fresh brew for your agents</title>
+  <desc>A friendly robot-faced coffee cup with an orange antenna and floating AI sparkles.</desc>
+  <circle cx="120" cy="120" r="96" fill="#E9D3B4" opacity=".35"/>
+  <ellipse cx="115" cy="195" rx="76" ry="9" fill="#E9D3B4"/>
+  <path d="M172 111h12a25 25 0 0 1 0 50h-12" stroke="#3B2419" stroke-width="10"/>
+  <path d="M51 98h126v55c0 26-18 39-44 39H95c-26 0-44-13-44-39Z" fill="#3B2419"/>
+  <path d="M65 99h97" stroke="#73513A" stroke-width="5" stroke-linecap="round"/>
+  <rect x="72" y="120" width="84" height="47" rx="16" fill="#FFF5DE"/>
+  <path d="M93 138v6m42-6v6m-28 9h14" stroke="#3B2419" stroke-width="5" stroke-linecap="round"/>
+  <path d="M115 98V80" stroke="#C75A2B" stroke-width="5"/>
+  <circle cx="115" cy="76" r="7" fill="#C75A2B"/>
+  <path d="m171 39 7 16 16 7-16 7-7 16-7-16-16-7 16-7Zm-94 8 4 9 9 4-9 4-4 9-4-9-9-4 9-4Z" fill="#C75A2B"/>
+  <path d="M44 190h143" stroke="#C75A2B" stroke-width="5" stroke-linecap="round"/>
+</svg>

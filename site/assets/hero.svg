@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" fill="none">
+  <title>Many orders. One very awake Mac.</title>
+  <desc>A friendly espresso machine serves three independent cups for you, make test, and Claude Code. Their steam keeps a sleepy moon at a polite distance.</desc>
+  <defs>
+    <linearGradient id="machine" x1="275" y1="164" x2="495" y2="420" gradientUnits="userSpaceOnUse"><stop stop-color="#D97542"/><stop offset="1" stop-color="#C75A2B"/></linearGradient>
+  </defs>
+  <path d="M121 442c-48-87-13-176 77-209 14-107 131-160 237-121 85-61 210-38 248 39 131-39 253 27 259 116 101-7 172 72 142 173Z" fill="#E9D3B4" opacity=".38"/>
+  <path d="M114 450c160-24 344-30 513-23 171 7 311-6 473 17" stroke="#E9D3B4" stroke-width="3" stroke-linecap="round"/>
+  <g stroke="#E9D3B4" stroke-width="3" stroke-linecap="round">
+    <path d="M156 157h36m-18-18v36M1038 309h26m-13-13v26M630 126h22m-11-11v22"/>
+    <path d="m186 346 5 5m-5 0 5-5"/>
+  </g>
+  <g transform="translate(1000 48) rotate(12 50 50)">
+    <path d="M74 19A49 49 0 1 0 94 90 48 48 0 0 1 74 19Z" fill="#E9D3B4"/>
+    <path d="m34 62 8 3 8-3" stroke="#3B2419" stroke-width="3" stroke-linecap="round"/>
+    <path d="M57 78c3-3 6-3 9 0" stroke="#3B2419" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <path d="m1113 57 13-2-10 16 14-2m-3-35 17-2-13 20 18-2" stroke="#3B2419" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+  <path d="M961 179c21-10 30-25 28-46m-40 31 20-6m-4 28 21 1" stroke="#C75A2B" stroke-width="3" stroke-linecap="round"/>
+  <rect x="206" y="468" width="950" height="32" rx="16" fill="#E9D3B4"/>
+  <path d="M249 500v33m851-33v33" stroke="#3B2419" stroke-width="12" stroke-linecap="round"/>
+  <rect x="215" y="453" width="956" height="23" rx="11.5" fill="#3B2419"/>
+  <path d="M260 169c0-23 18-41 41-41h203c23 0 41 18 41 41v249H260Z" fill="url(#machine)"/>
+  <path d="M280 169c0-12 9-21 21-21h203" stroke="#FFF5DE" stroke-opacity=".35" stroke-width="7" stroke-linecap="round"/>
+  <rect x="245" y="113" width="315" height="27" rx="13.5" fill="#3B2419"/>
+  <path d="M286 110V89h43v21m23 0V82h44v28" stroke="#3B2419" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M329 92h8c13 0 13 15 0 15h-8m67-21h8c15 0 15 18 0 18h-8" stroke="#3B2419" stroke-width="5"/>
+  <rect x="283" y="181" width="239" height="93" rx="18" fill="#3B2419"/>
+  <circle cx="338" cy="227" r="31" fill="#FFF5DE"/>
+  <path d="M320 230a18 18 0 0 1 36 0" stroke="#E9D3B4" stroke-width="5" stroke-linecap="round"/>
+  <path d="m338 226 9-12" stroke="#C75A2B" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="338" cy="227" r="4" fill="#3B2419"/>
+  <circle cx="416" cy="221" r="5" fill="#FFF5DE"/>
+  <circle cx="460" cy="221" r="5" fill="#FFF5DE"/>
+  <path d="M427 238q11 10 22 0" stroke="#FFF5DE" stroke-width="4" stroke-linecap="round"/>
+  <rect x="296" y="294" width="213" height="112" rx="13" fill="#2B1A12"/>
+  <path d="M364 293v21h63v-21" fill="#E9D3B4"/>
+  <path d="M392 314v20m22-20v20" stroke="#C75A2B" stroke-width="5" stroke-linecap="round"/>
+  <path d="M427 305h54" stroke="#E9D3B4" stroke-width="10" stroke-linecap="round"/>
+  <path d="M544 278h27v83l17 17" stroke="#3B2419" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M422 355h9a14 14 0 0 1 0 28h-9" stroke="#FFF5DE" stroke-width="7"/>
+  <path d="M362 348h65v32c0 15-9 22-25 22h-15c-16 0-25-7-25-22Z" fill="#FFF5DE"/>
+  <path d="m384 362 8 8-8 8m17 0h9" stroke="#C75A2B" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="245" y="411" width="315" height="42" rx="12" fill="#3B2419"/>
+  <path d="M277 429h251m-244 11h237" stroke="#E9D3B4" stroke-opacity=".4" stroke-width="3" stroke-linecap="round"/>
+  <path d="M611 216h487" stroke="#3B2419" stroke-width="8" stroke-linecap="round"/>
+  <g font-family="ui-rounded, -apple-system, Helvetica, sans-serif" fill="#3B2419" text-anchor="middle">
+    <g transform="rotate(-5 676 245)">
+      <path d="M621 211h111v70l-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-6-7Z" fill="#FFF5DE"/>
+      <rect x="661" y="204" width="30" height="14" rx="4" fill="#C75A2B"/>
+      <text x="676" y="249" font-size="19" font-weight="700">you · 1h</text>
+      <path d="M648 265h56" stroke="#E9D3B4" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <g transform="rotate(3 863 245)">
+      <path d="M801 211h124v70l-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-5 7Z" fill="#FFF5DE"/>
+      <rect x="848" y="204" width="30" height="14" rx="4" fill="#C75A2B"/>
+      <text x="863" y="249" font-size="18" font-weight="700">make test</text>
+      <path d="M835 265h56" stroke="#E9D3B4" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <g transform="rotate(-3 1050 245)">
+      <path d="M974 211h152v70l-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-7 7-7-7-5 7Z" fill="#FFF5DE"/>
+      <rect x="1035" y="204" width="30" height="14" rx="4" fill="#C75A2B"/>
+      <text x="1050" y="249" font-size="17" font-weight="700">Claude Code ✦</text>
+      <path d="M1022 265h56" stroke="#E9D3B4" stroke-width="3" stroke-linecap="round"/>
+    </g>
+  </g>
+  <g stroke="#FFFDF7" stroke-width="8" stroke-linecap="round"><path d="M667 355c-29-25 26-29 3-55"/><path d="M854 354c-29-25 26-29 3-55"/><path d="M1041 355c-29-25 26-29 3-55"/></g>
+  <g transform="translate(619 366)">
+    <ellipse cx="57" cy="85" rx="66" ry="8" fill="#2B1A12" opacity=".08"/>
+    <path d="M103 14h11a20 20 0 0 1 0 40h-11" stroke="#C75A2B" stroke-width="10"/>
+    <path d="M4 0h103v45c0 25-15 38-40 38H44C19 83 4 70 4 45Z" fill="#C75A2B"/>
+    <path d="m36 25 12 12-12 12m26 0h15" stroke="#FFF5DE" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M-2 85h115" stroke="#C75A2B" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(806 366)">
+    <ellipse cx="57" cy="85" rx="66" ry="8" fill="#2B1A12" opacity=".08"/>
+    <path d="M103 14h11a20 20 0 0 1 0 40h-11" stroke="#3B2419" stroke-width="10"/>
+    <path d="M4 0h103v45c0 25-15 38-40 38H44C19 83 4 70 4 45Z" fill="#3B2419"/>
+    <path d="m36 25 12 12-12 12m26 0h15" stroke="#FFF5DE" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M-2 85h115" stroke="#3B2419" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(993 366)">
+    <ellipse cx="57" cy="85" rx="66" ry="8" fill="#2B1A12" opacity=".08"/>
+    <path d="M103 14h11a20 20 0 0 1 0 40h-11" stroke="#C75A2B" stroke-width="10"/>
+    <path d="M4 0h103v45c0 25-15 38-40 38H44C19 83 4 70 4 45Z" fill="#E9D3B4"/>
+    <path d="m56 20 6 14 14 6-14 6-6 14-6-14-14-6 14-6Z" fill="#C75A2B"/>
+    <path d="M-2 85h115" stroke="#C75A2B" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <path d="M604 516c108 24 354 25 463-2" stroke="#E9D3B4" stroke-width="3" stroke-linecap="round" stroke-dasharray="3 11"/>
+</svg>

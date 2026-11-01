@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" fill="none">
+  <title>Good work. Sensible energy.</title>
+  <desc>A terminal coffee cup beside a battery protected by a small checked shield.</desc>
+  <circle cx="120" cy="120" r="96" fill="#E9D3B4" opacity=".35"/>
+  <ellipse cx="121" cy="192" rx="90" ry="10" fill="#E9D3B4"/>
+  <path d="M72 69c-21-18 19-23 1-42" stroke="#C75A2B" stroke-width="6" stroke-linecap="round"/>
+  <path d="M99 116h9a19 19 0 0 1 0 38h-9" stroke="#3B2419" stroke-width="8"/>
+  <path d="M30 103h74v48c0 23-11 35-33 35h-8c-22 0-33-12-33-35Z" fill="#3B2419"/>
+  <path d="m48 123 10 10-10 10m21 0h13" stroke="#FFF5DE" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 190h83" stroke="#C75A2B" stroke-width="5" stroke-linecap="round"/>
+  <rect x="134" y="77" width="65" height="109" rx="14" fill="#FFF5DE" stroke="#3B2419" stroke-width="6"/>
+  <path d="M155 75v-9h23v9" fill="#3B2419"/>
+  <rect x="145" y="133" width="43" height="41" rx="5" fill="#C75A2B"/>
+  <rect x="145" y="116" width="43" height="9" rx="4.5" fill="#E9D3B4"/>
+  <path d="m191 131 26 10v23c0 18-13 28-26 34-13-6-26-16-26-34v-23Z" fill="#FFF5DE" stroke="#3B2419" stroke-width="5" stroke-linejoin="round"/>
+  <path d="m179 164 8 8 16-20" stroke="#C75A2B" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

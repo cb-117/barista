@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barista: keeps your Mac awake while the work brews</title>
+<meta name="description" content="A free, open-source Mac menu-bar app that keeps your Mac awake exactly as long as your timers, commands, and AI agents need, then lets it sleep.">
+<meta property="og:title" content="Barista: keeps your Mac awake while the work brews">
+<meta property="og:description" content="Free and open source. One-click Claude Code support, a CLI, and an MCP server. No cloud, no tracking.">
+<meta property="og:image" content="https://cb-117.github.io/barista/assets/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/favicon-32.png" sizes="32x32">
+<style>
+  :root {
+    --espresso: #2B1A12; --roast: #3B2419; --crema: #C75A2B; --foam: #FFF5DE; --latte: #E9D3B4;
+    --ink: #2B1A12; --muted: #7a5a48; --card: #fffaf0;
+    --round: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font-family: var(--round); color: var(--ink); background: var(--foam); line-height: 1.55; }
+  a { color: var(--crema); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  .brand { display: flex; gap: 10px; align-items: center; font-weight: 800; font-size: 22px; text-decoration: none; color: var(--ink); letter-spacing: -.02em; }
+  .brand img { width: 34px; height: 34px; }
+  nav .links a { margin-left: 22px; color: var(--muted); text-decoration: none; font-weight: 600; }
+  nav .links a:hover { color: var(--crema); }
+
+  .hero { display: grid; grid-template-columns: 1fr 1.1fr; gap: 40px; align-items: center; padding: 40px 0 70px; }
+  h1 { font-size: clamp(40px, 6vw, 66px); line-height: 1.02; letter-spacing: -.035em; margin: 0 0 18px; }
+  h1 em { font-style: normal; color: var(--crema); }
+  .lede { font-size: 20px; color: var(--muted); max-width: 30em; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 28px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 22px; border-radius: 14px; font-weight: 700; text-decoration: none; transition: transform .15s ease; }
+  .btn:hover { transform: translateY(-2px); }
+  .btn.primary { background: var(--crema); color: #fff; box-shadow: 0 8px 24px rgba(199,90,43,.3); }
+  .btn.ghost { background: transparent; color: var(--ink); border: 2px solid var(--latte); }
+  .small { font-size: 14px; color: var(--muted); margin-top: 14px; }
+  .hero-art { width: 100%; height: auto; }
+  .steam { animation: float 4s ease-in-out infinite; }
+  @keyframes float { 50% { transform: translateY(-8px); } }
+
+  section { padding: 70px 0; }
+  h2 { font-size: clamp(30px, 4vw, 42px); line-height: 1.12; letter-spacing: -.03em; margin: 0 0 12px; }
+  .kicker { text-transform: uppercase; letter-spacing: .14em; font-size: 13px; font-weight: 800; color: var(--crema); }
+  .sub { color: var(--muted); font-size: 18px; max-width: 36em; }
+
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 36px; }
+  .card { background: var(--card); border: 2px solid var(--latte); border-radius: 22px; padding: 26px; }
+  .card img { width: 120px; height: 120px; display: block; margin-bottom: 8px; }
+  .card h3 { margin: 6px 0 6px; font-size: 21px; }
+  .card p { margin: 0; color: var(--muted); }
+
+  .board { background: var(--roast); color: var(--foam); border-radius: 28px; padding: 44px; box-shadow: inset 0 0 0 10px #4a2e20, 0 20px 50px rgba(43,26,18,.25); }
+  .board h2 { color: var(--foam); font-family: "Chalkboard SE", "Marker Felt", var(--round); }
+  .board .sub { color: var(--latte); }
+  .menu { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 50px; margin-top: 26px; font-size: 19px; }
+  .menu div { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; }
+  .menu .dots { flex: 1; border-bottom: 2px dotted rgba(233,211,180,.4); transform: translateY(-5px); }
+  .menu b { font-family: "Chalkboard SE", "Marker Felt", var(--round); font-size: 22px; }
+  .menu span:last-child { color: #f3a77f; font-weight: 700; }
+  .menu small { display: block; color: var(--latte); font-size: 14px; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  .term { background: var(--espresso); color: #f5e6d3; border-radius: 18px; padding: 0 0 20px; font-family: var(--mono); font-size: 14px; box-shadow: 0 20px 50px rgba(43,26,18,.3); overflow: hidden; }
+  .term .bar { display: flex; gap: 7px; padding: 14px 16px; background: #3b2419; margin-bottom: 16px; }
+  .term .bar i { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; }
+  .term .bar i:nth-child(2) { background: #febc2e; } .term .bar i:nth-child(3) { background: #28c840; }
+  .term pre { margin: 0; padding: 0 22px; white-space: pre-wrap; }
+  .term .p { color: #f3a77f; } .term .c { color: #9c7f6b; } .term .ok { color: #9fd28a; }
+  ul.ticks { list-style: none; padding: 0; margin: 20px 0 0; }
+  ul.ticks li { padding: 6px 0 6px 32px; position: relative; }
+  ul.ticks li::before { content: "☕"; position: absolute; left: 0; }
+
+  .faq details { background: var(--card); border: 2px solid var(--latte); border-radius: 16px; padding: 16px 20px; margin-bottom: 12px; }
+  .faq summary { font-weight: 700; cursor: pointer; font-size: 18px; }
+  .faq p { color: var(--muted); margin: 10px 0 0; }
+  code { font-family: var(--mono); background: rgba(199,90,43,.1); padding: 2px 6px; border-radius: 6px; font-size: .9em; }
+
+  footer { padding: 50px 0 60px; text-align: center; color: var(--muted); }
+  footer img { width: 40px; opacity: .85; }
+
+  @media (max-width: 820px) {
+    .hero, .split { grid-template-columns: 1fr; }
+    .features { grid-template-columns: 1fr; }
+    .menu { grid-template-columns: 1fr; }
+    nav .links a:not(.gh) { display: none; }
+    .board { padding: 28px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .steam { animation: none; } html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="#"><img src="assets/logo-mark.svg" alt="">Barista</a>
+    <div class="links">
+      <a href="#menu">Menu</a>
+      <a href="#agents">Agents</a>
+      <a href="#faq">FAQ</a>
+      <a class="gh" href="https://github.com/cb-117/barista">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <div class="kicker">Free &amp; open source · macOS 13+</div>
+      <h1>Keeps your Mac awake while the <em>work brews.</em></h1>
+      <p class="lede">A tiny menu-bar barista that takes orders from you, your terminal, and your AI agents. It keeps the Mac awake exactly as long as each one needs, then lets it sleep.</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/cb-117/barista/releases/latest">☕ Download for Mac</a>
+        <a class="btn ghost" href="https://github.com/cb-117/barista">View on GitHub</a>
+      </div>
+      <p class="small">No account. No cloud. No tracking. Just coffee.</p>
+    </div>
+    <img class="hero-art steam" src="assets/hero.svg" alt="An espresso machine serving several cups, each with an order ticket: you for one hour, make test, and Claude Code.">
+  </header>
+</div>
+
+<section id="how">
+  <div class="wrap">
+    <div class="kicker">How it works</div>
+    <h2>Every job gets its own order.</h2>
+    <p class="sub">Most keep-awake apps have one big on/off switch. Barista keeps separate orders. Your one-hour timer, a test run, and two Claude Code sessions each keep their own ticket, and one finishing never cancels another.</p>
+    <div class="features">
+      <div class="card">
+        <img src="assets/feature-orders.svg" alt="">
+        <h3>Separate orders</h3>
+        <p>Each timer, command, app, or agent gets its own session. See them all in one panel and stop any of them on its own.</p>
+      </div>
+      <div class="card">
+        <img src="assets/feature-agents.svg" alt="">
+        <h3>Made for agents</h3>
+        <p>Connect Claude Code in one click. Commands and MCP agents check in while they work and are released when they’re done.</p>
+      </div>
+      <div class="card">
+        <img src="assets/feature-battery.svg" alt="">
+        <h3>Battery protection</h3>
+        <p>On battery, Barista stops keeping the Mac awake at 20% (you can change this). Your work keeps running; it just stops keeping the Mac up.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="menu">
+  <div class="wrap">
+    <div class="board">
+      <div class="kicker" style="color:#f3a77f">Today’s menu</div>
+      <h2>Pick a size. Press one button.</h2>
+      <p class="sub">Left-click for the panel. Right-click the cup for one-click timers. Option-click to toggle your last order.</p>
+      <div class="menu">
+        <div><b>Espresso</b><span class="dots"></span><span>15 min</span></div>
+        <div><b>Lungo</b><span class="dots"></span><span>1 hour</span></div>
+        <div><b>Cold brew</b><span class="dots"></span><span>4 hours</span></div>
+        <div><b>Bottomless cup</b><span class="dots"></span><span>∞</span></div>
+        <div><span><b>Barista’s choice</b><small>Custom minutes or an end time</small></span><span class="dots"></span><span>your call</span></div>
+        <div><span><b>To go</b><small>While an app stays open</small></span><span class="dots"></span><span>auto</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="agents">
+  <div class="wrap split">
+    <div>
+      <div class="kicker">For Claude Code &amp; friends</div>
+      <h2>Your agent orders. Barista pours.</h2>
+      <p class="sub">Leaving Claude Code on a long refactor? Click <b>Connect</b> in Settings. A prompt opens an order, tool calls keep it going, and it closes when Claude finishes. Then your Mac can sleep.</p>
+      <ul class="ticks">
+        <li>One-click Claude Code hooks, with a backup of your settings</li>
+        <li><code>barista run -- make test</code> stays awake for exactly that command</li>
+        <li>Built-in MCP server for any agent that speaks MCP</li>
+        <li>If you stop an order, it stays stopped until you start new work</li>
+      </ul>
+    </div>
+    <div class="term" role="img" aria-label="Terminal example using the barista command">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="c"># connect Claude Code (or use Settings → Connect)</span>
+<span class="p">$</span> barista hooks install
+<span class="ok">Connected Claude Code</span>
+
+<span class="c"># awake for exactly the length of a command</span>
+<span class="p">$</span> barista run --name "Nightly build" -- make release
+
+<span class="p">$</span> barista status
+Awake · 3 session(s) · display allowed to sleep
+  Claude Code · api-server   [agent]    20:00
+  Nightly build              [command]  00:45
+  My coffee break            [manual]   58:12</pre>
+    </div>
+  </div>
+</section>
+
+<section id="faq" class="faq">
+  <div class="wrap">
+    <div class="kicker">FAQ</div>
+    <h2>Questions at the counter</h2>
+    <details><summary>Is it really free?</summary><p>Yes. It’s MIT-licensed and open source, with no in-app purchases, accounts, or telemetry.</p></details>
+    <details><summary>Does it keep my Mac awake with the lid closed?</summary><p>No. Barista prevents <em>idle</em> sleep. Closing the lid, choosing Sleep, or a dead battery still put the Mac to sleep. For lid-closed work, connect power and an external display.</p></details>
+    <details><summary>How is this different from <code>caffeinate</code> or Amphetamine?</summary><p>Those have one switch for the whole Mac. Barista tracks who needs the Mac awake and for how long, and ends each one on its own when that job finishes or stops checking in. It also connects to Claude Code in one click.</p></details>
+    <details><summary>Does anything leave my Mac?</summary><p>No. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions).</p></details>
+    <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet. Open it once, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. Or build it yourself with <code>zsh scripts/build-app.sh</code>.</p></details>
+  </div>
+</section>
+
+<footer>
+  <img src="assets/logo-mark.svg" alt="">
+  <p>Barista is free and open source under the MIT license.<br><a href="https://github.com/cb-117/barista">github.com/cb-117/barista</a></p>
+</footer>
+</body>
+</html>

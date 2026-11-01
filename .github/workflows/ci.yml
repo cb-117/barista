@@ -1,0 +1,18 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build
+      - name: Session checks
+        run: swift run BaristaChecks
+      - name: CLI, MCP, and hook integration
+        run: python3 Tests/agent_integration.py
+      - name: App bundle
+        run: zsh scripts/build-app.sh

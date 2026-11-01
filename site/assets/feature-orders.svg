@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" fill="none">
+  <title>Independent orders</title>
+  <desc>Three separately clipped order tickets on a café rail, each with its own progress.</desc>
+  <circle cx="120" cy="120" r="96" fill="#E9D3B4" opacity=".35"/>
+  <path d="M23 72h194" stroke="#3B2419" stroke-width="10" stroke-linecap="round"/>
+  <g transform="rotate(-7 58 125)">
+    <path d="M30 70h56v102l-7 8-7-8-7 8-7-8-7 8-7-8-7 8-7-8Z" fill="#FFF5DE" stroke="#E9D3B4" stroke-width="2"/>
+    <rect x="47" y="61" width="22" height="19" rx="5" fill="#C75A2B"/>
+    <path d="m45 101 8 8-8 8m15 0h9" stroke="#3B2419" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M43 137h29m-29 12h18" stroke="#E9D3B4" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(4 120 127)">
+    <path d="M92 70h56v110l-7 8-7-8-7 8-7-8-7 8-7-8-7 8-7-8Z" fill="#FFF5DE" stroke="#E9D3B4" stroke-width="2"/>
+    <rect x="109" y="61" width="22" height="19" rx="5" fill="#C75A2B"/>
+    <path d="m108 109 8 8 15-18" stroke="#C75A2B" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M105 137h29m-29 12h23" stroke="#E9D3B4" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(-3 182 123)">
+    <path d="M154 70h56v94l-7 8-7-8-7 8-7-8-7 8-7-8-7 8-7-8Z" fill="#FFF5DE" stroke="#E9D3B4" stroke-width="2"/>
+    <rect x="171" y="61" width="22" height="19" rx="5" fill="#C75A2B"/>
+    <path d="m182 96 5 11 11 5-11 5-5 11-5-11-11-5 11-5Z" fill="#C75A2B"/>
+    <path d="M167 137h29m-29 12h15" stroke="#E9D3B4" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>
