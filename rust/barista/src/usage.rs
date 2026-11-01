@@ -115,7 +115,8 @@ pub struct CodexLimits {
 /// The Claude plan's limits as last seen, in the status line's `rate_limits` shape.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClaudeLimits {
-    /// "Claude Code" (status line) or "Claude app" (desktop app snapshot).
+    /// "Claude account" (Anthropic's usage endpoint; `rate_limits` holds its response), "Claude Code"
+    /// (status line), or "Claude app" (desktop app snapshot).
     pub source: &'static str,
     pub observed_at: f64,
     pub rate_limits: Value,
@@ -507,7 +508,11 @@ fn collect_in(directory: &Path) -> Snapshot {
         entries,
         cursor: read_cursor(directory),
         codex_limits,
-        claude_limits: newest_claude_limits(read_claude_status_limits(directory), read_claude_app_limits()),
+        claude_limits: newest_claude_limits([
+            crate::claude_account::read(directory, now()),
+            read_claude_status_limits(directory),
+            read_claude_app_limits(now()),
+        ]),
     }
 }
 
@@ -548,8 +553,9 @@ fn claude_app_dir() -> Option<PathBuf> {
     None
 }
 
-/// The newest sample in the desktop app's (undocumented) plan-usage-history.json, if readable.
-fn read_claude_app_limits() -> Option<ClaudeLimits> {
+/// The newest sample in the desktop app's (undocumented, rarely updated) plan-usage-history.json,
+/// if readable and no more than an hour old.
+fn read_claude_app_limits(now: f64) -> Option<ClaudeLimits> {
     let data = fs::read(claude_app_dir()?.join("plan-usage-history.json")).ok()?;
     let value: Value = serde_json::from_slice(&data).ok()?;
     let sample = value
@@ -565,22 +571,26 @@ fn read_claude_app_limits() -> Option<ClaudeLimits> {
             rate_limits.insert(id.into(), json!({"used_percentage": percent}));
         }
     }
-    if rate_limits.is_empty() {
+    let observed_at = sample["t"].as_f64()? / 1000.0;
+    if rate_limits.is_empty() || now - observed_at > 3600.0 {
         return None;
     }
     Some(ClaudeLimits {
         source: "Claude app",
-        observed_at: sample["t"].as_f64()? / 1000.0,
+        observed_at,
         rate_limits: Value::Object(rate_limits),
     })
 }
 
-/// The more recently observed of the two Claude sources.
-pub fn newest_claude_limits(status: Option<ClaudeLimits>, app: Option<ClaudeLimits>) -> Option<ClaudeLimits> {
-    match (status, app) {
-        (Some(status), Some(app)) => Some(if app.observed_at > status.observed_at { app } else { status }),
-        (status, app) => status.or(app),
-    }
+/// The most recently observed Claude source (ties go to the earlier one in the list).
+pub fn newest_claude_limits(sources: impl IntoIterator<Item = Option<ClaudeLimits>>) -> Option<ClaudeLimits> {
+    sources
+        .into_iter()
+        .flatten()
+        .fold(None, |best: Option<ClaudeLimits>, next| match best {
+            Some(best) if best.observed_at >= next.observed_at => Some(best),
+            _ => Some(next),
+        })
 }
 
 /// "5-hour", "Weekly", "N-hour", or "N-day".
@@ -611,6 +621,20 @@ fn claude_limits_json(limits: Option<&ClaudeLimits>, now: f64) -> Value {
         return unavailable_limits("claude", "Claude plan");
     };
     let mut windows = Vec::new();
+    if limits.source == "Claude account" {
+        for window in crate::claude_account::windows(&limits.rate_limits) {
+            let mut entry = window_json(&window.id, window.label, window.minutes, window.used, window.resets_at, now);
+            if let Some((used_usd, limit_usd)) = window.money {
+                entry["usedUSD"] = json!(used_usd);
+                entry["limitUSD"] = json!(limit_usd);
+            }
+            windows.push(entry);
+        }
+        return json!({
+            "agent": "claude", "name": "Claude plan", "available": true, "source": limits.source,
+            "observedAt": format_date(limits.observed_at), "plan": null, "credits": null, "windows": windows,
+        });
+    }
     for (id, minutes) in [("five_hour", Some(300u64)), ("seven_day", Some(10080)), ("spend_limit", None)] {
         let Some(window) = limits.rate_limits.get(id).filter(|w| w.is_object()) else {
             continue;
@@ -1025,6 +1049,9 @@ pub fn limit_summary(limit: &Value) -> String {
             };
             part.push_str(&format!(" (resets {})", at.format(format)));
         }
+        if let (Some(used), Some(limit)) = (window["usedUSD"].as_f64(), window["limitUSD"].as_f64()) {
+            part.push_str(&format!(" (${used:.2} of ${limit:.2})"));
+        }
         parts.push(part);
     }
     if let Some(plan) = limit["plan"].as_str() {
@@ -1123,16 +1150,32 @@ mod tests {
             rate_limits: json!({}),
         };
         assert_eq!(
-            newest_claude_limits(Some(status.clone()), Some(app.clone())).unwrap().source,
+            newest_claude_limits([None, Some(status.clone()), Some(app.clone())])
+                .unwrap()
+                .source,
             "Claude app"
         );
-        let older_app = ClaudeLimits { observed_at: 50.0, ..app };
+        let older_app = ClaudeLimits {
+            observed_at: 50.0,
+            ..app.clone()
+        };
         assert_eq!(
-            newest_claude_limits(Some(status.clone()), Some(older_app.clone())).unwrap().source,
+            newest_claude_limits([Some(status.clone()), Some(older_app.clone())])
+                .unwrap()
+                .source,
             "Claude Code"
         );
-        assert_eq!(newest_claude_limits(None, Some(older_app)).unwrap().source, "Claude app");
-        assert!(newest_claude_limits(None, None).is_none());
+        assert_eq!(newest_claude_limits([None, None, Some(older_app)]).unwrap().source, "Claude app");
+        let account = ClaudeLimits {
+            source: "Claude account",
+            observed_at: 300.0,
+            rate_limits: json!({}),
+        };
+        assert_eq!(
+            newest_claude_limits([Some(account), Some(status), Some(app)]).unwrap().source,
+            "Claude account"
+        );
+        assert!(newest_claude_limits([None, None, None]).is_none());
     }
 
     #[test]

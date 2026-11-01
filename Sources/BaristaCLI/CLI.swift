@@ -122,6 +122,23 @@ struct CoffeeCLI {
                 MCPServer(connection: connection).run()
                 return
             }
+            if options.command == "limits" {
+                // Fetches Claude account limits once (the app does this every few minutes).
+                try options.validate(positionalCount: 1)
+                guard options.positionals[0] == "refresh" else { throw CoffeeError.message("Use: barista limits refresh") }
+                // An explicit command, so macOS may ask for Keychain access; the app's background reads never do.
+                let outcome = runBlocking { await ClaudeAccount.refresh(interactive: true) }
+                if options.flags.contains("--json") {
+                    let object: [String: Any] = ["ok": outcome.ok, "message": outcome.message]
+                    if let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]) {
+                        print(String(decoding: data, as: UTF8.self))
+                    }
+                } else {
+                    print(outcome.message)
+                }
+                if !outcome.ok { exit(1) }
+                return
+            }
             if options.command == "usage" {
                 // Reads local logs directly; never needs the app.
                 try options.validate(values: ["--period"])
@@ -404,6 +421,7 @@ struct CoffeeCLI {
     barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]
     barista setup [--agent claude|codex|cursor]
     barista usage [--period today|week|month|all] [--json]
+    barista limits refresh [--json]
     barista statusline install|uninstall|status [--settings PATH]
     barista version
 
@@ -414,6 +432,8 @@ struct CoffeeCLI {
     Stopping a session never terminates the underlying command.
 
     setup connects every agent it finds (Claude Code, Codex, Cursor) and starts Barista.
+    limits refresh fetches your Claude plan limits from your Claude account now, using
+    Claude Code's saved login read-only (the app does this every few minutes).
     usage reports plan limits, then sessions and tokens per agent and model from local logs,
     with costs estimated at API list prices (not what a subscription charges).
     statusline install makes Claude Code's status line show (and Barista record) your Claude
@@ -650,4 +670,18 @@ enum StatusLine {
         process.waitUntilExit()
         return output
     }
+}
+
+/// Runs an async operation to completion from synchronous CLI code.
+private final class BlockingBox<T>: @unchecked Sendable { var value: T? }
+
+func runBlocking<T: Sendable>(_ operation: @escaping @Sendable () async -> T) -> T {
+    let box = BlockingBox<T>()
+    let done = DispatchSemaphore(value: 0)
+    Task.detached {
+        box.value = await operation()
+        done.signal()
+    }
+    done.wait()
+    return box.value!
 }

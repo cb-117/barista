@@ -299,6 +299,23 @@ fn run(arguments: Vec<String>) -> Result<i32> {
             }
             return Ok(0);
         }
+        "limits" => {
+            // `barista limits refresh`: asks Anthropic for your Claude account's limits once.
+            options.validate(&[], &[], 1)?;
+            if options.positionals[0] != "refresh" {
+                return Err(CoffeeError::msg("Use: barista limits refresh"));
+            }
+            let (ok, message) = match barista_core::claude_account::refresh() {
+                Ok(()) => (true, barista_core::claude_account::UPDATED_MESSAGE.to_string()),
+                Err(skipped) => (false, skipped.message()),
+            };
+            if options.flags.contains("--json") {
+                println!("{}", to_json(&serde_json::json!({"ok": ok, "message": message})));
+            } else {
+                println!("{message}");
+            }
+            return Ok(if ok { 0 } else { 1 });
+        }
         "usage" => {
             // Reads the agents' logs on this computer; never needs the app.
             options.validate(&["--period"], &[], 0)?;
@@ -732,6 +749,7 @@ barista history [--json]
 barista run [--name \"Build\"] [--display] [--max-awake 28800] -- COMMAND [ARG ...]
 barista usage [--period today|week|month|all] [--json]
 barista statusline [install|uninstall|status] [--settings PATH]
+barista limits refresh [--json]
 barista mcp
 barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]
 barista setup [--agent claude|codex|cursor]
@@ -750,9 +768,10 @@ tool calls renew it, and the session ends when the agent finishes its turn or ex
 
 usage reports sessions and tokens for Claude Code and Codex (from their local logs) and
 Cursor turns (recorded by its hooks) for today, this week, and this month, with costs
-estimated at API list prices. --period shows one period by model. Nothing leaves this computer.
-It starts with plan limits: Claude's (from Claude Code's status line, or the Claude app) and
-ChatGPT's (from Codex's logs). statusline is Claude Code's status line command that records
+estimated at API list prices. --period shows one period by model. It starts with plan limits:
+Claude's (from your Claude account, which the Barista app checks every few minutes using Claude
+Code's saved login, or Claude Code's status line) and ChatGPT's (from Codex's logs). limits refresh
+checks your Claude account once. statusline is Claude Code's status line command that records
 Claude's limits; setup installs it, keeping any status line you already had working behind it.
 
 Global options: --json, --no-launch, --socket PATH. Barista (the coffee cup in the {place})

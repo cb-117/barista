@@ -38,7 +38,8 @@ struct TaskRow: View {
     private var detail: String {
         let kind = switch lease.source {
         case .manual: "Your session"
-        case .application: "Until the app quits"
+        // Watched apps (Claude, ChatGPT) renew while busy; an app picked from the panel lasts until it quits.
+        case .application: lease.expiresAt == nil ? "Until the app quits" : "While it’s busy"
         case .agent: "Agent"
         case .command: "Until the command finishes"
         }

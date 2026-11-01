@@ -549,13 +549,16 @@ public extension UsageReport {
     static func limitSummary(_ plan: PlanLimits, now: Date) -> String {
         guard plan.available else {
             switch plan.agent {
-            case .claude: return "no data yet (Barista reads it from Claude Code’s status line: run barista setup)"
+            case .claude: return "no data yet (open Barista and allow it to read your Claude account, or run barista limits refresh)"
             case .codex: return "no data yet (appears after your next Codex turn)"
             case .cursor: return "not available on this computer"
             }
         }
         var parts = plan.windows.map { window -> String in
-            let percent = "\(window.label) \(Int(window.usedPercent.rounded()))%"
+            var percent = "\(window.label) \(Int(window.usedPercent.rounded()))%"
+            if let used = window.usedUSD, let limit = window.limitUSD {
+                percent += String(format: " ($%.2f of $%.2f)", used, limit)
+            }
             if window.reset { return percent + " (reset)" }
             guard let resets = window.resetsAt else { return percent }
             return percent + " (resets \(formatReset(resets, now: now)))"

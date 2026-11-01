@@ -7,10 +7,10 @@ Barista exposes independent, expiring awake sessions to local agents. Prefer **c
 Not installed yet? With the user’s OK, run:
 
 ```sh
-curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+curl -fsSL https://baristatime.app/install.sh | sh
 ```
 
-It installs the latest release to Applications (checked against the release’s SHA-256), connects Claude Code and Codex if they’re set up for this user, and starts Barista. Already installed: run `barista setup` (the CLI is `/Applications/Barista.app/Contents/Helpers/barista`). Codex then needs one manual step from the user: type `/hooks` in Codex and trust Barista’s hooks. A summary for agents is at https://cb-117.github.io/barista/llms.txt.
+It installs the latest release to Applications (checked against the release’s SHA-256), connects Claude Code and Codex if they’re set up for this user, and starts Barista. Already installed: run `barista setup` (the CLI is `/Applications/Barista.app/Contents/Helpers/barista`). Codex then needs one manual step from the user: type `/hooks` in Codex and trust Barista’s hooks. A summary for agents is at https://baristatime.app/llms.txt.
 
 ## Windows and Linux
 

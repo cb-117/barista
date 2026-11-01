@@ -69,9 +69,48 @@ turn to the period containing its `stop`, and a Cursor session to every period w
 
 Each plan's remaining allowance, shown beside usage. Percentages come from the agents themselves.
 
-**Claude plan** (Claude Code, Cowork, and Claude chat share it). Two sources; the one observed most
+**Claude plan** (Claude Code, Cowork, and Claude chat share it). Three sources; the one observed most
 recently wins:
 
+0. **Your Claude account** (what the Claude app's Settings → Usage shows). The Barista app fetches it
+   in the background at most once every 5 minutes (counting from the last attempt), unless turned off in
+   Settings (preference `claudeAccountLimits`, default on). The only other fetch is the explicit
+   `barista limits refresh` command.
+   - Credential: Claude Code's saved login: on macOS the Keychain generic password with service
+     `Claude Code-credentials`; on Linux and Windows `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json`
+     (`BARISTA_CLAUDE_CREDENTIALS` overrides with a JSON file path, for tests). The JSON holds
+     `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (Unix ms). Use the token only while it
+     expires more than 60 seconds from now. **Never refresh it** (that would rotate Claude Code's login),
+     never write it anywhere, never log it, and never pass it on a command line.
+   - macOS Keychain access: background reads never show a prompt (no user interaction allowed). If the
+     read needs your permission, the app shows **Allow access** in Usage & Limits; clicking it, or turning
+     the setting on, does one read that may show macOS's prompt. If you deny it (or cancel), Barista
+     remembers and stops trying until you click Allow access or turn the setting off and on. The token is
+     kept in memory until it expires, so the Keychain is read rarely.
+   - Request: `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <token>`,
+     `anthropic-beta: oauth-2025-04-20`, `User-Agent: Barista/<version>`, 15-second timeout, no redirects
+     followed, no cookies or caching. `BARISTA_CLAUDE_USAGE_URL` replaces the URL **only when
+     `BARISTA_CLAUDE_CREDENTIALS` is also set** (tests), so nothing can redirect a real login. Rust runs
+     `curl -q` (first argument, so no `.curlrc` applies) with headers on stdin (`-H @-`), and on Windows
+     without a console window. Anything but HTTP 200 with a JSON object fails and keeps the previous result.
+   - Result: written atomically to `claude-account-limits.json` in the data folder as
+     `{"observedAt": "<ISO now>", "usage": <the response>}`, and read by `barista usage`, the MCP tool, and
+     the app. Results older than **1 hour** are ignored. Turning the setting off deletes the file.
+   - `barista limits refresh [--json]` fetches once, ignoring the 5-minute spacing. It prints
+     `Claude account limits updated.` and exits 0, or exits 1 with one of: `No Claude Code login found.`,
+     `Claude Code's login has expired. Open Claude Code to renew it.`, `Couldn't reach Anthropic
+     (<detail>).`, `Anthropic replied <HTTP status>.` With `--json` it prints `{"ok": <bool>,
+     "message": "<text>"}`.
+   - Windows come from the response's `limits` array, keeping 0.0.8's ids: `kind` `session` → id
+     `five_hour`, label `Session`, 300 minutes; `weekly_all` → id `seven_day`, label `Weekly`, 10080
+     minutes; `weekly_scoped` → id `seven_day_<display name lowercased, spaces as _>`, label `Weekly ·
+     <display name>` (from `scope.model.display_name`, else `scope.surface`, else `Scoped`), 10080
+     minutes; any other kind → id = kind, label = kind with `_` as spaces, minutes null. `usedPercent` =
+     `percent`, `resetsAt` = `resets_at`. If `limits` is missing, use `five_hour` / `seven_day`
+     (`utilization`, `resets_at`). If `spend.enabled` is true, add id `extra_usage`, label `Extra
+     usage`, `usedPercent` = `spend.percent`, `usedUSD`/`limitUSD` = `amount_minor / 10^exponent` of
+     `spend.used` / `spend.limit`, minutes null; text output shows it as `Extra usage 5% ($12.50 of
+     $250.00)`. Source label: `Claude account`.
 1. **Claude Code's status line.** `barista statusline` is a status line command: Claude Code runs it after
    each reply and sends `rate_limits` (`five_hour`, `seven_day`, optional `spend_limit`, each with
    `used_percentage` and `resets_at` in Unix seconds; present only for Pro/Max/Ultra or a gateway spend
@@ -83,7 +122,8 @@ recently wins:
 2. **The Claude desktop app** keeps `plan-usage-history.json` (macOS `~/Library/Application Support/Claude`,
    Windows `%APPDATA%\Claude`; `BARISTA_CLAUDE_APP_DIR` overrides the folder): `{"samples": [{"t": <Unix
    ms>, "u": {"fh": <5-hour %>, "sd": <7-day %>}}]}`. Barista uses the sample with the largest `t`. It has
-   no reset times. This file is undocumented, so a missing or unreadable file is silently ignored.
+   no reset times. This file is undocumented and rarely updated, so a missing or unreadable file, or a
+   newest sample older than **1 hour**, is ignored.
 
 **ChatGPT plan** (Codex and the ChatGPT app share it). While reading Codex logs, a `token_count` event
 whose `payload.rate_limits` has a non-null `primary` or `secondary` replaces the latest limits if its

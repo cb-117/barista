@@ -7,12 +7,16 @@
 import argparse
 import datetime
 import glob
+import http.server
+import threading
+import time
 import json
 import os
 import shlex
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +28,7 @@ cli = str(options.bin_dir.resolve() / ('barista.exe' if os.name == 'nt' else 'ba
 expected = json.loads((FIXTURE / 'expected.json').read_text())
 
 
-def run(home, data, *args, stdin=None, ok=True, tz=None):
+def run(home, data, *args, stdin=None, ok=True, tz=None, extra=None):
     env = {**os.environ, 'HOME': str(home), 'USERPROFILE': str(home), 'CFFIXED_USER_HOME': str(home),
            'BARISTA_DATA_DIR': str(data)}
     # Explicit locations work on every OS (Windows finds the home folder without HOME).
@@ -34,6 +38,7 @@ def run(home, data, *args, stdin=None, ok=True, tz=None):
     env['BARISTA_CLAUDE_APP_DIR'] = str(Path(data) / 'claude-app')
     if tz:
         env['TZ'] = tz
+    env.update(extra or {})
     result = subprocess.run([cli, *args], input=stdin, capture_output=True, text=True, timeout=60, env=env)
     assert (result.returncode == 0) == ok, (args, result)
     return result
@@ -136,7 +141,80 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert windows['five_hour']['resetsAt'] is None and not windows['five_hour']['reset'], windows
     (app / 'plan-usage-history.json').write_text('{broken')
     assert report(home, data)['limits'][0]['source'] == 'Claude Code', 'an unreadable app file is ignored'
-    print('PASS limits: Codex windows, plan and credits; Claude status line, reset windows, Claude app fallback', flush=True)
+    (app / 'plan-usage-history.json').write_text(json.dumps({'samples': [{'t': int((time.time() - 7200) * 1000), 'u': {'fh': 99, 'sd': 99}}]}))
+    stale_home, stale_data = temporary / 'stale-home', temporary / 'stale-data'
+    stale_home.mkdir(); (stale_data / 'claude-app').mkdir(parents=True)
+    shutil.copy(app / 'plan-usage-history.json', stale_data / 'claude-app' / 'plan-usage-history.json')
+    assert not report(stale_home, stale_data)['limits'][0]['available'], 'a Claude app snapshot older than an hour is ignored'
+
+    # Your Claude account, through a local stand-in for Anthropic's usage endpoint.
+    served = {'count': 0, 'status': 200, 'auth': None, 'beta': None}
+    body = (FIXTURE / 'claude-account-usage.json').read_bytes()
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            served['count'] += 1
+            served['auth'] = self.headers.get('Authorization'); served['beta'] = self.headers.get('anthropic-beta')
+            self.send_response(served['status']); self.send_header('Content-Type', 'application/json')
+            if served['status'] == 302:
+                self.send_header('Location', '/elsewhere')
+            self.end_headers()
+            self.wfile.write(body if served['status'] == 200 else b'{"error":"nope"}')
+        def log_message(self, *args): pass
+    server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    credentials = temporary / 'credentials.json'
+    def write_credentials(expires_ms):
+        credentials.write_text(json.dumps({'claudeAiOauth': {'accessToken': 'test-token-123', 'refreshToken': 'refresh-xyz', 'expiresAt': expires_ms}}))
+    account_env = {'BARISTA_CLAUDE_CREDENTIALS': str(credentials), 'BARISTA_CLAUDE_USAGE_URL': f'http://127.0.0.1:{server.server_port}/api/oauth/usage'}
+    write_credentials(int((time.time() + 3600) * 1000))
+    # A user's ~/.curlrc must never apply (it could trace headers or add URLs).
+    (home / '.curlrc').write_text(f'trace-ascii = "{temporary / "curl-trace.txt"}"\n')
+    result = json.loads(run(home, data, 'limits', 'refresh', '--json', extra=account_env).stdout)
+    assert result['ok'] is True and result['message'] == 'Claude account limits updated.', result
+    assert not (temporary / 'curl-trace.txt').exists(), '~/.curlrc was used'
+    (home / '.curlrc').unlink()
+    assert served['count'] == 1 and served['auth'] == 'Bearer test-token-123' and served['beta'] == 'oauth-2025-04-20', served
+    saved = (data / 'claude-account-limits.json').read_text()
+    assert 'test-token-123' not in saved and 'refresh-xyz' not in saved, 'the token is never written'
+    claude = report(home, data)['limits'][0]
+    windows = {w['id']: w for w in claude['windows']}
+    assert claude['source'] == 'Claude account' and claude['available'], claude
+    # Window ids stay the same as 0.0.8's status-line ids, so scripts keep working.
+    assert windows['five_hour']['label'] == 'Session' and windows['five_hour']['usedPercent'] == 24 and windows['five_hour']['windowMinutes'] == 300, windows
+    assert windows['seven_day']['label'] == 'Weekly' and windows['seven_day']['usedPercent'] == 8 and windows['seven_day']['resetsAt'].startswith('2100-01-08'), windows
+    assert windows['seven_day_fable']['label'] == 'Weekly · Fable' and windows['seven_day_fable']['usedPercent'] == 0, windows
+    text = run(home, data, 'usage', '--period', 'today').stdout
+    assert 'Extra usage 5% ($12.50 of $250.00)' in text, text
+    assert windows['extra_usage']['usedUSD'] == 12.5 and windows['extra_usage']['limitUSD'] == 250 and windows['extra_usage']['usedPercent'] == 5, windows
+    # An expired login is never used (or refreshed); a failed request keeps the last good result.
+    write_credentials(int((time.time() - 60) * 1000))
+    expired = json.loads(run(home, data, 'limits', 'refresh', '--json', extra=account_env, ok=False).stdout)
+    assert expired['ok'] is False and 'expired' in expired['message'], expired
+    assert served['count'] == 1, 'an expired token must not be sent'
+    write_credentials(int((time.time() + 3600) * 1000)); served['status'] = 500
+    run(home, data, 'limits', 'refresh', extra=account_env, ok=False)
+    assert served['count'] == 2 and report(home, data)['limits'][0]['source'] == 'Claude account', 'errors keep the previous result'
+    served['status'] = 302
+    run(home, data, 'limits', 'refresh', extra=account_env, ok=False)
+    assert report(home, data)['limits'][0]['source'] == 'Claude account', 'redirects are refused and keep the previous result'
+    # The endpoint override only applies together with a test credentials file.
+    no_creds = {'BARISTA_CLAUDE_USAGE_URL': account_env['BARISTA_CLAUDE_USAGE_URL'], 'BARISTA_CLAUDE_CREDENTIALS': ''}
+    before = served['count']
+    if sys.platform != 'darwin':  # On macOS this would read the real Keychain.
+        override_home = temporary / 'override-home'
+        (override_home / '.claude').mkdir(parents=True)
+        (override_home / '.claude' / '.credentials.json').write_text(credentials.read_text())
+        run(override_home, data, 'limits', 'refresh', extra=no_creds, ok=False)
+        assert served['count'] == before, 'without a test credentials file the override is ignored'
+    # Account results older than an hour are not shown.
+    saved_path = data / 'claude-account-limits.json'
+    saved_json = json.loads(saved_path.read_text())
+    saved_json['observedAt'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    saved_path.write_text(json.dumps(saved_json))
+    assert report(home, data)['limits'][0]['source'] != 'Claude account', 'stale account results are ignored'
+    assert json.loads(credentials.read_text())['claudeAiOauth']['refreshToken'] == 'refresh-xyz', 'the login is never modified'
+    server.shutdown()
+    print('PASS limits: Codex windows, plan and credits; Claude status line, reset windows, Claude app fallback (stale ignored); Claude account fetch, never sends an expired token, keeps results on errors', flush=True)
 
     # The partial last line is finished later: it counts once, on the next run.
     claude_log = home / '.claude' / 'projects' / '-tmp-proj' / 'claude-s2.jsonl'

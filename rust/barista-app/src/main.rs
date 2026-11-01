@@ -44,6 +44,9 @@ pub struct App {
     pub usage: Option<serde_json::Value>,
     pub usage_updated: Option<std::time::Instant>,
     pub usage_loading: bool,
+    /// Claude account limits: when the app last asked (at most every 5 minutes), and whether it's asking now.
+    pub account_last_attempt: Option<std::time::Instant>,
+    pub account_fetching: bool,
     /// Watched apps (Cowork, ChatGPT): busy trackers, live session IDs, and apps whose session you
     /// stopped (they wait for a quiet spell before starting another).
     pub activity: HashMap<&'static str, ActivityTracker>,
@@ -345,6 +348,43 @@ pub fn refresh_usage(app: &Shared, max_age: Duration) {
     });
 }
 
+/// Asks your Claude account for its limits on a background thread: at most once every 5 minutes
+/// from the last attempt (unless `now`, for turning the setting on), never two at once.
+pub fn fetch_claude_account(app: &Shared, now: bool) {
+    {
+        let mut state = lock(app);
+        let recent = state.account_last_attempt.is_some_and(|at| at.elapsed() < Duration::from_secs(300));
+        if state.ephemeral || !state.prefs.claude_account_limits || state.account_fetching || (recent && !now) {
+            return;
+        }
+        state.account_fetching = true;
+        state.account_last_attempt = Some(std::time::Instant::now());
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let refreshed = barista_core::claude_account::refresh().is_ok();
+        lock(&app).account_fetching = false;
+        if refreshed {
+            refresh_usage(&app, Duration::ZERO);
+        }
+    });
+}
+
+/// Turns reading limits from your Claude account on or off. Off forgets what was saved.
+pub fn set_claude_account_limits(app: &Shared, enabled: bool) {
+    {
+        let mut state = lock(app);
+        state.prefs.claude_account_limits = enabled;
+        state.save();
+    }
+    if enabled {
+        fetch_claude_account(app, true);
+    } else {
+        barista_core::claude_account::delete_saved(&barista_core::usage::data_dir());
+        refresh_usage(app, Duration::ZERO);
+    }
+}
+
 /// Asks GitHub for a newer release on a background thread.
 pub fn check_for_updates(app: &Shared, user_initiated: bool) {
     {
@@ -436,6 +476,8 @@ fn main() {
         usage: None,
         usage_updated: None,
         usage_loading: false,
+        account_last_attempt: None,
+        account_fetching: false,
         activity: HashMap::new(),
         activity_leases: HashMap::new(),
         activity_stopped: HashSet::new(),
@@ -489,9 +531,11 @@ fn main() {
                 state.update_activity(app, root, &cpu, time);
             }
         });
-        // Usage: soon after launch, then every five minutes.
+        // Usage: soon after launch, then every five minutes. Claude's limits come from your Claude
+        // account first (read-only use of Claude Code's login), unless turned off.
         let usage_app = app.clone();
         std::thread::spawn(move || loop {
+            fetch_claude_account(&usage_app, false);
             refresh_usage(&usage_app, Duration::from_secs(60));
             std::thread::sleep(Duration::from_secs(300));
         });

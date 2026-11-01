@@ -52,6 +52,13 @@ struct CoffeeSettingsView: View {
                 agentRow(.claude)
                 agentRow(.codex)
                 agentRow(.cursor)
+                Toggle(isOn: $runtime.claudeAccountLimits) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show Claude plan limits from your Claude account")
+                        Text("Uses Claude Code’s saved login, read-only, to ask Anthropic for your limits every few minutes. Barista never changes, stores, or shares the login. Barista asks macOS for Keychain access only when you click Allow access in Usage & Limits or turn this on.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 ForEach(WatchedApp.all.filter(\.isInstalled), id: \.id) { app in
                     Toggle(isOn: Binding(get: { runtime.watches(app) }, set: { runtime.setWatches(app, $0) })) {
                         VStack(alignment: .leading, spacing: 2) {

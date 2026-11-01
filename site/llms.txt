@@ -9,14 +9,14 @@ Use Barista when a user on macOS wants their Mac to stay awake during long agent
 Ask the user before installing software. Then run:
 
 ```sh
-curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+curl -fsSL https://baristatime.app/install.sh | sh
 ```
 
 This installs Barista.app to /Applications (or ~/Applications), verifies the download against the release's SHA-256 checksum, connects Claude Code, Codex, and Cursor if they're set up for this user, and starts the app in the menu bar. It's safe to re-run. Barista updates itself afterwards.
 
 ## Install (Windows 10/11 and Linux)
 
-Barista also runs on Windows and Linux, with the same CLI, hooks, and MCP server. Ask the user first. Windows (PowerShell): `irm https://cb-117.github.io/barista/install.ps1 | iex`. Linux: the same `install.sh` command above. Both verify the download's SHA-256, put `barista` on the PATH (Windows: `%LOCALAPPDATA%\Programs\Barista`; Linux: `~/.local/bin`), and run `barista setup`.
+Barista also runs on Windows and Linux, with the same CLI, hooks, and MCP server. Ask the user first. Windows (PowerShell): `irm https://baristatime.app/install.ps1 | iex`. Linux: the same `install.sh` command above. Both verify the download's SHA-256, put `barista` on the PATH (Windows: `%LOCALAPPDATA%\Programs\Barista`; Linux: `~/.local/bin`), and run `barista setup`.
 
 Codex asks users to approve new hooks once. After installing, tell the user to open Codex, type `/hooks`, and trust Barista's hooks. Never bypass that review for them.
 

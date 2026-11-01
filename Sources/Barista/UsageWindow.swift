@@ -73,6 +73,11 @@ struct UsageView: View {
                 Text(unavailableText(plan.agent)).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Background reads never show macOS's Keychain prompt; this is the one place that asks.
+            if plan.agent == .claude && runtime.claudeAccountLimits && (runtime.claudeNeedsPermission || runtime.claudeKeychainDenied) {
+                Button("Allow access to your Claude account’s limits") { runtime.allowClaudeAccess() }
+                    .help("Barista reads Claude Code’s saved login, read-only, to ask Anthropic for your limits. macOS asks you to allow it; choose Always Allow.")
+            }
             // Upgraded from 0.0.7 with Claude Code already connected: offer the status line in one click.
             if plan.agent == .claude && HookAgent.claude.isInstalled && ClaudeStatusLine.status() == .notConnected {
                 Button("Add live limits to Claude Code’s status line") { runtime.addClaudeStatusLine() }
@@ -99,14 +104,18 @@ struct UsageView: View {
             if credits.unlimited { parts.append("Unlimited credits") }
             else if let balance = credits.balance, let value = Double(balance) { parts.append("\(Int(value)) credits") }
         }
-        if let spend = plan.windows.first(where: { $0.id == "spend_limit" }), let used = spend.usedUSD, let limit = spend.limitUSD {
-            parts.append(String(format: "$%.2f of $%.2f", used, limit) + (spend.period.map { " \($0)" } ?? ""))
+        for spend in plan.windows where spend.id == "spend_limit" || spend.id == "extra_usage" {
+            guard let used = spend.usedUSD, let limit = spend.limitUSD else { continue }
+            let what = spend.id == "extra_usage" ? "Extra usage: " : ""
+            parts.append(what + String(format: "$%.2f of $%.2f", used, limit) + (spend.period.map { " \($0)" } ?? ""))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
     private func unavailableText(_ agent: UsageAgent) -> String {
         switch agent {
-        case .claude: "No data yet. Barista reads your Claude limits from Claude Code’s status line after its next reply."
+        case .claude: runtime.claudeAccountLimits
+            ? "No data yet. Barista reads your Claude limits from your Claude account every few minutes (and from Claude Code’s status line in a terminal)."
+            : "No data yet. Turn on “Show Claude plan limits from your Claude account” in Settings → Agents, or use Claude Code in a terminal with Barista’s status line."
         case .codex: "No data yet. Appears after your next Codex or ChatGPT-app task."
         case .cursor: "Not available on this computer. Cursor doesn’t share plan limits with other apps."
         }

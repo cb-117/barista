@@ -2,7 +2,7 @@
 
 # Barista ☕
 
-**Keeps your Mac awake while the work brews.** A free, open-source Mac menu-bar app for people, commands, and AI agents. Also on [Windows and Linux](#windows-and-linux). [Website](https://cb-117.github.io/barista/) · [What’s new](CHANGELOG.md)
+**Keeps your Mac awake while the work brews.** A free, open-source Mac menu-bar app for people, commands, and AI agents. Also on [Windows and Linux](#windows-and-linux). [Website](https://baristatime.app/) · [What’s new](CHANGELOG.md)
 
 Keep your Mac awake for a timer, until an app quits, or while a command or agent is actually working. Independent tasks share one power assertion; one task finishing never ends somebody else’s session.
 
@@ -43,10 +43,10 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 
 [Download Barista.dmg](https://github.com/cb-117/barista/releases/latest/download/Barista.dmg), open it, and drag **Barista** into Applications. Builds aren’t notarized yet, so the first time you open it macOS says it can’t verify Barista: click **Done**, then go to System Settings → Privacy & Security and click **Open Anyway**. You only do this once.
 
-Or install from Terminal, which also connects Claude Code and Codex for you. AI agents can run it too (see [llms.txt](https://cb-117.github.io/barista/llms.txt)); it skips the “Open Anyway” step because the download isn’t marked as coming from a browser:
+Or install from Terminal, which also connects Claude Code and Codex for you. AI agents can run it too (see [llms.txt](https://baristatime.app/llms.txt)); it skips the “Open Anyway” step because the download isn’t marked as coming from a browser:
 
 ```sh
-curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+curl -fsSL https://baristatime.app/install.sh | sh
 ```
 
 The script installs the latest release to Applications after checking it against the release’s SHA-256, then runs `barista setup`. Already installed? Run `barista setup` (inside `Barista.app/Contents/Helpers/`) to connect any agents you’ve added since.
@@ -60,13 +60,13 @@ Barista also runs on Windows 10/11 and Linux (x86_64 and arm64), built in Rust f
 Windows, in PowerShell (no administrator rights needed):
 
 ```powershell
-irm https://cb-117.github.io/barista/install.ps1 | iex
+irm https://baristatime.app/install.ps1 | iex
 ```
 
 Linux:
 
 ```sh
-curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+curl -fsSL https://baristatime.app/install.sh | sh
 ```
 
 Both check the download against the release’s SHA-256, install `barista` and `barista-app` (Windows: `%LOCALAPPDATA%\Programs\Barista`, added to your PATH and Start menu; Linux: `~/.local/bin`, plus an app-menu entry), and run `barista setup`. Re-run to update; Barista’s menu tells you when a new version is out. Or download `barista-<version>-windows-x86_64.zip` or `barista-<version>-linux-<arch>.tar.gz` from the [latest release](https://github.com/cb-117/barista/releases/latest).
@@ -163,7 +163,7 @@ Agent leases default to five minutes and an eight-hour hard cap. Commands renew 
 
 Sessions are visible and controllable in the app. The local control socket is restricted to your user account; no TCP port is opened. History stores only the last 20 task names, start/end times, and completion reasons in local preferences. Command arguments/output are not recorded. Active sessions are never restored after an app restart. You can clear history or disable agent access in Settings.
 
-The only network requests Barista makes are for updates: an anonymous HTTPS request to GitHub’s public releases API at most once a day, and downloading an update when you click **Update**. They send no identifiers, usage, or session data. Turn automatic checks off in Settings → Updates.
+To show your Claude plan’s limits, the Barista app asks Anthropic for them at most every 5 minutes, using Claude Code’s saved login (read-only: Barista never refreshes, stores, or logs it). On macOS, Barista asks for Keychain access only when you click **Allow access** in Usage & Limits. Turn this off in Settings → Agents. Apart from that, the only network requests Barista makes are for updates: an anonymous HTTPS request to GitHub’s public releases API at most once a day, and downloading an update when you click **Update**. They send no identifiers, usage, or session data. Turn automatic checks off in Settings → Updates.
 
 The build is ad-hoc signed for local use, and release builds aren’t notarized yet. After the first launch, allow the app in System Settings → Privacy & Security → **Open Anyway**, or install with `install.sh`, which skips that step. Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.
 

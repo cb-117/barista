@@ -1,7 +1,7 @@
 #!/bin/sh
 # Barista installer · https://github.com/cb-117/barista
 #
-#   curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+#   curl -fsSL https://baristatime.app/install.sh | sh
 #
 # Installs the latest Barista (a free, open-source app that keeps the computer awake while
 # timers, commands, and AI agents work), then runs `barista setup`, which connects Claude Code
@@ -19,7 +19,7 @@ base="https://github.com/cb-117/barista/releases/latest/download"
 case "$(uname -s)" in
     Darwin) ;;
     Linux) install_linux; return ;;
-    *) echo "This installer supports macOS and Linux. On Windows, run in PowerShell: irm https://cb-117.github.io/barista/install.ps1 | iex" >&2; exit 1 ;;
+    *) echo "This installer supports macOS and Linux. On Windows, run in PowerShell: irm https://baristatime.app/install.ps1 | iex" >&2; exit 1 ;;
 esac
 major="$(sw_vers -productVersion | cut -d. -f1)"
 [ "$major" -ge 13 ] || { echo "Barista needs macOS 13 or later." >&2; exit 1; }

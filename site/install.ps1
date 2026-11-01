@@ -1,6 +1,6 @@
 # Barista installer for Windows · https://github.com/cb-117/barista
 #
-#   irm https://cb-117.github.io/barista/install.ps1 | iex
+#   irm https://baristatime.app/install.ps1 | iex
 #
 # Installs the latest Barista (a free, open-source app that keeps the PC awake while timers,
 # commands, and AI agents work) to %LOCALAPPDATA%\Programs\Barista, adds it to your PATH and

@@ -1,24 +1,51 @@
 name: Website
+# Deploys https://baristatime.app (Cloudflare Workers, see wrangler.jsonc) on every push to main
+# that touches the site. Needs the CLOUDFLARE_API_TOKEN repository secret.
 on:
   push:
     branches: [main]
-    paths: [site/**, .github/workflows/pages.yml]
+    paths: [site/**, worker/**, wrangler.jsonc, .github/workflows/pages.yml]
   workflow_dispatch:
 permissions:
   contents: read
-  pages: write
-  id-token: write
 concurrency:
-  group: pages
+  group: website
   cancel-in-progress: true
 jobs:
-  deploy:
+  cloudflare:
     runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://baristatime.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: deploy
+
+  # The old address, cb-117.github.io/barista, stays up so installer one-liners already out in
+  # the wild keep working. Its home page redirects to baristatime.app.
+  github-pages:
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Point the home page at baristatime.app
+        run: |
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Barista has moved to baristatime.app</title>
+          <link rel="canonical" href="https://baristatime.app/">
+          <meta http-equiv="refresh" content="0; url=https://baristatime.app/">
+          <p>Barista’s website has moved to <a href="https://baristatime.app/">baristatime.app</a>.</p>
+          HTML
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

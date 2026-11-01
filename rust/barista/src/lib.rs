@@ -1,6 +1,7 @@
 //! Barista for Windows and Linux: shared sessions, local control, power requests, agent hooks,
 //! and the MCP server. Mirrors the Swift `BaristaCore` so every platform speaks the same protocol.
 pub mod activity;
+pub mod claude_account;
 pub mod connection;
 pub mod control;
 pub mod hooks;

@@ -7,11 +7,22 @@
 <meta name="description" content="A free, open-source Mac menu-bar app (also on Windows and Linux) that keeps your computer awake exactly as long as your timers, commands, and AI agents need, then lets it sleep.">
 <meta property="og:title" content="Barista: keeps your computer awake while the work brews">
 <meta property="og:description" content="Free and open source. One-click Claude Code and ChatGPT Codex support, a CLI, and an MCP server. No cloud, no tracking.">
-<meta property="og:image" content="https://cb-117.github.io/barista/assets/og-image.png">
+<meta property="og:image" content="https://baristatime.app/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="alternate" type="text/plain" href="llms.txt" title="Barista for AI agents">
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32">
+<link rel="canonical" href="https://baristatime.app/">
+<script>
+  !function(t,e){var o,n,p,r;e.__SV||(window.posthog && window.posthog.__loaded)||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}p||((p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",p.onerror=function(){p=null},(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r));var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],Object.defineProperty(u,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e}}),Object.defineProperty(u.people,"toString",{configurable:!0,enumerable:!0,writable:!0,value:function(){return u.toString(1)+".people (stub)"}}),o="th ih nh sh ah init qh jh Ah Oh Uh Gu Nh Wh Eh Kh Xh Yh td ed nd capture getExtension Bh dr Dh Lh calculateEventProperties rd register register_once register_for_session unregister unregister_for_session hd Rh ad getFeatureFlag getFeatureFlagPayload getFeatureFlagResult getAllFeatureFlags isFeatureEnabled reloadFeatureFlags updateFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSurveysLoaded onSessionId getSurveys getActiveMatchingSurveys onActiveMatchingSurveysChanged renderSurvey displaySurvey cancelPendingSurvey canRenderSurvey canRenderSurveyAsync dd identify setPersonProperties unsetPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset vd shutdown setIdentity clearIdentity get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException addExceptionStep captureLog startExceptionAutocapture stopExceptionAutocapture loadToolbar get_property getSessionProperty ld Qh createPersonProfile setInternalOrTestUser ud fh hh opt_in_capturing opt_out_capturing dh has_opted_in_capturing has_opted_out_capturing get_explicit_consent_status is_capturing clear_opt_in_out_capturing Vh debug Qu Os getPageViewId captureTraceFeedback captureTraceMetric Ch".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+  // Only on the real site, so local previews and the old GitHub Pages copy don't count.
+  if (location.hostname === 'baristatime.app') posthog.init('phc_5uhbCTwz0ILHRzLH91kGwoVOmaMS1fATr3gIp0XdPqB', {
+    api_host: 'https://baristatime.app/ingest', // proxied to PostHog by worker/index.js
+    ui_host: 'https://us.posthog.com',
+    defaults: '2026-05-30',
+    person_profiles: 'identified_only',
+  })
+</script>
 <style>
   :root {
     --espresso: #2B1A12; --roast: #3B2419; --crema: #C75A2B; --foam: #FFF5DE; --latte: #E9D3B4;
@@ -134,8 +145,8 @@
         <a class="btn ghost" href="https://github.com/cb-117/barista">View on GitHub</a>
       </div>
       <p class="small">Open the download and drag Barista into Applications. No account. No cloud. No tracking. Just coffee.</p>
-      <p class="small">Or in Terminal, or ask your AI agent to run it: <code>curl -fsSL https://cb-117.github.io/barista/install.sh | sh</code></p>
-      <p class="small"><b>On Windows or Linux?</b> Barista lives in your notification area or system tray, with the same CLI and agent hooks. Windows (PowerShell): <code>irm https://cb-117.github.io/barista/install.ps1 | iex</code>. Linux: the same <code>install.sh</code> command. Or grab a download from the <a href="https://github.com/cb-117/barista/releases/latest">latest release</a>.</p>
+      <p class="small">Or in Terminal, or ask your AI agent to run it: <code>curl -fsSL https://baristatime.app/install.sh | sh</code></p>
+      <p class="small"><b>On Windows or Linux?</b> Barista lives in your notification area or system tray, with the same CLI and agent hooks. Windows (PowerShell): <code>irm https://baristatime.app/install.ps1 | iex</code>. Linux: the same <code>install.sh</code> command. Or grab a download from the <a href="https://github.com/cb-117/barista/releases/latest">latest release</a>.</p>
     </div>
     <img class="hero-art steam" src="assets/hero.svg" alt="An espresso machine serving several cups, each with an order ticket: you for one hour, make test, and Claude Code.">
   </header>
@@ -242,7 +253,7 @@
     <div class="term" role="img" aria-label="Terminal example using the barista command">
       <div class="bar"><i></i><i></i><i></i></div>
 <pre><span class="c"># install and connect Claude Code + Codex in one go</span>
-<span class="p">$</span> curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+<span class="p">$</span> curl -fsSL https://baristatime.app/install.sh | sh
 <span class="ok">Connected Claude Code</span>
 <span class="ok">Connected Codex</span>
 
@@ -265,12 +276,12 @@ Awake · 3 session(s) · display allowed to sleep
     <details><summary>Is it really free?</summary><p>Yes. It’s MIT-licensed and open source, with no in-app purchases, accounts, or telemetry.</p></details>
     <details><summary>Does it keep my Mac awake with the lid closed?</summary><p>No. Barista prevents <em>idle</em> sleep. Closing the lid, choosing Sleep, or a dead battery still put the Mac to sleep. For lid-closed work, connect power and an external display.</p></details>
     <details><summary>How is this different from <code>caffeinate</code> or Amphetamine?</summary><p>Those have one switch for the whole Mac. Barista tracks who needs the Mac awake and for how long, and ends each one on its own when that job finishes or stops checking in. It also connects to Claude Code and ChatGPT Codex in one click.</p></details>
-    <details><summary>Does anything leave my Mac?</summary><p>No personal data, ever. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions). The one network request is an optional once-a-day check with GitHub for a newer version. It sends nothing about you, and you can turn it off in Settings.</p></details>
+    <details><summary>Does anything leave my Mac?</summary><p>No personal data, ever. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions). The one network request is an optional once-a-day check with GitHub for a newer version. It sends nothing about you, and you can turn it off in Settings. (This website, not the app, counts visits with PostHog.)</p></details>
     <details><summary>Can my AI agent set it up for me?</summary><p>Yes. Ask Claude Code or Codex to install Barista. It reads <a href="llms.txt">llms.txt</a>, asks you first, then runs the one-line installer, which installs Barista and connects Claude Code and Codex. Codex then asks you to approve the new hooks once: type <code>/hooks</code> in Codex and trust Barista’s. Already installed? Run <code>barista setup</code> to connect agents you’ve added since.</p></details>
     <details><summary>How do I get updates?</summary><p>Barista checks for a new version once a day. When one is out, click <b>Update</b> in its panel: it downloads the update, checks its signature, installs it, and relaunches, and anything that was keeping your Mac awake keeps going. You can also check right away in Settings → Updates.</p></details>
-    <details><summary>Is there a Windows or Linux version?</summary><p>Yes. Barista runs on Windows 10 and 11 and on Linux (x86_64 and arm64) as a coffee cup in the notification area or system tray, with quick timers, your tasks, battery protection, and the same <code>barista</code> CLI, MCP server, and one-click Claude Code and Codex hooks. On Windows, run <code>irm https://cb-117.github.io/barista/install.ps1 | iex</code> in PowerShell (no administrator rights needed). On Linux, run <code>curl -fsSL https://cb-117.github.io/barista/install.sh | sh</code>. Linux needs a desktop with tray (AppIndicator) support; stock GNOME needs the AppIndicator extension. Without a desktop it runs in the background, and the CLI and hooks still work.</p></details>
+    <details><summary>Is there a Windows or Linux version?</summary><p>Yes. Barista runs on Windows 10 and 11 and on Linux (x86_64 and arm64) as a coffee cup in the notification area or system tray, with quick timers, your tasks, battery protection, and the same <code>barista</code> CLI, MCP server, and one-click Claude Code and Codex hooks. On Windows, run <code>irm https://baristatime.app/install.ps1 | iex</code> in PowerShell (no administrator rights needed). On Linux, run <code>curl -fsSL https://baristatime.app/install.sh | sh</code>. Linux needs a desktop with tray (AppIndicator) support; stock GNOME needs the AppIndicator extension. Without a desktop it runs in the background, and the CLI and hooks still work.</p></details>
     <details><summary>Barista 0.0.6 closes right after opening?</summary><p>That version had a launch bug, fixed in 0.0.7. Because it can’t open, it can’t update itself: <a href="https://github.com/cb-117/barista/releases/latest/download/Barista.dmg">download Barista again</a> and replace the copy in Applications (or delete it and run the Terminal command above).</p></details>
-    <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet, so macOS says it can’t verify Barista the first time. Click <b>Done</b>, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. You only do this once: in-app updates don’t ask again. Installing with the Terminal command (<code>curl -fsSL https://cb-117.github.io/barista/install.sh | sh</code>) skips this step.</p></details>
+    <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet, so macOS says it can’t verify Barista the first time. Click <b>Done</b>, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. You only do this once: in-app updates don’t ask again. Installing with the Terminal command (<code>curl -fsSL https://baristatime.app/install.sh | sh</code>) skips this step.</p></details>
   </div>
 </section>
 

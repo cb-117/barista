@@ -105,11 +105,25 @@ fn trusted(url: &str) -> bool {
     host == "github.com" || host.ends_with(".github.com") || host == "objects.githubusercontent.com"
 }
 
+/// The system's `curl`, ignoring the user's `.curlrc` (`-q` must come first) and, on Windows, without
+/// opening a console window.
+pub fn curl() -> Command {
+    let mut command = Command::new("curl");
+    command.arg("-q");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// Asks GitHub for the latest release with the system's `curl` (built into Windows 10 and later,
 /// and nearly every Linux), so Barista ships no TLS stack of its own.
 /// Ok(None): up to date or nothing released yet. Err: GitHub couldn't be reached.
 pub fn check() -> Result<Option<AvailableUpdate>, String> {
-    let output = Command::new("curl")
+    let output = curl()
         .args(["-sS", "-L", "--max-time", "15", "-w", "\n%{http_code}"])
         .args(["-H", "Accept: application/vnd.github+json"])
         .args(["-H", &format!("User-Agent: Barista/{VERSION}")])

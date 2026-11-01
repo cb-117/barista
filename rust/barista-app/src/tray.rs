@@ -278,6 +278,14 @@ fn build(app: &Shared) -> (Menu, String, String, String, bool) {
         &settings,
         &check("toggle:agents", "Local agent access (CLI, MCP, hooks)", prefs.agent_access),
     );
+    add_to(
+        &settings,
+        &check(
+            "toggle:claude-account",
+            "Show Claude plan limits from your Claude account",
+            prefs.claude_account_limits,
+        ),
+    );
     // The Claude and ChatGPT desktop apps have no hooks: Barista watches how busy they are.
     // Neither exists for Linux.
     if cfg!(windows) {
@@ -390,6 +398,12 @@ fn handle(app: &Shared, id: &str) -> bool {
             "agents" => {
                 let value = !state.prefs.agent_access;
                 state.set_agent_access(value)
+            }
+            "claude-account" => {
+                let value = !state.prefs.claude_account_limits;
+                drop(state);
+                crate::set_claude_account_limits(app, value);
+                return false;
             }
             "watch-cowork" => {
                 let value = !state.prefs.watch_cowork;

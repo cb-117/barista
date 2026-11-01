@@ -1,4 +1,6 @@
 import Foundation
+import LocalAuthentication
+import Security
 
 /// Plan limits for each agent's subscription, as the agents themselves report them.
 /// docs/USAGE.md ("Plan limits") is the specification; the Rust build implements the same rules.
@@ -118,7 +120,7 @@ public enum ClaudeLimits {
     }
 
     static func current(now: Date) -> PlanLimits {
-        let candidates = [fromStatusLine(now: now), fromApp(now: now)].compactMap { $0 }
+        let candidates = [ClaudeAccount.current(now: now), fromStatusLine(now: now), fromApp(now: now)].compactMap { $0 }
         return candidates.max { ($0.observedAt ?? .distantPast) < ($1.observedAt ?? .distantPast) }
             ?? .unavailable(.claude, name: "Claude plan")
     }
@@ -154,12 +156,226 @@ public enum ClaudeLimits {
             guard let t = (sample["t"] as? NSNumber)?.doubleValue, let u = sample["u"] as? [String: Any] else { return nil }
             return (t, u)
         }.max { $0.0 < $1.0 }
-        guard let (t, usage) = latest else { return nil }
+        // The app writes this file rarely; an old snapshot is likely from a past window, so it's ignored.
+        guard let (t, usage) = latest, now.timeIntervalSince1970 - t / 1000 <= 3600 else { return nil }
         let windows = [("five_hour", "fh", 300), ("seven_day", "sd", 10080)].compactMap { id, key, minutes -> LimitWindow? in
             (usage[key] as? NSNumber).map { PlanLimits.window(id: id, minutes: minutes, usedPercent: $0.doubleValue, resetsAt: nil, now: now) }
         }
         guard !windows.isEmpty else { return nil }
         return PlanLimits(agent: .claude, name: "Claude plan", source: "Claude app",
                           observedAt: Date(timeIntervalSince1970: t / 1000), plan: nil, credits: nil, windows: windows)
+    }
+}
+
+/// Claude plan limits from the user's Claude account, as the Claude app's Settings → Usage shows them.
+/// The Barista app fetches in the background (at most every 5 minutes); `barista limits refresh` is the only
+/// other fetch. Uses Claude Code's saved login read-only: never refreshed, written, or logged.
+public enum ClaudeAccount {
+    static var resultFile: URL { UsageLocations.dataDirectory.appendingPathComponent("claude-account-limits.json") }
+    static let defaultEndpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    /// Results older than this are not shown.
+    static let maxAge: TimeInterval = 3600
+
+    /// The test credentials file, if one is configured.
+    private static var testCredentials: String? {
+        guard let path = ProcessInfo.processInfo.environment["BARISTA_CLAUDE_CREDENTIALS"], !path.isEmpty else { return nil }
+        return path
+    }
+    /// The endpoint override applies only with test credentials, so nothing can redirect a real login.
+    static var endpoint: URL {
+        guard testCredentials != nil, let override = ProcessInfo.processInfo.environment["BARISTA_CLAUDE_USAGE_URL"],
+              !override.isEmpty, let url = URL(string: override) else { return defaultEndpoint }
+        return url
+    }
+
+    public enum Outcome: Sendable, Equatable {
+        case updated, noLogin, loginExpired
+        /// macOS needs your permission to read Claude Code's login (background reads never ask).
+        case needsPermission
+        /// You denied or cancelled the Keychain prompt.
+        case denied
+        case unreachable(String)
+        case httpStatus(Int)
+        public var ok: Bool { self == .updated }
+        public var message: String {
+            switch self {
+            case .updated: "Claude account limits updated."
+            case .noLogin: "No Claude Code login found."
+            case .loginExpired: "Claude Code\u{2019}s login has expired. Open Claude Code to renew it."
+            case .needsPermission: "Barista needs your permission to read Claude Code\u{2019}s login. Click Allow access in Usage & Limits."
+            case .denied: "Access to Claude Code\u{2019}s login was denied. Click Allow access in Usage & Limits to try again."
+            case .unreachable(let detail): "Couldn\u{2019}t reach Anthropic (\(detail))."
+            case .httpStatus(let status): "Anthropic replied \(status)."
+            }
+        }
+    }
+
+    enum Credential: Equatable {
+        case token(String, expires: Date)
+        case noLogin, expired, needsPermission, denied
+    }
+
+    /// The token stays in memory until it expires, so the Keychain is read rarely. Never written anywhere.
+    private final class TokenCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: (token: String, expires: Date)?
+        func get(now: Date) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            guard let value, value.expires.timeIntervalSince(now) > 60 else { return nil }
+            return value.token
+        }
+        func set(_ token: String, expires: Date) { lock.lock(); value = (token, expires); lock.unlock() }
+        func clear() { lock.lock(); value = nil; lock.unlock() }
+    }
+    private static let cache = TokenCache()
+
+    /// Reads Claude Code's login. `interactive` allows macOS's Keychain prompt; background reads never show it.
+    static func credential(interactive: Bool, now: Date = Date()) -> Credential {
+        if testCredentials == nil, let token = cache.get(now: now) {
+            return .token(token, expires: now.addingTimeInterval(61))
+        }
+        let data: Data
+        if let path = testCredentials {
+            guard let file = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return .noLogin }
+            data = file
+        } else {
+            var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                        kSecAttrService as String: "Claude Code-credentials",
+                                        kSecReturnData as String: true,
+                                        kSecMatchLimit as String: kSecMatchLimitOne]
+            if !interactive {
+                let context = LAContext()
+                context.interactionNotAllowed = true
+                query[kSecUseAuthenticationContext as String] = context
+                // kSecUseAuthenticationUI = kSecUseAuthenticationUIFail, by value: it also covers the login
+                // keychain's "allow access" dialog, and the named constants are deprecated (warnings).
+                query["u_AuthUI"] = "u_AuthUIF"
+            }
+            var item: CFTypeRef?
+            switch SecItemCopyMatching(query as CFDictionary, &item) {
+            case errSecSuccess:
+                guard let found = item as? Data else { return .noLogin }
+                data = found
+            case errSecItemNotFound: return .noLogin
+            case errSecInteractionNotAllowed: return .needsPermission
+            case errSecAuthFailed, errSecUserCanceled: return interactive ? .denied : .needsPermission
+            default: return interactive ? .denied : .needsPermission
+            }
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let oauth = object["claudeAiOauth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String, !token.isEmpty else { return .noLogin }
+        guard let expiresMs = (oauth["expiresAt"] as? NSNumber)?.doubleValue else { return .expired }
+        let expires = Date(timeIntervalSince1970: expiresMs / 1000)
+        guard expires.timeIntervalSince(now) > 60 else { return .expired }
+        if testCredentials == nil { cache.set(token, expires: expires) }
+        return .token(token, expires: expires)
+    }
+
+    /// Refuses every redirect, so a redirect is a failure and never replaces the saved result.
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
+
+    /// Asks Anthropic for the account's current limits and saves them. Keeps the old result on any failure.
+    public static func refresh(interactive: Bool = false) async -> Outcome {
+        let token: String
+        switch credential(interactive: interactive) {
+        case .token(let value, _): token = value
+        case .noLogin: return .noLogin
+        case .expired: return .loginExpired
+        case .needsPermission: return .needsPermission
+        case .denied: return .denied
+        }
+        var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        let session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let data: Data, response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            return .unreachable((error as? URLError).map { "\($0.code.rawValue)" } ?? "network error")
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { return .httpStatus(status) }
+        guard let usage = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return .httpStatus(status) }
+        do {
+            let object: [String: Any] = ["observedAt": UsageStore.formatDate(Date()), "usage": usage]
+            let saved = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            try FileManager.default.createDirectory(at: UsageLocations.dataDirectory, withIntermediateDirectories: true)
+            try saved.write(to: resultFile, options: .atomic)
+        } catch {
+            return .unreachable("couldn\u{2019}t save the result")
+        }
+        return .updated
+    }
+
+    /// Turning the setting off: forget the saved result and the in-memory token.
+    public static func forget() {
+        cache.clear()
+        try? FileManager.default.removeItem(at: resultFile)
+    }
+
+    static func current(now: Date) -> PlanLimits? {
+        guard let data = try? Data(contentsOf: resultFile),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let observed = (object["observedAt"] as? String).flatMap(UsageStore.parseDate),
+              let usage = object["usage"] as? [String: Any],
+              now.timeIntervalSince(observed) <= maxAge else { return nil }
+        return PlanLimits(agent: .claude, name: "Claude plan", source: "Claude account", observedAt: observed,
+                          plan: nil, credits: nil, windows: windows(usage, now: now))
+    }
+
+    static func windows(_ usage: [String: Any], now: Date) -> [LimitWindow] {
+        let date = { (value: Any?) in (value as? String).flatMap(UsageStore.parseDate) }
+        var windows: [LimitWindow] = []
+        if let limits = usage["limits"] as? [[String: Any]] {
+            for limit in limits {
+                guard let kind = limit["kind"] as? String, let percent = (limit["percent"] as? NSNumber)?.doubleValue else { continue }
+                let resets = date(limit["resets_at"])
+                switch kind {
+                case "session":
+                    windows.append(PlanLimits.window(id: "five_hour", minutes: 300, usedPercent: percent, resetsAt: resets, now: now, label: "Session"))
+                case "weekly_all":
+                    windows.append(PlanLimits.window(id: "seven_day", minutes: 10080, usedPercent: percent, resetsAt: resets, now: now, label: "Weekly"))
+                case "weekly_scoped":
+                    let scope = limit["scope"] as? [String: Any]
+                    let name = ((scope?["model"] as? [String: Any])?["display_name"] as? String) ?? (scope?["surface"] as? String) ?? "Scoped"
+                    let id = "seven_day_" + name.lowercased().replacingOccurrences(of: " ", with: "_")
+                    windows.append(PlanLimits.window(id: id, minutes: 10080, usedPercent: percent, resetsAt: resets, now: now, label: "Weekly · \(name)"))
+                default:
+                    windows.append(PlanLimits.window(id: kind, minutes: nil, usedPercent: percent, resetsAt: resets, now: now,
+                                                     label: kind.replacingOccurrences(of: "_", with: " ")))
+                }
+            }
+        } else {
+            for (key, id, label, minutes) in [("five_hour", "five_hour", "Session", 300), ("seven_day", "seven_day", "Weekly", 10080)] {
+                guard let raw = usage[key] as? [String: Any], let used = (raw["utilization"] as? NSNumber)?.doubleValue else { continue }
+                windows.append(PlanLimits.window(id: id, minutes: minutes, usedPercent: used, resetsAt: date(raw["resets_at"]), now: now, label: label))
+            }
+        }
+        if let spend = usage["spend"] as? [String: Any], spend["enabled"] as? Bool == true {
+            let money = { (value: Any?) -> Double? in
+                guard let raw = value as? [String: Any], let amount = (raw["amount_minor"] as? NSNumber)?.doubleValue else { return nil }
+                return amount / pow(10, (raw["exponent"] as? NSNumber)?.doubleValue ?? 2)
+            }
+            var extra = PlanLimits.window(id: "extra_usage", minutes: nil, usedPercent: (spend["percent"] as? NSNumber)?.doubleValue ?? 0,
+                                          resetsAt: nil, now: now, label: "Extra usage")
+            extra.usedUSD = money(spend["used"])
+            extra.limitUSD = money(spend["limit"])
+            windows.append(extra)
+        }
+        return windows
     }
 }

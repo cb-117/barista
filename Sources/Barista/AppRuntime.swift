@@ -42,7 +42,9 @@ final class AppRuntime: ObservableObject {
     /// "Claude 24% · ChatGPT 6%": each plan's most-used current window, for the panel.
     var limitsSummary: String? {
         let parts = (usage?.limits ?? []).compactMap { plan -> String? in
-            guard plan.available, let top = plan.windows.max(by: { $0.usedPercent < $1.usedPercent }) else { return nil }
+            // Claude's session window is what the Claude app leads with; otherwise the most-used window.
+            let session = plan.agent == .claude ? plan.windows.first { $0.id == "session" } : nil
+            guard plan.available, let top = session ?? plan.windows.max(by: { $0.usedPercent < $1.usedPercent }) else { return nil }
             let name = plan.agent == .claude ? "Claude" : plan.agent == .codex ? "ChatGPT" : plan.name
             return "\(name) \(Int(top.usedPercent.rounded()))%"
         }
@@ -52,6 +54,30 @@ final class AppRuntime: ObservableObject {
     /// Today, this week, and this month, from local agent logs. Computed off the main thread.
     @Published private(set) var usage: UsageReport?
     @Published private(set) var isRefreshingUsage = false
+    /// Ask Anthropic for the Claude plan's limits with Claude Code's saved login (read-only).
+    @Published var claudeAccountLimits: Bool = UserDefaults.standard.object(forKey: "claudeAccountLimits") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(claudeAccountLimits, forKey: "claudeAccountLimits")
+            if claudeAccountLimits {
+                // Turning it on is an explicit choice: start over, and allow macOS's Keychain prompt once.
+                claudeKeychainDenied = false
+                fetchClaudeAccountLimits(interactive: true)
+            } else {
+                ClaudeAccount.forget()
+                claudeNeedsPermission = false
+                refreshUsage(force: true)
+            }
+        }
+    }
+    /// Background reads can't show the Keychain prompt; the Usage window offers "Allow access" instead.
+    @Published private(set) var claudeNeedsPermission = false
+    /// You denied or cancelled the Keychain prompt: no more background attempts until you allow access
+    /// or turn the setting off and on.
+    @Published private(set) var claudeKeychainDenied: Bool = UserDefaults.standard.bool(forKey: "claudeKeychainDenied") {
+        didSet { UserDefaults.standard.set(claudeKeychainDenied, forKey: "claudeKeychainDenied") }
+    }
+    private var isFetchingClaudeLimits = false
+    private var lastClaudeAttempt: Date?
     private var usageTimer: Timer?
     /// Apps without hooks that Barista keeps the Mac awake for while they're busy (Cowork, ChatGPT).
     private var activityTimer: Timer?
@@ -170,7 +196,13 @@ final class AppRuntime: ObservableObject {
         scheduleUpdateChecks()
         refreshPermissions()
         refreshUsage()
-        let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }
+        fetchClaudeAccountLimits()
+        let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshUsage()
+                self?.fetchClaudeAccountLimits()
+            }
+        }
         timer.tolerance = 30
         RunLoop.main.add(timer, forMode: .common)
         usageTimer = timer
@@ -240,6 +272,40 @@ final class AppRuntime: ObservableObject {
                                             display: false, processID: root, maxDuration: remaining) {
             activityLeases[app.id] = lease.id
         }
+    }
+    /// Fetches Claude account limits off the main actor, then refreshes the report. Never more than one at a
+    /// time. Background fetches (launch and the timer) are at least 5 minutes apart and never show the
+    /// Keychain prompt; `interactive` fetches come from an explicit choice (Allow access, turning it on).
+    func fetchClaudeAccountLimits(interactive: Bool = false) {
+        guard claudeAccountLimits, !isFetchingClaudeLimits else { return }
+        if !interactive {
+            guard !claudeKeychainDenied else { return }
+            if let last = lastClaudeAttempt, Date().timeIntervalSince(last) < 295 { return }
+        }
+        lastClaudeAttempt = Date()
+        isFetchingClaudeLimits = true
+        Task.detached(priority: .utility) {
+            let outcome = await ClaudeAccount.refresh(interactive: interactive)
+            await MainActor.run {
+                self.isFetchingClaudeLimits = false
+                switch outcome {
+                case .updated:
+                    self.claudeNeedsPermission = false
+                    self.claudeKeychainDenied = false
+                    self.refreshUsage(force: true)
+                case .needsPermission: self.claudeNeedsPermission = true
+                case .denied:
+                    self.claudeKeychainDenied = true
+                    self.claudeNeedsPermission = true
+                default: break
+                }
+            }
+        }
+    }
+    /// The Usage window's "Allow access": one read that may show macOS's Keychain prompt.
+    func allowClaudeAccess() {
+        claudeKeychainDenied = false
+        fetchClaudeAccountLimits(interactive: true)
     }
     /// Re-reads agent logs in the background (skipped if a refresh ran in the last minute, unless forced).
     func refreshUsage(force: Bool = false) {

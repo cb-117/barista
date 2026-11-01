@@ -20,6 +20,8 @@ pub struct Prefs {
     /// Keep awake while the Claude app (Cowork) or the ChatGPT app is busy.
     pub watch_cowork: bool,
     pub watch_chatgpt: bool,
+    /// Ask Anthropic for the Claude plan's limits with Claude Code's saved login.
+    pub claude_account_limits: bool,
 }
 
 impl Default for Prefs {
@@ -37,6 +39,7 @@ impl Default for Prefs {
             last_session_seconds: 1800.0,
             watch_cowork: true,
             watch_chatgpt: true,
+            claude_account_limits: true,
         }
     }
 }

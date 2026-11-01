@@ -9,6 +9,15 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-01
+
+### Changed
+- The website moved to [baristatime.app](https://baristatime.app). Installers are now `curl -fsSL https://baristatime.app/install.sh | sh` and `irm https://baristatime.app/install.ps1 | iex`; the old `cb-117.github.io/barista` addresses keep working.
+
+### Fixed
+- Claude plan limits now match the Claude app. Barista used an old snapshot from the Claude app (it could show last week’s weekly usage), and Claude Code’s status line only reports limits in its terminal view. The Barista app now asks your Claude account for your session, weekly, and per-model limits and extra usage every few minutes, using Claude Code’s saved login read-only. On a Mac, click **Allow access** in Usage & Limits once and choose **Always Allow**; Barista never shows the Keychain prompt on its own, and may ask again after an update. Turn this off in **Settings → Agents**. Snapshots from the Claude app older than an hour are no longer used.
+- Sessions Barista keeps for the Claude app and the ChatGPT app say “While it’s busy” instead of “Until the app quits”.
+
 ## [0.0.8] - 2026-11-01
 
 ### Added
