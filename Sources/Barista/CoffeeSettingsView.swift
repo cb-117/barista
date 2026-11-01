@@ -60,6 +60,7 @@ struct CoffeeSettingsView: View {
                         Text(status).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Link("What’s new", destination: URL(string: "https://github.com/cb-117/barista/blob/main/CHANGELOG.md")!)
                     if let update = runtime.availableUpdate {
                         Button(runtime.canInstallUpdate ? "Update to \(update.version)" : "Download \(update.version)") { runtime.installUpdate() }
                             .disabled(runtime.isInstallingUpdate)

@@ -8,6 +8,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Changelog entry for this version
+        run: zsh scripts/release-notes.sh > /dev/null
       - name: Build
         run: swift build
       - name: Session checks

@@ -29,6 +29,9 @@ jobs:
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Changelog entry
+        if: steps.version.outputs.publish == 'true'
+        run: zsh scripts/release-notes.sh > changes.md
       - name: Test
         if: steps.version.outputs.publish == 'true'
         run: |
@@ -64,7 +67,11 @@ jobs:
           cp "$dmg" Barista.dmg   # stable name, so the website can link straight to the latest download
           shasum -a 256 "$dmg" "$zip" > SHA256SUMS.txt
 
-          cat > notes.md <<NOTES
+          cp changes.md notes.md
+          cat >> notes.md <<NOTES
+
+          ---
+
           **New install:** download **$dmg**, open it, and drag **Barista** into Applications.
 
           This build isn't notarized yet. The first time you open it, macOS will block it: click **Done**,
@@ -75,4 +82,4 @@ jobs:
           Works on Apple Silicon and Intel Macs running macOS 13 or later.
           NOTES
           gh release create "v$version" "$dmg" Barista.dmg "$zip" "$zip.sig" SHA256SUMS.txt --target "$GITHUB_SHA" \
-            --title "Barista $version" --notes-file notes.md --generate-notes
+            --title "Barista $version" --notes-file notes.md

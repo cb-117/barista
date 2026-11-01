@@ -2,7 +2,7 @@
 
 # Barista ☕
 
-**Keeps your Mac awake while the work brews.** A free, open-source Mac menu-bar app for people, commands, and AI agents. [Website](https://cb-117.github.io/barista/)
+**Keeps your Mac awake while the work brews.** A free, open-source Mac menu-bar app for people, commands, and AI agents. [Website](https://cb-117.github.io/barista/) · [What’s new](CHANGELOG.md)
 
 Keep your Mac awake for a timer, until an app quits, or while a command or agent is actually working. Independent tasks share one power assertion; one task finishing never ends somebody else’s session.
 
@@ -93,9 +93,10 @@ See [the agent guide](docs/AGENTS.md) for MCP setup, all commands, ownership rul
 The version lives in one place: `Sources/BaristaCore/Version.swift`. `scripts/build-app.sh` stamps it into the app, and `barista version` prints it.
 
 1. Bump `BaristaVersion.current` (for example `0.0.1` → `0.0.2`).
-2. Commit and push to `main`.
+2. In [`CHANGELOG.md`](CHANGELOG.md), rename **Unreleased** to `## [0.0.2] - YYYY-MM-DD` and start a new empty **Unreleased** section above it. CI fails, and nothing is released, until the new version has an entry.
+3. Commit and push to `main`.
 
-The **Release** workflow notices the new version, runs the checks, builds a universal app, and publishes `v0.0.2` on GitHub Releases with:
+The **Release** workflow notices the new version, runs the checks, builds a universal app, and publishes `v0.0.2` on GitHub Releases. The release notes are that version’s `CHANGELOG.md` entry, followed by install instructions. The release includes:
 
 - `Barista-<version>.dmg` and `Barista.dmg` (the same disk image; the website links to the stable name)
 - `Barista-<version>.zip` and `Barista-<version>.zip.sig`, which the in-app updater uses
