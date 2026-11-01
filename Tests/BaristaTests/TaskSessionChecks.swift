@@ -123,6 +123,21 @@ func boundedHistoryDoesNotRestoreAwakeRequests() throws {
     check(defaults.data(forKey: "sessionHistory") == nil, "Clear removes saved summaries")
 }
 
+/// Blocking socket clients run on GCD threads. Running them in Swift tasks can use up the
+/// cooperative pool on small CI machines, so the server's reply task never gets a thread.
+private func blocking<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global().async { continuation.resume(with: Result { try work() }) }
+    }
+}
+
+private final class ReplyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<ControlReply, Error>] = []
+    func add(_ result: Result<ControlReply, Error>) { lock.lock(); results.append(result); lock.unlock() }
+    func values() throws -> [ControlReply] { lock.lock(); defer { lock.unlock() }; return try results.map { try $0.get() } }
+}
+
 @MainActor
 func localSocketSupportsConcurrentAgents() async throws {
     let directory = URL(fileURLWithPath: "/tmp/barista-check-\(UUID().uuidString.prefix(8))")
@@ -131,22 +146,21 @@ func localSocketSupportsConcurrentAgents() async throws {
     let server = ControlServer()
     try server.start(path: path) { request in await MainActor.run { session.handle(request) } }
     defer { server.stop(); try? FileManager.default.removeItem(at: directory) }
-    let replies = try await withThrowingTaskGroup(of: ControlReply.self) { group in
-        for i in 0..<10 {
-            group.addTask { try ControlClient(path: path).send(ControlRequest(action: .acquire, title: "Parallel agent \(i)")) }
+    let replies = try await blocking {
+        let results = ReplyBox()
+        DispatchQueue.concurrentPerform(iterations: 10) { i in
+            results.add(Result { try ControlClient(path: path).send(ControlRequest(action: .acquire, title: "Parallel agent \(i)")) })
         }
-        var replies: [ControlReply] = []
-        for try await reply in group { replies.append(reply) }
-        return replies
+        return try results.values()
     }
     check(replies.allSatisfy(\.ok) && session.sessions.count == 10, "Concurrent agents have independent sessions")
     let ids = replies.compactMap(\.session?.id)
     check(Set(ids).count == 10, "Every agent gets a distinct ID")
-    let stopped = try await Task.detached { try ControlClient(path: path).send(ControlRequest(action: .release, id: ids[0])) }.value
+    let stopped = try await blocking { try ControlClient(path: path).send(ControlRequest(action: .release, id: ids[0])) }
     check(stopped.ok && session.sessions.count == 9, "Socket release preserves other clients")
     server.stop()
     try server.start(path: path) { request in await MainActor.run { session.handle(request) } }
-    let restarted = try await Task.detached { try ControlClient(path: path).send(ControlRequest(action: .status)) }.value
+    let restarted = try await blocking { try ControlClient(path: path).send(ControlRequest(action: .status)) }
     check(restarted.ok, "Rapid disable/enable must not lose the new socket to an old cancellation")
     session.stop()
 }
