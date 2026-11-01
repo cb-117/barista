@@ -9,6 +9,8 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-11-01
+
 ### Security
 - Linux: Barista no longer uses GTK. The tray icon talks to the desktop directly over D-Bus (StatusNotifierItem), which removes the `glib` dependency flagged in [GHSA-wrw7-89jp-8q8g](https://github.com/advisories/GHSA-wrw7-89jp-8q8g) along with every other GTK library. The Linux app also no longer needs GTK or AppIndicator libraries installed.
 - Linux: the time left now shows in the tray icon’s tooltip instead of beside the icon (that needed GTK), so the “Show time left next to the cup” setting is gone on Linux. Trays that only support XEmbed (i3bar, dwm, tint2) need `snixembed` to show the cup.
