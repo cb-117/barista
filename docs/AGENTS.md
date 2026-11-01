@@ -68,7 +68,7 @@ The Claude desktop app (Cowork, and anything else it runs) and the ChatGPT deskt
 
 ## Usage
 
-`barista usage [--period today|week|month|all] [--json]` and the MCP tool `barista_usage` (`period`, default `week`) report sessions, requests, and tokens per agent and model, with costs estimated at API list prices. They read local logs in the calling process and never need the app. The JSON shape and counting rules are in [USAGE.md](USAGE.md). Treat costs as estimates, not a bill.
+`barista usage [--period today|week|month|all] [--json]` and the MCP tool `barista_usage` (`period`, default `week`) report sessions, requests, and tokens per agent and model, with costs estimated at API list prices, plus active time, sessions, tokens, models, and cost per project (`projects` in each period). `barista report` writes the same data as a visual HTML report and opens it in the browser (`--no-open` to only write it). They read local logs in the calling process and never need the app. The JSON shape and counting rules are in [USAGE.md](USAGE.md). Treat costs as estimates, not a bill.
 
 ## MCP setup
 

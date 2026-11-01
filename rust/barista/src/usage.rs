@@ -5,7 +5,7 @@ use crate::models::{format_date, now, parse_date, to_json, VERSION};
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -14,10 +14,16 @@ use std::sync::OnceLock;
 pub const PRICES_CHECKED: &str = env!("BARISTA_PRICES_CHECKED");
 const CACHE_FILE: &str = "usage-cache-portable.json";
 const CURSOR_FILE: &str = "cursor-usage.jsonl";
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 const CLAUDE_LIMITS_FILE: &str = "claude-limits.json";
 /// A Cursor turn's active time is capped, so a stop that never arrived can't count for days.
 const MAX_TURN_SECONDS: f64 = 4.0 * 3600.0;
+/// Activity less than 15 minutes apart joins into one run of active time.
+const JOIN_SECONDS: i64 = 900;
+const REPORT_FILE: &str = "usage-report.html";
+/// Sources/BaristaCore/ReportTemplate.swift's page, extracted by build.rs.
+const REPORT_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/report-template.html"));
+const REPORT_PLACEHOLDER: &str = "/*BARISTA_REPORT_DATA*/null";
 
 // MARK: Prices
 
@@ -84,6 +90,9 @@ struct CodexState {
     prev: Option<[u64; 4]>,
     model: Option<String>,
     session: Option<String>,
+    /// The first `turn_context` folder, used when no `session_meta` names one.
+    #[serde(default)]
+    context_folder: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -100,6 +109,39 @@ struct FileState {
     /// Codex: the newest plan limits this file reported.
     #[serde(default)]
     limits: Option<CodexLimits>,
+    /// The folder the agent worked in (Claude: first `cwd`; Codex: first `session_meta` cwd).
+    #[serde(default)]
+    folder: Option<String>,
+    /// Activity as `[first, last]` whole seconds, joined by the 15-minute rule as lines arrive.
+    #[serde(default)]
+    runs: Vec<[i64; 2]>,
+}
+
+impl FileState {
+    /// The file's folder, if any line named one.
+    fn folder(&self) -> Option<String> {
+        self.folder.clone().or_else(|| self.codex.context_folder.clone())
+    }
+
+    /// Records one moment of activity (whole seconds since 1970).
+    fn note_activity(&mut self, time: f64) {
+        let second = time.floor() as i64;
+        if let Some(last) = self.runs.last_mut() {
+            if last[1] <= second && second <= last[1] + JOIN_SECONDS {
+                last[1] = second;
+                return;
+            }
+            if last[0] <= second && second <= last[1] {
+                return;
+            }
+        }
+        self.runs.push([second, second]);
+    }
+}
+
+/// A string value that isn't empty.
+fn non_empty<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
 /// The ChatGPT plan's limits from a Codex `token_count` event.
@@ -217,14 +259,26 @@ fn file_stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Counts one Claude Code line, if it is a new assistant response with usage.
+/// Follows one Claude Code line: the folder, activity, and tokens of a new assistant response.
 fn claude_line(line: &[u8], path: &Path, state: &mut FileState, seen: &mut HashSet<String>) {
     let text = String::from_utf8_lossy(line);
-    if !text.contains("\"assistant\"") || !text.contains("\"usage\"") {
+    let wants_folder = state.folder.is_none() && text.contains("\"cwd\"");
+    if !wants_folder && !text.contains("\"assistant\"") && !text.contains("\"user\"") {
         return;
     }
     let Ok(value) = serde_json::from_str::<Value>(&text) else { return };
-    if value.get("type").and_then(Value::as_str) != Some("assistant") {
+    if state.folder.is_none() {
+        state.folder = non_empty(&value, "cwd").map(String::from);
+    }
+    let kind = value.get("type").and_then(Value::as_str);
+    if kind != Some("assistant") && kind != Some("user") {
+        return;
+    }
+    let Some(time) = value.get("timestamp").and_then(Value::as_str).and_then(parse_date) else {
+        return;
+    };
+    state.note_activity(time);
+    if kind != Some("assistant") {
         return;
     }
     let Some(message) = value.get("message") else { return };
@@ -232,9 +286,6 @@ fn claude_line(line: &[u8], path: &Path, state: &mut FileState, seen: &mut HashS
         return;
     };
     let Some(model) = message.get("model").and_then(Value::as_str).filter(|m| *m != "<synthetic>") else {
-        return;
-    };
-    let Some(time) = value.get("timestamp").and_then(Value::as_str).and_then(parse_date) else {
         return;
     };
     if let Some(id) = message.get("id").and_then(Value::as_str) {
@@ -284,37 +335,43 @@ fn codex_delta(prev: &mut Option<[u64; 4]>, total: [u64; 4]) -> Option<[u64; 4]>
     Some(delta)
 }
 
-/// Follows one Codex rollout line: session, model, and token counts.
+/// Follows one Codex rollout line: session, model, folder, activity, and token counts.
 fn codex_line(line: &[u8], path: &Path, state: &mut FileState) {
     let text = String::from_utf8_lossy(line);
-    let kind = if text.contains("\"token_count\"") {
-        "event_msg"
-    } else if text.contains("\"turn_context\"") {
-        "turn_context"
-    } else if text.contains("\"session_meta\"") {
-        "session_meta"
-    } else {
-        return;
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else { return };
-    if value.get("type").and_then(Value::as_str) != Some(kind) {
+    if !["\"token_count\"", "\"user_message\"", "\"turn_context\"", "\"session_meta\""]
+        .iter()
+        .any(|kind| text.contains(kind))
+    {
         return;
     }
+    let Ok(value) = serde_json::from_str::<Value>(&text) else { return };
     let payload = value.get("payload").cloned().unwrap_or(Value::Null);
-    match kind {
-        "session_meta" => {
+    match value.get("type").and_then(Value::as_str) {
+        Some("session_meta") => {
             let id = payload.get("id").or_else(|| payload.get("session_id")).and_then(Value::as_str);
             if let Some(id) = id {
                 state.codex.session = Some(id.to_string());
             }
+            if state.folder.is_none() {
+                state.folder = non_empty(&payload, "cwd").map(String::from);
+            }
         }
-        "turn_context" => {
+        Some("turn_context") => {
             if let Some(model) = payload.get("model").and_then(Value::as_str) {
                 state.codex.model = Some(model.to_string());
             }
+            if state.codex.context_folder.is_none() {
+                state.codex.context_folder = non_empty(&payload, "cwd").map(String::from);
+            }
         }
-        _ => {
-            if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+        Some("event_msg") => {
+            let event = payload.get("type").and_then(Value::as_str);
+            if event == Some("user_message") || event == Some("token_count") {
+                if let Some(time) = value.get("timestamp").and_then(Value::as_str).and_then(parse_date) {
+                    state.note_activity(time);
+                }
+            }
+            if event != Some("token_count") {
                 return;
             }
             record_codex_limits(&value, &payload, state);
@@ -345,6 +402,7 @@ fn codex_line(line: &[u8], path: &Path, state: &mut FileState) {
                 &counts,
             );
         }
+        _ => {}
     }
 }
 
@@ -420,6 +478,16 @@ pub struct Entry {
     pub session: String,
     pub hour: i64,
     pub counts: Counts,
+    /// The folder of the log file this bucket came from.
+    pub folder: Option<String>,
+}
+
+/// One log file's activity runs, for active time.
+#[derive(Clone, Debug)]
+pub struct Activity {
+    pub agent: String,
+    pub folder: Option<String>,
+    pub runs: Vec<[i64; 2]>,
 }
 
 /// One line of Barista's Cursor log.
@@ -431,6 +499,9 @@ pub struct CursorRecord {
     pub generation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The first of Cursor's workspace roots (records before 0.0.12 have none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     pub ts: String,
@@ -439,6 +510,7 @@ pub struct CursorRecord {
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub entries: Vec<Entry>,
+    pub activity: Vec<Activity>,
     pub cursor: Vec<CursorRecord>,
     pub codex_limits: Option<CodexLimits>,
     pub claude_limits: Option<ClaudeLimits>,
@@ -484,7 +556,16 @@ fn collect_in(directory: &Path) -> Snapshot {
         }
     }
     let mut entries = Vec::new();
+    let mut activity = Vec::new();
     for state in cache.files.values() {
+        let folder = state.folder();
+        if !state.runs.is_empty() {
+            activity.push(Activity {
+                agent: state.agent.clone(),
+                folder: folder.clone(),
+                runs: state.runs.clone(),
+            });
+        }
         for (key, counts) in &state.buckets {
             let mut parts = key.split('\u{1f}');
             let (Some(model), Some(session), Some(hour)) = (parts.next(), parts.next(), parts.next().and_then(|h| h.parse().ok())) else {
@@ -496,6 +577,7 @@ fn collect_in(directory: &Path) -> Snapshot {
                 session: session.into(),
                 hour,
                 counts: *counts,
+                folder: folder.clone(),
             });
         }
     }
@@ -506,6 +588,7 @@ fn collect_in(directory: &Path) -> Snapshot {
         .max_by(|a, b| a.observed_at.total_cmp(&b.observed_at));
     Snapshot {
         entries,
+        activity,
         cursor: read_cursor(directory),
         codex_limits,
         claude_limits: newest_claude_limits([
@@ -713,12 +796,13 @@ fn read_cursor(directory: &Path) -> Vec<CursorRecord> {
 }
 
 /// Appends one Cursor hook event to the usage log, in a single write.
-pub fn record_cursor(event: &str, conversation: &str, generation: &str, model: Option<&str>, status: Option<&str>) {
+pub fn record_cursor(event: &str, conversation: &str, generation: &str, model: Option<&str>, project: Option<&str>, status: Option<&str>) {
     let record = CursorRecord {
         conversation: conversation.to_string(),
         event: event.to_string(),
         generation: generation.to_string(),
         model: model.map(String::from),
+        project: project.filter(|p| !p.is_empty()).map(String::from),
         status: status.map(String::from),
         ts: format_date(now()),
     };
@@ -851,7 +935,7 @@ fn sorted_models(models: BTreeMap<String, Tally>, cursor: bool) -> Vec<Value> {
         .collect()
 }
 
-fn period_json(snapshot: &Snapshot, period: Period, start: Option<f64>) -> Value {
+fn period_json(snapshot: &Snapshot, period: Period, start: Option<f64>, roots: &mut Roots) -> Value {
     let now = now();
     let inside = |time: f64| time <= now && start.is_none_or(|start| time >= start);
     let mut agents = Vec::new();
@@ -877,13 +961,16 @@ fn period_json(snapshot: &Snapshot, period: Period, start: Option<f64>) -> Value
         agents.push(value);
     }
     agents.push(cursor_json(&snapshot.cursor, &inside));
+    let (projects, active) = projects_json(snapshot, start, now, roots);
     json!({
         "id": period.id(),
         "label": period.label(),
         "start": start.map(format_date),
         "totalTokens": period_tokens,
         "estimatedCost": round6(period_cost),
+        "activeSeconds": active,
         "agents": agents,
+        "projects": projects,
     })
 }
 
@@ -925,19 +1012,434 @@ fn cursor_json(records: &[CursorRecord], inside: &dyn Fn(f64) -> bool) -> Value 
     value
 }
 
+// MARK: Projects
+
+const AGENTS: [(&str, &str); 3] = [("claude", "Claude Code"), ("codex", "Codex"), ("cursor", "Cursor")];
+
+fn is_separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
+}
+
+/// A project's name: its folder's last path component.
+pub fn project_name(project: &str) -> String {
+    let trimmed = project.trim_end_matches(is_separator);
+    let name = trimmed.rsplit(is_separator).next().unwrap_or("");
+    if name.is_empty() {
+        project.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// `path` with `.` and `..` components resolved lexically.
+fn lexically_normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// For a `.git` file in `directory` pointing into a linked worktree's admin folder
+/// (`…/.git/worktrees/NAME`), the main checkout: the directory holding that `.git`.
+fn worktree_main(directory: &Path, git_file: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(git_file).ok()?;
+    let first = text.lines().next()?;
+    let target = first.strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let target = lexically_normal(&directory.join(target));
+    let parts: Vec<_> = target.components().collect();
+    let index = parts
+        .windows(2)
+        .position(|pair| pair[0].as_os_str() == ".git" && pair[1].as_os_str() == "worktrees")?;
+    let main: PathBuf = parts[..index].iter().map(|c| c.as_os_str()).collect();
+    (!main.as_os_str().is_empty()).then_some(main)
+}
+
+/// The project a folder belongs to: the Git repository holding it (a linked worktree counts as its
+/// main checkout), else the folder itself. Purely by path; symlinks are not resolved.
+pub fn project_root(folder: &str) -> String {
+    let mut path = folder.trim_end_matches(is_separator);
+    if path.is_empty() || (cfg!(windows) && path.ends_with(':')) {
+        // `/` (or `C:\`) keeps its one separator.
+        path = &folder[..(path.len() + 1).min(folder.len())];
+    }
+    let found = (|| {
+        if !Path::new(path).exists() {
+            return None;
+        }
+        let mut directory = Some(Path::new(path));
+        while let Some(current) = directory.filter(|d| !d.as_os_str().is_empty()) {
+            let git = current.join(".git");
+            if let Ok(meta) = fs::metadata(&git) {
+                if meta.is_dir() {
+                    return Some(current.to_path_buf());
+                }
+                if meta.is_file() {
+                    return Some(worktree_main(current, &git).unwrap_or_else(|| current.to_path_buf()));
+                }
+            }
+            directory = current.parent();
+        }
+        None
+    })();
+    let root = found.map_or_else(|| path.to_string(), |p| p.to_string_lossy().into_owned());
+    if cfg!(windows) {
+        root.replace('/', "\\")
+    } else {
+        root
+    }
+}
+
+/// Folder → project, resolved once per report.
+#[derive(Default)]
+struct Roots(HashMap<String, Option<String>>);
+
+impl Roots {
+    /// The project of `folder`; None for activity with no folder (the `Unknown` project).
+    fn project(&mut self, folder: Option<&str>) -> Option<String> {
+        let folder = folder.filter(|f| !f.is_empty())?;
+        self.0
+            .entry(folder.to_string())
+            .or_insert_with(|| Some(project_root(folder)))
+            .clone()
+    }
+}
+
+/// Sorts spans and joins any two whose gap is at most 15 minutes.
+fn joined(mut spans: Vec<[i64; 2]>) -> Vec<[i64; 2]> {
+    spans.sort_unstable();
+    let mut runs: Vec<[i64; 2]> = Vec::new();
+    for span in spans {
+        match runs.last_mut() {
+            Some(last) if span[0] - last[1] <= JOIN_SECONDS => last[1] = last[1].max(span[1]),
+            _ => runs.push(span),
+        }
+    }
+    runs
+}
+
+/// Total length of `runs` clipped to `from` … `to`.
+fn clipped_seconds(runs: &[[i64; 2]], from: Option<i64>, to: i64) -> i64 {
+    runs.iter()
+        .map(|run| (run[1].min(to) - run[0].max(from.unwrap_or(i64::MIN))).max(0))
+        .sum()
+}
+
+fn local_date(second: i64) -> NaiveDate {
+    chrono::DateTime::from_timestamp(second, 0)
+        .map(|t| t.with_timezone(&Local).date_naive())
+        .unwrap_or_default()
+}
+
+/// Seconds since 1970 at the local midnight that ends `date`.
+fn next_midnight(date: NaiveDate) -> Option<i64> {
+    let next = date.succ_opt()?;
+    // A time zone may skip midnight for daylight saving time; the day then starts at the first valid hour.
+    (0..4).find_map(|hour| {
+        Local
+            .from_local_datetime(&next.and_hms_opt(hour, 0, 0)?)
+            .earliest()
+            .map(|t| t.timestamp())
+    })
+}
+
+#[derive(Default)]
+struct Day {
+    active: i64,
+    tokens: u64,
+    cost: f64,
+}
+
+#[derive(Default)]
+struct ProjectTally {
+    /// Claude, Codex, Cursor.
+    agents: [Tally; 3],
+    spans: [Vec<[i64; 2]>; 3],
+    /// (model, agent) → tally.
+    models: BTreeMap<(String, &'static str), Tally>,
+    days: BTreeMap<NaiveDate, Day>,
+}
+
+/// One agent's (or a project's) totals, with `estimatedCost` null when none of its tokens are priced.
+fn project_tally_json(tally: &Tally, extra: (&str, Value), cursor: bool) -> Value {
+    let mut value = tally.json(extra, cursor);
+    if token_total(&tally.counts) == tally.unpriced {
+        value["estimatedCost"] = Value::Null;
+    }
+    value
+}
+
+/// Every project with activity in the period, and the period's active seconds (all projects together).
+fn projects_json(snapshot: &Snapshot, start: Option<f64>, now: f64, roots: &mut Roots) -> (Vec<Value>, i64) {
+    let from = start.map(|s| s.floor() as i64);
+    let to = now.floor() as i64;
+    let inside = |time: f64| time <= now && start.is_none_or(|start| time >= start);
+    let index = |agent: &str| AGENTS.iter().position(|(id, _)| *id == agent);
+    let mut all: BTreeMap<Option<String>, ProjectTally> = BTreeMap::new();
+
+    for entry in &snapshot.entries {
+        let Some(agent) = index(&entry.agent) else { continue };
+        if !inside(entry.hour as f64) {
+            continue;
+        }
+        let project = all.entry(roots.project(entry.folder.as_deref())).or_default();
+        project.agents[agent].add_tokens(&entry.model, &entry.session, &entry.counts);
+        project
+            .models
+            .entry((entry.model.clone(), AGENTS[agent].0))
+            .or_default()
+            .add_tokens(&entry.model, &entry.session, &entry.counts);
+        let day = project.days.entry(local_date(entry.hour)).or_default();
+        day.tokens += token_total(&entry.counts);
+        if let Some(price) = price_for(&entry.model) {
+            day.cost += cost(price, &entry.counts);
+        }
+    }
+    for activity in &snapshot.activity {
+        let Some(agent) = index(&activity.agent) else { continue };
+        let project = all.entry(roots.project(activity.folder.as_deref())).or_default();
+        project.spans[agent].extend_from_slice(&activity.runs);
+    }
+
+    // Cursor: a conversation's folder is the `project` of its first record that has one.
+    let records = &snapshot.cursor;
+    let mut folders: HashMap<&str, &str> = HashMap::new();
+    for record in records {
+        if let Some(project) = record.project.as_deref().filter(|p| !p.is_empty()) {
+            folders.entry(record.conversation.as_str()).or_insert(project);
+        }
+    }
+    let conversation_project = |roots: &mut Roots, conversation: &str| roots.project(folders.get(conversation).copied());
+    let mut prompts: HashMap<&str, (f64, Option<&str>)> = HashMap::new();
+    for record in records {
+        let time = parse_date(&record.ts).unwrap_or(0.0);
+        if record.event == "prompt" {
+            prompts.entry(record.generation.as_str()).or_insert((time, record.model.as_deref()));
+        }
+        let project = all.entry(conversation_project(roots, &record.conversation)).or_default();
+        let second = time.floor() as i64;
+        project.spans[2].push([second, second]);
+        if inside(time) {
+            project.agents[2].sessions.insert(record.conversation.clone());
+        }
+    }
+    let mut counted: HashSet<&str> = HashSet::new();
+    for record in records.iter().filter(|r| r.event == "stop") {
+        if !counted.insert(record.generation.as_str()) {
+            continue;
+        }
+        let stopped = parse_date(&record.ts).unwrap_or(0.0);
+        let prompt = prompts.get(record.generation.as_str());
+        let active = prompt.map_or(0.0, |(started, _)| (stopped - started).clamp(0.0, MAX_TURN_SECONDS));
+        let project = all.entry(conversation_project(roots, &record.conversation)).or_default();
+        if let Some((started, _)) = prompt {
+            let first = started.floor() as i64;
+            project.spans[2].push([first, first + active.floor() as i64]);
+        }
+        if !inside(stopped) {
+            continue;
+        }
+        let model = model_name(record.model.as_deref().or(prompt.and_then(|p| p.1)).unwrap_or("unknown"));
+        let cursor = &mut project.agents[2];
+        cursor.turns += 1;
+        cursor.sessions.insert(record.conversation.clone());
+        let tally = project.models.entry((model, "cursor")).or_default();
+        tally.turns += 1;
+        tally.active += active;
+        tally.sessions.insert(record.conversation.clone());
+    }
+
+    let mut everything: Vec<[i64; 2]> = Vec::new();
+    let mut listed: Vec<(i64, u64, u64, String, Option<String>, Value)> = Vec::new();
+    for (path, mut project) in all {
+        let spans: Vec<[i64; 2]> = project.spans.iter().flatten().copied().collect();
+        everything.extend_from_slice(&spans);
+        let runs = joined(spans);
+        let active = clipped_seconds(&runs, from, to);
+
+        let mut total = Tally {
+            active: active as f64,
+            ..Tally::default()
+        };
+        let mut agents = Vec::new();
+        let mut cost_sum = 0.0;
+        for (index, (agent, name)) in AGENTS.iter().enumerate() {
+            let tally = &mut project.agents[index];
+            tally.active = clipped_seconds(&joined(std::mem::take(&mut project.spans[index])), from, to) as f64;
+            if tally.sessions.is_empty() && tally.counts[5] == 0 && tally.turns == 0 && tally.active <= 0.0 {
+                continue;
+            }
+            add(&mut total.counts, &tally.counts);
+            total.unpriced += tally.unpriced;
+            total.turns += tally.turns;
+            total.sessions.extend(tally.sessions.iter().map(|s| format!("{agent}\u{1f}{s}")));
+            let mut value = project_tally_json(tally, ("agent", json!(agent)), *agent == "cursor");
+            value["name"] = json!(name);
+            cost_sum += value["estimatedCost"].as_f64().unwrap_or(0.0);
+            agents.push(value);
+        }
+        total.cost = cost_sum;
+        if total.sessions.is_empty() && total.counts[5] == 0 && total.turns == 0 && active <= 0 {
+            continue;
+        }
+
+        let mut models: Vec<((String, &str), Tally)> = project.models.into_iter().collect();
+        models.sort_by(|a, b| {
+            token_total(&b.1.counts)
+                .cmp(&token_total(&a.1.counts))
+                .then(b.1.turns.cmp(&a.1.turns))
+                .then(a.0 .0.cmp(&b.0 .0))
+                .then(a.0 .1.cmp(b.0 .1))
+        });
+        let models: Vec<Value> = models
+            .into_iter()
+            .map(|((model, agent), tally)| {
+                let mut value = tally.json(("model", json!(model)), agent == "cursor");
+                value["agent"] = json!(agent);
+                value
+            })
+            .collect();
+
+        // Days: active time split at local midnight, tokens by each bucket's local date.
+        for run in &runs {
+            let mut cursor = run[0].max(from.unwrap_or(i64::MIN));
+            let end = run[1].min(to);
+            while cursor < end {
+                let date = local_date(cursor);
+                let stop = end.min(next_midnight(date).unwrap_or(end).max(cursor + 1));
+                project.days.entry(date).or_default().active += stop - cursor;
+                cursor = stop;
+            }
+        }
+        let days: Vec<Value> = project
+            .days
+            .iter()
+            .filter(|(_, day)| day.active > 0 || day.tokens > 0)
+            .map(|(date, day)| {
+                json!({
+                    "date": date.format("%Y-%m-%d").to_string(),
+                    "activeSeconds": day.active,
+                    "totalTokens": day.tokens,
+                    "estimatedCost": round6(day.cost),
+                })
+            })
+            .collect();
+
+        let name = path.as_deref().map_or_else(|| "Unknown".to_string(), project_name);
+        let mut value = project_tally_json(&total, ("project", json!(path)), false);
+        value["name"] = json!(name);
+        value["agents"] = Value::Array(agents);
+        value["models"] = Value::Array(models);
+        value["days"] = Value::Array(days);
+        listed.push((active, token_total(&total.counts), total.turns, name, path, value));
+    }
+    listed.sort_by(|a, b| {
+        a.4.is_none()
+            .cmp(&b.4.is_none())
+            .then(b.0.cmp(&a.0))
+            .then(b.1.cmp(&a.1))
+            .then(b.2.cmp(&a.2))
+            .then(a.3.cmp(&b.3))
+            .then(a.4.cmp(&b.4))
+    });
+    let active = clipped_seconds(&joined(everything), from, to);
+    (listed.into_iter().map(|p| p.5).collect(), active)
+}
+
 /// The usage report for `periods`, in the JSON shape of docs/USAGE.md.
 pub fn build(snapshot: &Snapshot, periods: &[Period]) -> Value {
+    let mut roots = Roots::default();
     json!({
         "estimateNote": format!("Costs are estimates at API list prices (checked {PRICES_CHECKED}), not what a subscription charges."),
         "generatedAt": format_date(now()),
         "limits": limits_json(snapshot),
-        "periods": periods.iter().map(|p| period_json(snapshot, *p, p.start())).collect::<Vec<_>>(),
+        "periods": periods.iter().map(|p| period_json(snapshot, *p, p.start(), &mut roots)).collect::<Vec<_>>(),
     })
 }
 
 /// Reads the logs and builds the report.
 pub fn report(periods: &[Period]) -> Value {
     build(&collect(), periods)
+}
+
+// MARK: Visual report
+
+/// The report page: the template with the data placeholder replaced by `report` plus `initialPeriod`,
+/// with `<`, `>`, and `&` escaped so no text from the data can close the script.
+pub fn report_page(report: &Value, initial: Period) -> String {
+    let mut object = report.clone();
+    object["initialPeriod"] = json!(initial.id());
+    let data = to_json(&object)
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e");
+    REPORT_TEMPLATE.replacen(REPORT_PLACEHOLDER, &data, 1)
+}
+
+/// Where `barista report` writes by default: `usage-report.html` in the data folder.
+pub fn default_report_path() -> PathBuf {
+    data_dir().join(REPORT_FILE)
+}
+
+/// Writes the visual report with every period (`initial` shown first) to `output` (else the data
+/// folder), atomically, then opens it in the default browser when `open`. Returns the file's path and
+/// whether a browser was asked to open it.
+pub fn write_report(initial: Period, output: Option<&Path>, open: bool) -> crate::Result<(PathBuf, bool)> {
+    let path = output.map_or_else(default_report_path, Path::to_path_buf);
+    let path = if path.is_relative() {
+        std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path)
+    } else {
+        path
+    };
+    let report = report(&[Period::Today, Period::Week, Period::Month, Period::All]);
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    write_atomically(&path, report_page(&report, initial).as_bytes())?;
+    let opened = open && open_in_browser(&path);
+    Ok((path, opened))
+}
+
+/// Opens a file in the default browser without waiting for it (`xdg-open`, `explorer.exe`, `open`).
+pub fn open_in_browser(path: &Path) -> bool {
+    use std::process::{Command, Stdio};
+    let program = if cfg!(windows) {
+        "explorer.exe"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let mut command = Command::new(program);
+    command.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    match command.spawn() {
+        Ok(mut child) => {
+            // Reap it in the background so a long-running app leaves no zombie behind.
+            std::thread::spawn(move || child.wait());
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 // MARK: Text
@@ -1067,6 +1569,45 @@ pub fn limit_summary(limit: &Value) -> String {
     parts.join(" · ")
 }
 
+/// The Projects block: "  app           19m active · 2 sessions · 6.7K tokens · ~$0.02".
+fn project_lines(projects: &[Value]) -> String {
+    let mut out = String::from("\nProjects\n");
+    if projects.is_empty() {
+        out.push_str("  —\n");
+        return out;
+    }
+    let shown = &projects[..projects.len().min(10)];
+    let name = |p: &Value| p["name"].as_str().unwrap_or("").to_string();
+    let width = shown.iter().map(|p| name(p).chars().count()).max().unwrap_or(0).min(24);
+    for project in shown {
+        let n = |key: &str| project[key].as_u64().unwrap_or(0);
+        let mut label = name(project);
+        if label.chars().count() > width {
+            label = label.chars().take(width.saturating_sub(1)).collect::<String>() + "…";
+        }
+        let mut parts = vec![
+            format!("{} active", format_duration(n("activeSeconds"))),
+            plural(n("sessions"), "session"),
+        ];
+        if n("turns") > 0 {
+            parts.push(plural(n("turns"), "turn"));
+        }
+        if n("totalTokens") > 0 {
+            parts.push(format!("{} tokens", format_tokens(n("totalTokens"))));
+            let cost = format_cost(project["estimatedCost"].as_f64(), n("totalTokens"));
+            if !cost.is_empty() {
+                parts.push(cost);
+            }
+        }
+        let pad = width.saturating_sub(label.chars().count());
+        out.push_str(&format!("  {label}{}  {}\n", " ".repeat(pad), parts.join(" · ")));
+    }
+    if projects.len() > shown.len() {
+        out.push_str(&format!("  … and {} more\n", projects.len() - shown.len()));
+    }
+    out
+}
+
 /// The report as text. `detailed` adds a line per model.
 pub fn text(report: &Value, detailed: bool) -> String {
     let mut out = String::from("Barista usage · costs are estimates at API list prices, not your subscription bill\n");
@@ -1101,6 +1642,9 @@ pub fn text(report: &Value, detailed: bool) -> String {
                 format_tokens(tokens),
                 if cost.is_empty() { String::new() } else { format!(" · {cost}") }
             ));
+        }
+        if detailed {
+            out.push_str(&project_lines(period["projects"].as_array().map_or(&[][..], Vec::as_slice)));
         }
     }
     out.push_str(&format!(
@@ -1272,12 +1816,69 @@ mod tests {
     }
 
     #[test]
+    fn activity_joins_within_fifteen_minutes() {
+        let mut state = FileState::default();
+        for time in [100.0, 101.9, 1000.0, 50.0, 500.0, 2000.0] {
+            state.note_activity(time);
+        }
+        assert_eq!(state.runs, vec![[100, 1000], [50, 500], [2000, 2000]]);
+        assert_eq!(joined(state.runs.clone()), vec![[50, 1000], [2000, 2000]]);
+        assert_eq!(joined(vec![[0, 10], [911, 920]]), vec![[0, 10], [911, 920]]);
+        assert_eq!(clipped_seconds(&[[50, 1000], [2000, 2000]], Some(500), 900), 400);
+        assert_eq!(clipped_seconds(&[[50, 1000]], None, 2000), 950);
+    }
+
+    #[test]
+    fn projects_follow_git_roots_and_worktrees() {
+        let root = std::env::temp_dir().join(format!("barista-projects-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("main/.git/worktrees/wt")).unwrap();
+        fs::create_dir_all(root.join("main/src/deep")).unwrap();
+        fs::create_dir_all(root.join("wt/sub")).unwrap();
+        fs::create_dir_all(root.join("module")).unwrap();
+        fs::create_dir_all(root.join("plain")).unwrap();
+        fs::write(root.join("wt/.git"), "gitdir: ../main/.git/worktrees/wt\n").unwrap();
+        fs::write(root.join("module/.git"), "gitdir: ../main/.git/modules/module\n").unwrap();
+        let text = |p: PathBuf| p.to_string_lossy().into_owned();
+        let main = text(root.join("main"));
+        assert_eq!(project_root(&text(root.join("main/src/deep"))), main);
+        assert_eq!(project_root(&format!("{}/", text(root.join("main")))), main);
+        assert_eq!(
+            project_root(&text(root.join("wt/sub"))),
+            main,
+            "a linked worktree is its main checkout"
+        );
+        assert_eq!(
+            project_root(&text(root.join("module"))),
+            text(root.join("module")),
+            "a submodule is its own project"
+        );
+        assert_eq!(project_root(&text(root.join("plain"))), text(root.join("plain")));
+        let gone = text(root.join("main/gone"));
+        assert_eq!(project_root(&gone), gone, "a folder that no longer exists is its own project");
+        assert_eq!(project_name(&main), "main");
+        assert_eq!(project_name("/a/b/"), "b");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_report_page_escapes_its_data() {
+        assert_eq!(REPORT_TEMPLATE.matches(REPORT_PLACEHOLDER).count(), 1);
+        let page = report_page(&json!({"periods": [], "name": "</script><b>&"}), Period::Month);
+        assert!(!page.contains(REPORT_PLACEHOLDER));
+        assert!(page.contains(r#""initialPeriod":"month""#));
+        assert!(page.contains(r#"\u003c/script\u003e\u003cb\u003e\u0026"#));
+        assert!(!page.contains("</script><b>"));
+    }
+
+    #[test]
     fn cursor_turns_use_their_prompt_and_stop() {
         let record = |event: &str, generation: &str, ts: &str, model: Option<&str>| CursorRecord {
             conversation: "c1".into(),
             event: event.into(),
             generation: generation.into(),
             model: model.map(String::from),
+            project: None,
             status: None,
             ts: ts.into(),
         };

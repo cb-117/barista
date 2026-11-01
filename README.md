@@ -31,6 +31,7 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 - **Cowork and the ChatGPT app:** these apps have no hooks, so Barista keeps your computer awake while they’re busy (judged by their CPU use, including Cowork’s VM) and lets it sleep once they’ve been quiet for 5 minutes. Switch each off in Settings → Agents.
 - **Usage & Limits:** one window (panel, right-click menu, or Settings) with your Claude plan’s 5-hour and weekly limits, your ChatGPT plan’s limits and credits, and token usage per agent. Claude’s limits come from a small status line Barista adds to Claude Code (it keeps your own if you have one); ChatGPT’s from Codex’s logs. Cursor doesn’t share its limits with other apps.
 - **Usage tracking:** sessions and tokens per agent and model for today, this week, and this month, with an estimated API-price cost, in Settings → Usage, the panel footer, `barista usage`, and the `barista_usage` MCP tool. Read from Claude Code’s and Codex’s own logs on your Mac; Cursor reports turns and active time through its hooks. Nothing is uploaded. Costs are estimates at API list prices, not what your subscription charges. Details: [docs/USAGE.md](docs/USAGE.md).
+- **Projects and the usage report:** active time, sessions, tokens, models, and estimated cost per project (grouped by Git repository, so worktrees count with their main checkout), in Usage & Limits and `barista usage --period week`. **Open report** (or `barista report`) opens a visual report in your browser: time per project, time per day, and every project's agents and models. It's a single HTML file on your computer; nothing is uploaded.
 - Tasks that keep the Mac awake (agents, commands, watched apps) appear in the panel with live progress and individual stop buttons, and in the right-click menu. The menu bar shows your own timer’s time left, or how many tasks are running. Settings shows the last sessions.
 - **Task-owned sessions:** commands renew their own short leases and release them on exit. Agents heartbeat during work and release when done. A missing heartbeat or watched process exit ends the session automatically.
 - Separate display control. Agent/command sessions allow the display to sleep by default.
@@ -132,6 +133,7 @@ build/barista status --json
 # Tokens and estimated cost per agent: today, this week, this month (or --period all).
 build/barista usage
 build/barista usage --period week --json
+build/barista report
 ```
 
 See [the agent guide](docs/AGENTS.md) for MCP setup, all commands, ownership rules, JSON responses, hard limits, and sandbox considerations. Settings also has **Copy CLI path** and **Copy MCP setup**.

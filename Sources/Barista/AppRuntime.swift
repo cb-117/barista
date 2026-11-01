@@ -54,6 +54,7 @@ final class AppRuntime: ObservableObject {
     /// Today, this week, and this month, from local agent logs. Computed off the main thread.
     @Published private(set) var usage: UsageReport?
     @Published private(set) var isRefreshingUsage = false
+    @Published private(set) var isWritingReport = false
     /// Ask Anthropic for the Claude plan's limits with Claude Code's saved login (read-only).
     @Published var claudeAccountLimits: Bool = UserDefaults.standard.object(forKey: "claudeAccountLimits") as? Bool ?? true {
         didSet {
@@ -317,6 +318,17 @@ final class AppRuntime: ObservableObject {
             await MainActor.run {
                 self.usage = report
                 self.isRefreshingUsage = false
+            }
+        }
+    }
+    /// Writes the visual usage report (every period, opening on `period`) and opens it in the browser.
+    func openUsageReport(period: UsagePeriod) {
+        isWritingReport = true
+        Task.detached(priority: .userInitiated) {
+            let url = try? ReportTemplate.write(initialPeriod: period)
+            await MainActor.run {
+                self.isWritingReport = false
+                if let url { NSWorkspace.shared.open(url) }
             }
         }
     }

@@ -128,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(action("Usage & Limits…") { [weak self] in self?.usageWindow.show() })
+        menu.addItem(action("Usage Report…") { [weak self] in self?.runtime.openUsageReport(period: .week) })
         menu.addItem(action("Settings…", key: ",") { [weak self] in self?.settings.show() })
         menu.addItem(action("Quit Barista", key: "q") { [weak self] in
             self?.runtime.shutdown()

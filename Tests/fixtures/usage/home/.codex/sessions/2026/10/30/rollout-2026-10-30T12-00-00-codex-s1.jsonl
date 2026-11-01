@@ -1,5 +1,5 @@
-{"timestamp":"2026-10-30T11:59:00Z","type":"session_meta","payload":{"id":"codex-s1","cwd":"/tmp/proj"}}
-{"timestamp":"2026-10-30T11:59:01Z","type":"turn_context","payload":{"model":"gpt-6.1-sol","cwd":"/tmp/proj"}}
+{"timestamp":"2026-10-30T11:59:00Z","type":"session_meta","payload":{"id":"codex-s1","cwd":"__ROOT__/alpha-wt"}}
+{"timestamp":"2026-10-30T11:59:01Z","type":"turn_context","payload":{"model":"gpt-6.1-sol","cwd":"__ROOT__/alpha-wt"}}
 {"timestamp":"2026-10-30T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":1050},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":1050}}}}
 {"timestamp":"2026-10-30T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":1050},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":1050}}}}
 {"timestamp":"2026-10-30T12:00:02Z","type":"event_msg","payload":{"type":"token_count","info":null}}

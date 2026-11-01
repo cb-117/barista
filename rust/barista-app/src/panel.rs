@@ -72,7 +72,7 @@ struct Shared {
 
 /// Commands the page may send: what its buttons do, and nothing else (`menu::handle` also accepts
 /// ids the page has no reason to send, like opening files).
-const PAGE_COMMANDS: [&str; 13] = [
+const PAGE_COMMANDS: [&str; 14] = [
     "quit",
     "dismiss-notice",
     "dismiss-update",
@@ -82,13 +82,14 @@ const PAGE_COMMANDS: [&str; 13] = [
     "check-updates",
     "clear-history",
     "usage-refresh",
+    "usage-report",
     "statusline-install",
     "panel:hide",
     "panel:ready",
     "start",
 ];
 /// Commands with an argument: `start:900`, `cancel:<id>`, `toggle:display`, and so on.
-const PAGE_COMMAND_PREFIXES: [&str; 9] = [
+const PAGE_COMMAND_PREFIXES: [&str; 10] = [
     "start:",
     "add:",
     "cancel:",
@@ -98,6 +99,7 @@ const PAGE_COMMAND_PREFIXES: [&str; 9] = [
     "disconnect:",
     "copy:",
     "panel:height:",
+    "usage-report:",
 ];
 
 fn page_may_send(command: &str) -> bool {
@@ -714,6 +716,7 @@ mod tests {
         assert!(page_may_send("start:900"));
         assert!(page_may_send("toggle:display"));
         assert!(page_may_send("panel:height:420"));
+        assert!(page_may_send("usage-report:week"));
         assert!(!page_may_send("panel:failed"));
         assert!(!page_may_send("panel:process-failed"));
         assert!(!page_may_send("open-log"));

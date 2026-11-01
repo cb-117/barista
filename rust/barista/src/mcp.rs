@@ -277,7 +277,7 @@ fn tools() -> Vec<Value> {
         tool(
             "barista_usage",
             "Read coding-agent usage",
-            "Sessions, requests, and tokens for Claude Code and Codex (from their local logs) and Cursor turns, per agent and model, with costs estimated at API list prices (not subscription charges). Read locally; nothing is sent anywhere.",
+            "Sessions, requests, and tokens for Claude Code and Codex (from their local logs) and Cursor turns, per agent and model, with costs estimated at API list prices (not subscription charges), plus active time, sessions, tokens, models, and cost per project (Git repository). Read locally; nothing is sent anywhere.",
             json!({"period": {"type": "string", "enum": ["today", "week", "month", "all"], "default": "week", "description": "today, this week (from Monday), this month, or all time, in local time."}}),
             &[],
             true,

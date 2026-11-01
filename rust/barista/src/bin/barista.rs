@@ -30,8 +30,8 @@ impl Options {
             child = arguments[separator + 1..].to_vec();
             arguments.truncate(separator);
         }
-        const BOOLEAN: [&str; 4] = ["--json", "--display", "--all", "--no-launch"];
-        const VALUES: [&str; 13] = [
+        const BOOLEAN: [&str; 5] = ["--json", "--display", "--all", "--no-launch", "--no-open"];
+        const VALUES: [&str; 14] = [
             "--socket",
             "--name",
             "--minutes",
@@ -45,6 +45,7 @@ impl Options {
             "--agent",
             "--period",
             "--chain",
+            "--output",
         ];
         let mut options = Options {
             command,
@@ -330,6 +331,25 @@ fn run(arguments: Vec<String>) -> Result<i32> {
                 println!("{}", to_json(&report));
             } else {
                 print!("{}", usage::text(&report, options.values.contains_key("--period")));
+            }
+            return Ok(0);
+        }
+        "report" => {
+            // Writes the visual report (every period) and opens it in the default browser.
+            options.validate(&["--period", "--output"], &["--no-open"], 0)?;
+            let initial = match options.values.get("--period") {
+                Some(text) => usage::Period::parse(text).ok_or_else(|| CoffeeError::msg("--period must be today, week, month, or all."))?,
+                None => usage::Period::Week,
+            };
+            let output = options.values.get("--output").map(PathBuf::from);
+            let (path, opened) = usage::write_report(initial, output.as_deref(), !options.flags.contains("--no-open"))?;
+            if options.flags.contains("--json") {
+                println!(
+                    "{}",
+                    to_json(&serde_json::json!({"opened": opened, "path": path.to_string_lossy()}))
+                );
+            } else {
+                println!("Wrote {}", path.display());
             }
             return Ok(0);
         }
@@ -748,6 +768,7 @@ barista stop --all
 barista history [--json]
 barista run [--name \"Build\"] [--display] [--max-awake 28800] -- COMMAND [ARG ...]
 barista usage [--period today|week|month|all] [--json]
+barista report [--period today|week|month|all] [--output PATH] [--no-open] [--json]
 barista statusline [install|uninstall|status] [--settings PATH]
 barista limits refresh [--json]
 barista mcp
@@ -768,9 +789,10 @@ tool calls renew it, and the session ends when the agent finishes its turn or ex
 
 usage reports sessions and tokens for Claude Code and Codex (from their local logs) and
 Cursor turns (recorded by its hooks) for today, this week, and this month, with costs
-estimated at API list prices. --period shows one period by model. It starts with plan limits:
-Claude's (from your Claude account, which the Barista app checks every few minutes using Claude
-Code's saved login, or Claude Code's status line) and ChatGPT's (from Codex's logs). limits refresh
+estimated at API list prices. --period shows one period by model and project. It starts with plan
+limits: Claude's (from your Claude account, which the Barista app checks every few minutes using Claude
+Code's saved login, or Claude Code's status line) and ChatGPT's (from Codex's logs). report writes
+the same numbers, with active time per project, as a web page and opens it. limits refresh
 checks your Claude account once. statusline is Claude Code's status line command that records
 Claude's limits; setup installs it, keeping any status line you already had working behind it.
 

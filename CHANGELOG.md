@@ -9,6 +9,16 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-11-01
+
+### Added
+- **Projects.** Usage & Limits, `barista usage --period …`, and the `barista_usage` MCP tool now show active time, sessions, tokens, models, and estimated cost for each project. A project is the Git repository an agent worked in (a worktree counts with its main checkout; a folder outside any repository is its own project). Active time counts stretches with an agent working, or you replying, with no gap over 15 minutes, across Claude Code, Codex, and Cursor; two agents working on a project at once count once.
+- **Usage report.** **Open report** in Usage & Limits (on Windows, in the panel’s Usage view), **Usage Report…** in the Mac’s right-click menu, **Open usage report…** in the Windows and Linux tray menu, or `barista report` opens a visual report in your browser: totals, time (or tokens, or cost) per project, active time per day stacked by project, and each project's agents and models, for today, this week, this month, or all time, in light or dark mode. It's one HTML file in Barista's data folder (`--output` to save it elsewhere); nothing is uploaded.
+- Cursor usage records the workspace each conversation belongs to, so Cursor turns count toward their project from now on. Earlier Cursor turns show under Unknown.
+
+### Changed
+- Barista reads your agent logs once more from the start after updating, to find each session's project. This takes a few seconds the first time Usage & Limits opens.
+
 ## [0.0.11] - 2026-11-01
 
 ### Added
