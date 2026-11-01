@@ -28,6 +28,8 @@ public final class ControlServer {
     public func start(path: String = ControlEndpoint.path,
                       handler: @escaping @Sendable (ControlRequest) async -> ControlReply) throws {
         guard source == nil else { return }
+        // A client that disconnects mid-reply must never kill the host process.
+        signal(SIGPIPE, SIG_IGN)
         let directory = (path as NSString).deletingLastPathComponent
         if mkdir(directory, 0o700) != 0 && errno != EEXIST { throw UnixWire.lastError() }
         var directoryInfo = stat()

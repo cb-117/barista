@@ -104,6 +104,7 @@ struct AgentConnection: Sendable {
 @main
 struct CoffeeCLI {
     static func main() {
+        signal(SIGPIPE, SIG_IGN)
         do {
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
             let connection = AgentConnection(path: options.values["--socket"] ?? ControlEndpoint.path,
