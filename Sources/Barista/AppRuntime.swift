@@ -4,7 +4,7 @@ import Combine
 import ServiceManagement
 import UserNotifications
 
-enum ClaudeStatus { case notFound, disconnected, connected, moved }
+enum AgentStatus { case notFound, disconnected, connected, moved }
 
 /// Pages in System Settings that Barista can open for you.
 enum SystemSettingsPane {
@@ -38,7 +38,7 @@ final class AppRuntime: ObservableObject {
     var onAppearanceChange: (() -> Void)?
     var onShowPanel: (() -> Void)?
     var onShowSettings: (() -> Void)?
-    @Published private(set) var claudeStatus: ClaudeStatus = .notFound
+    @Published private(set) var agentStatus: [HookAgent: AgentStatus] = [:]
     @Published var checksForUpdates: Bool { didSet { defaults.set(checksForUpdates, forKey: "checksForUpdates"); scheduleUpdateChecks() } }
     @Published private(set) var availableUpdate: AvailableUpdate?
     @Published private(set) var updateStatus: String?
@@ -62,6 +62,22 @@ final class AppRuntime: ObservableObject {
         session.batteryThreshold = defaults.object(forKey: "batteryThreshold") as? Int ?? 20
         session.onCompletion = { [weak self] completion in self?.notify(completion) }
         launchAtLogin = loginItem.status == .enabled || SMAppService.mainApp.status == .enabled
+        // Relaunched by an update: carry on with the sessions the previous version handed over.
+        if let handoff = defaults.data(forKey: Self.handoffKey) {
+            defaults.removeObject(forKey: Self.handoffKey)
+            let count = session.restore(handoff)
+            notice = count > 0
+                ? "Updated to Barista \(BaristaVersion.current). \(count == 1 ? "Your session is" : "All \(count) sessions are") still running."
+                : "Updated to Barista \(BaristaVersion.current)."
+        }
+    }
+    private static let handoffKey = "updateHandoff"
+    /// Called right before an update quits the app, so the new version continues these sessions.
+    private func prepareForUpdateRelaunch() {
+        if let data = session.handoff() { defaults.set(data, forKey: Self.handoffKey) }
+        session.suspendForHandoff()
+        defaults.synchronize()
+        shutdown()
     }
 
     /// Login launches go through a tiny bundled helper that opens Barista with `--background`,
@@ -120,7 +136,7 @@ final class AppRuntime: ObservableObject {
         enableLaunchAtLoginOnFirstInstall()
         configureShortcut()
         configureAgentAccess()
-        refreshClaudeStatus()
+        refreshAgentStatus()
         scheduleUpdateChecks()
         refreshPermissions()
     }
@@ -224,26 +240,46 @@ final class AppRuntime: ObservableObject {
         guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return "" }
         return String(decoding: data, as: UTF8.self)
     }
-    func refreshClaudeStatus() {
-        let installed = ClaudeHooks.installedCommands()
-        if !installed.isEmpty {
-            claudeStatus = ClaudeHooks.isFullyInstalled(cliPath: cliPath) ? .connected : .moved
-        } else {
-            claudeStatus = ClaudeHooks.isClaudeInstalled ? .disconnected : .notFound
+    func status(of agent: HookAgent) -> AgentStatus { agentStatus[agent] ?? .notFound }
+    func refreshAgentStatus() {
+        for agent in HookAgent.allCases {
+            if !AgentHooks.installedCommands(agent: agent).isEmpty {
+                agentStatus[agent] = AgentHooks.isFullyInstalled(cliPath: cliPath, agent: agent) ? .connected : .moved
+            } else {
+                agentStatus[agent] = agent.isInstalled ? .disconnected : .notFound
+            }
         }
     }
-    func setClaudeConnected(_ connected: Bool) {
+    /// Agents installed on this Mac but not yet connected, unless the user waved the suggestion off.
+    var agentsToSuggest: [HookAgent] {
+        guard !defaults.bool(forKey: "agentSuggestionDismissed") else { return [] }
+        return HookAgent.allCases.filter { status(of: $0) == .disconnected }
+    }
+    func connectSuggestedAgents() {
+        let agents = agentsToSuggest
+        for agent in agents { setConnected(agent, true) }
+        if agents.count > 1 {
+            notice = "Claude Code and Codex connected. One step left for Codex: type /hooks in Codex and trust Barista’s hooks."
+        }
+    }
+    func dismissAgentSuggestion() {
+        defaults.set(true, forKey: "agentSuggestionDismissed")
+        objectWillChange.send()
+    }
+    func setConnected(_ agent: HookAgent, _ connected: Bool) {
         do {
             if connected {
-                try ClaudeHooks.install(cliPath: cliPath)
+                try AgentHooks.install(cliPath: cliPath, agent: agent)
                 if !agentAccess { agentAccess = true }
-                notice = "Claude Code connected. New prompts keep your Mac awake until Claude finishes."
+                notice = agent == .claude
+                    ? "Claude Code connected. New prompts keep your Mac awake until Claude finishes."
+                    : "Codex connected. One more step: Codex runs new hooks only after you trust them. In Codex, type /hooks and trust Barista’s hooks. Until then, Codex won’t keep your Mac awake."
             } else {
-                try ClaudeHooks.uninstall()
-                notice = "Claude Code disconnected."
+                try AgentHooks.uninstall(agent: agent)
+                notice = "\(agent.displayName) disconnected."
             }
-        } catch { notice = "Couldn’t update Claude Code settings: \(error.localizedDescription)" }
-        refreshClaudeStatus()
+        } catch { notice = "Couldn’t update \(agent.displayName) settings: \(error.localizedDescription)" }
+        refreshAgentStatus()
     }
     func copy(_ text: String, message: String) {
         NSPasteboard.general.clearContents()
@@ -300,7 +336,7 @@ final class AppRuntime: ObservableObject {
         updateStatus = "Updating to \(update.version)…"
         Task { @MainActor in
             do {
-                try await Updater.install(update) { self.shutdown() }
+                try await Updater.install(update) { self.prepareForUpdateRelaunch() }
             } catch {
                 isInstallingUpdate = false
                 updateStatus = nil

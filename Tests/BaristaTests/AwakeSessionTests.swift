@@ -165,8 +165,8 @@ func customDurationRejectsInvalidText() {
     }
 }
 
-private func expect(_ condition: @autoclosure () -> Bool, file: StaticString = #file, line: UInt = #line) {
-    precondition(condition(), "Session check failed", file: file, line: line)
+private func expect(_ condition: @autoclosure () -> Bool, _ message: String = "", file: StaticString = #file, line: UInt = #line) {
+    precondition(condition(), "Session check failed\(message.isEmpty ? "" : ": " + message)", file: file, line: line)
 }
 
 @MainActor
@@ -182,6 +182,34 @@ func menuBarShowsTimerOrTaskCount() {
     session.refresh()
     expect(session.menuBarCountdown == "10m")
     session.stop()
+}
+
+@MainActor
+func updateHandoffContinuesSessions() {
+    var now = Date(timeIntervalSince1970: 5000)
+    let alive: Int32 = 4242, gone: Int32 = 4343
+    let identity: (Int32) -> String? = { $0 == alive ? "alive-identity" : nil }
+    let oldPower = FakePower()
+    let old = AwakeSession(power: oldPower, schedulesTimer: false, now: { now }, processIdentity: identity, batteryProvider: { nil })
+    old.start(duration: 1800)
+    let agent = try! old.acquire(title: "Codex · app", source: .agent, duration: 1200, processID: alive)
+    _ = try! old.acquire(title: "Short", source: .command, duration: 30)
+    _ = try? old.acquire(title: "Exits during update", source: .command, duration: 600, processID: gone)
+    let token = old.stopToken
+    let data = old.handoff()!
+    old.suspendForHandoff()
+    expect(!oldPower.active && old.history.isEmpty, "an update relaunch isn't a stop")
+
+    now = now.addingTimeInterval(60)  // the short command lease expires during the update
+    let newPower = FakePower()
+    let fresh = AwakeSession(power: newPower, schedulesTimer: false, now: { now }, processIdentity: identity, batteryProvider: { nil })
+    expect(fresh.restore(data) == 2)
+    expect(fresh.manualSession != nil && fresh.sessions.contains { $0.id == agent.id } && newPower.active)
+    expect(fresh.stopToken == token, "hooks keep their right to renew")
+    expect((try? fresh.heartbeat(id: agent.id, seconds: 1200)) != nil)
+
+    let late = AwakeSession(power: FakePower(), schedulesTimer: false, now: { now.addingTimeInterval(600) }, batteryProvider: { nil })
+    expect(late.restore(data) == 0 && !late.isActive, "stale handoffs are ignored")
 }
 
 func updateCheckComparesReleases() {
@@ -249,7 +277,8 @@ struct SessionChecks {
         customDurationRejectsInvalidText()
         menuBarShowsTimerOrTaskCount()
         updateCheckComparesReleases()
-        print("Passed all 10 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, custom-duration input, menu-bar text, and update checks.")
+        updateHandoffContinuesSessions()
+        print("Passed all 11 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, custom-duration input, menu-bar text, update checks, and update handoff.")
         try await runTaskSessionChecks()
         if CommandLine.arguments.contains("--power") {
             try checkNativePowerAssertions()

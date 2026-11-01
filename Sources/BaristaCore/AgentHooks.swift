@@ -1,28 +1,42 @@
 import Darwin
 import Foundation
 
-/// Installs and removes Barista's entries in a Claude Code settings file.
+/// Coding agents Barista can connect to with lifecycle hooks.
+/// Both use the same hook file shape: event → [{matcher?, hooks: [{type: "command", command, timeout}]}].
+public enum HookAgent: String, CaseIterable, Sendable {
+    case claude, codex
+
+    public var displayName: String { self == .claude ? "Claude Code" : "Codex" }
+    /// Where the agent reads user-level hooks.
+    public var defaultSettingsURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return self == .claude ? home.appendingPathComponent(".claude/settings.json") : home.appendingPathComponent(".codex/hooks.json")
+    }
+    /// The agent has been used by this account (its config folder exists).
+    public var isInstalled: Bool { FileManager.default.fileExists(atPath: defaultSettingsURL.deletingLastPathComponent().path) }
+    /// Arguments after `barista` in the hook command.
+    var hookArguments: String { self == .claude ? "hook" : "hook --agent codex" }
+    func timeout(for event: String) -> Int {
+        // Codex caps SessionEnd hooks at 3 seconds.
+        self == .codex && event == "SessionEnd" ? 3 : 10
+    }
+}
+
+/// Installs and removes Barista's entries in an agent's hook settings file.
 /// Only entries whose command runs `barista … hook` are touched; everything else is preserved.
-public enum ClaudeHooks {
+public enum AgentHooks {
     /// Events Barista listens to. Prompts start work, tool calls renew it, Stop/SessionEnd release it.
     public static let events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"]
     private static let toolEvents: Set<String> = ["PreToolUse", "PostToolUse"]
 
-    public static var defaultSettingsURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
+    public static func command(cliPath: String, agent: HookAgent = .claude) -> String {
+        "'" + cliPath.replacingOccurrences(of: "'", with: "'\\''") + "' " + agent.hookArguments
     }
-    public static var isClaudeInstalled: Bool {
-        FileManager.default.fileExists(atPath: defaultSettingsURL.deletingLastPathComponent().path)
-    }
-
-    public static func command(cliPath: String) -> String {
-        "'" + cliPath.replacingOccurrences(of: "'", with: "'\\''") + "' hook"
-    }
-    /// True only for the exact shape `command(cliPath:)` generates (or a bare `…/barista hook`),
+    /// True only for the exact shapes `command(cliPath:agent:)` generates (or a bare `…/barista hook`),
     /// so unrelated user hooks that merely end in "barista hook" are never touched.
     static func isOurs(_ command: String) -> Bool {
-        guard command.hasSuffix(" hook") else { return false }
-        let executable = String(command.dropLast(" hook".count))
+        guard let suffix = HookAgent.allCases.map({ " " + $0.hookArguments }).first(where: command.hasSuffix) else { return false }
+        let executable = String(command.dropLast(suffix.count))
         let path: String
         if executable.hasPrefix("'") {
             // A single-quoted word where embedded quotes appear only as '\''.
@@ -40,7 +54,8 @@ public enum ClaudeHooks {
     }
 
     /// Commands Barista has installed, or an empty array when not connected.
-    public static func installedCommands(settings url: URL = defaultSettingsURL) -> [String] {
+    public static func installedCommands(agent: HookAgent = .claude, settings: URL? = nil) -> [String] {
+        let url = settings ?? agent.defaultSettingsURL
         guard let root = try? read(url), let hooks = root["hooks"] as? [String: Any] else { return [] }
         var found: [String] = []
         for event in events {
@@ -50,9 +65,10 @@ public enum ClaudeHooks {
     }
 
     /// True when every event Barista needs runs exactly this CLI, with tool events matching all tools.
-    public static func isFullyInstalled(cliPath: String, settings url: URL = defaultSettingsURL) -> Bool {
+    public static func isFullyInstalled(cliPath: String, agent: HookAgent = .claude, settings: URL? = nil) -> Bool {
+        let url = settings ?? agent.defaultSettingsURL
         guard let root = try? read(url), let hooks = root["hooks"] as? [String: Any] else { return false }
-        let expected = command(cliPath: cliPath)
+        let expected = command(cliPath: cliPath, agent: agent)
         return events.allSatisfy { event in
             let entries = ourEntries(hooks, event: event)
             return !entries.isEmpty && entries.allSatisfy { group, command in
@@ -73,11 +89,13 @@ public enum ClaudeHooks {
         return result
     }
 
-    public static func install(cliPath: String, settings url: URL = defaultSettingsURL) throws {
+    public static func install(cliPath: String, agent: HookAgent = .claude, settings: URL? = nil) throws {
+        let url = settings ?? agent.defaultSettingsURL
         var root = try read(url)
         var hooks = removingOurs(from: root["hooks"] as? [String: Any] ?? [:])
-        let entry: [String: Any] = ["type": "command", "command": command(cliPath: cliPath), "timeout": 10]
         for event in events {
+            let entry: [String: Any] = ["type": "command", "command": command(cliPath: cliPath, agent: agent),
+                                        "timeout": agent.timeout(for: event)]
             var group: [String: Any] = ["hooks": [entry]]
             if toolEvents.contains(event) { group["matcher"] = "*" }
             hooks[event] = (hooks[event] as? [[String: Any]] ?? []) + [group]
@@ -86,14 +104,23 @@ public enum ClaudeHooks {
         try write(root, to: url)
     }
 
-    public static func uninstall(settings url: URL = defaultSettingsURL) throws {
+    public static func uninstall(agent: HookAgent = .claude, settings: URL? = nil) throws {
+        let url = settings ?? agent.defaultSettingsURL
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         var root = try read(url)
         guard let existing = root["hooks"] as? [String: Any] else { return }
         let hooks = removingOurs(from: existing)
         if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
+        // A hooks file that held only Barista's entries (as Codex's usually does) goes away entirely.
+        if root.isEmpty, agentOwnsWholeFile(url) {
+            try FileManager.default.removeItem(at: url.resolvingSymlinksInPath())
+            return
+        }
         try write(root, to: url)
     }
+
+    /// Only dedicated hook files may be deleted; a general settings file (Claude's) is kept.
+    private static func agentOwnsWholeFile(_ url: URL) -> Bool { url.lastPathComponent == "hooks.json" }
 
     private static func removingOurs(from hooks: [String: Any]) -> [String: Any] {
         var result = hooks

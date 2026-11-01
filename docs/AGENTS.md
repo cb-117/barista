@@ -17,6 +17,20 @@ Each conversation (`session_id`) gets its own lease, tied to the Claude Code pro
 
 `barista hook` reads the Claude Code hook JSON (`session_id`, `hook_event_name`, `cwd`) from stdin. Any tool that emits the same events can use it.
 
+## Codex hooks (ChatGPT and the Codex CLI)
+
+In the app choose **Settings → Agents → ChatGPT Codex → Connect**, or run `barista hooks install --agent codex`. This writes the same five events to `~/.codex/hooks.json` with the command `barista hook --agent codex` (10-second timeout; 3 seconds for `SessionEnd`, Codex’s maximum).
+
+Codex runs new or changed hooks only after you trust them: type `/hooks` in Codex and trust Barista’s hooks once. Until then Codex skips them silently and doesn’t keep the Mac awake. Barista never trusts its own hooks for you.
+
+Differences from Claude Code:
+- Sessions are titled “Codex · <folder>” and never share a lease with a Claude session, even if IDs collide.
+- On `Stop`, the hook prints `{}` because Codex requires JSON from Stop hooks; every other event prints nothing.
+- Background-command tracking after `Stop` is Claude-only.
+- Codex runs `SessionEnd` when a conversation is archived, deleted, Codex quits, or it’s idle for 30 minutes.
+
+Disconnecting removes Barista’s entries, and deletes `hooks.json` if nothing else is left in it.
+
 ## MCP setup
 
 In the Mac app, choose **Settings → Copy MCP setup**. Paste the resulting server entry into your agent client’s MCP configuration. The client must support local stdio MCP servers. The command is the bundled native executable, with `mcp` as its argument:

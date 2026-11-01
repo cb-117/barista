@@ -17,7 +17,7 @@ struct Options {
             arguments = Array(arguments[..<separator])
         }
         let booleanFlags: Set<String> = ["--json", "--display", "--all", "--no-launch"]
-        let valueFlags: Set<String> = ["--socket", "--name", "--minutes", "--seconds", "--ttl", "--max-awake", "--pid", "--progress", "--message", "--settings"]
+        let valueFlags: Set<String> = ["--socket", "--name", "--minutes", "--seconds", "--ttl", "--max-awake", "--pid", "--progress", "--message", "--settings", "--agent"]
         var index = 0
         while index < arguments.count {
             let token = arguments[index]
@@ -135,27 +135,54 @@ struct CoffeeCLI {
                 // Called by agent hooks: never fail the agent, never write to stdout.
                 try? options.validate()
                 AgentHook(socketPath: options.values["--socket"] ?? ControlEndpoint.path,
-                          noLaunch: options.flags.contains("--no-launch")).run()
+                          noLaunch: options.flags.contains("--no-launch"),
+                          agent: options.values["--agent"].flatMap(HookAgent.init(rawValue:)) ?? .claude).run()
                 exit(0)
             }
+            if options.command == "setup" {
+                // One step for people and agents: connect every coding agent found, then start Barista.
+                try options.validate(values: ["--agent"])
+                let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+                let agents: [HookAgent]
+                if let name = options.values["--agent"] {
+                    guard let agent = HookAgent(rawValue: name) else { throw CoffeeError.message("--agent must be claude or codex.") }
+                    agents = [agent]
+                } else {
+                    agents = HookAgent.allCases.filter(\.isInstalled)
+                }
+                for agent in agents {
+                    try AgentHooks.install(cliPath: cli, agent: agent)
+                    print("Connected \(agent.displayName) (\(agent.defaultSettingsURL.path))")
+                }
+                if agents.isEmpty { print("No Claude Code or Codex setup found for this user. Run barista setup again after using one of them.") }
+                let state = try connection.send(ControlRequest(action: .status)).state
+                print("Barista \(state?.version ?? BaristaVersion.current) is running in the menu bar (the coffee cup).")
+                if agents.contains(.codex) {
+                    print("One step left for Codex: it runs new hooks only after you trust them. Open Codex, type /hooks, and trust Barista’s hooks.")
+                }
+                return
+            }
             if options.command == "hooks" {
-                try options.validate(values: ["--settings"], positionalCount: 1)
-                let url = options.values["--settings"].map { URL(fileURLWithPath: $0) } ?? ClaudeHooks.defaultSettingsURL
+                try options.validate(values: ["--settings", "--agent"], positionalCount: 1)
+                guard let agent = HookAgent(rawValue: options.values["--agent"] ?? "claude") else {
+                    throw CoffeeError.message("--agent must be claude or codex.")
+                }
+                let url = options.values["--settings"].map { URL(fileURLWithPath: $0) } ?? agent.defaultSettingsURL
+                let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
                 switch options.positionals[0] {
                 case "install":
-                    let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
-                    try ClaudeHooks.install(cliPath: cli, settings: url)
-                    print("Connected Claude Code: \(url.path)")
+                    try AgentHooks.install(cliPath: cli, agent: agent, settings: url)
+                    print("Connected \(agent.displayName): \(url.path)")
+                    if agent == .codex { print("Codex runs new hooks only after you trust them: open Codex, run /hooks, and trust Barista’s hooks.") }
                 case "uninstall":
-                    try ClaudeHooks.uninstall(settings: url)
-                    print("Disconnected Claude Code: \(url.path)")
+                    try AgentHooks.uninstall(agent: agent, settings: url)
+                    print("Disconnected \(agent.displayName): \(url.path)")
                 case "status":
-                    let commands = ClaudeHooks.installedCommands(settings: url)
-                    let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+                    let commands = AgentHooks.installedCommands(agent: agent, settings: url)
                     if commands.isEmpty { print("Not connected") }
-                    else if ClaudeHooks.isFullyInstalled(cliPath: cli, settings: url) { print("Connected: \(commands.joined(separator: ", "))") }
-                    else { print("Needs repair (incomplete or another copy): run barista hooks install") }
-                default: throw CoffeeError.message("Use: barista hooks install|uninstall|status [--settings PATH]")
+                    else if AgentHooks.isFullyInstalled(cliPath: cli, agent: agent, settings: url) { print("Connected: \(commands.joined(separator: ", "))") }
+                    else { print("Needs repair (incomplete or another copy): run barista hooks install\(agent == .codex ? " --agent codex" : "")") }
+                default: throw CoffeeError.message("Use: barista hooks install|uninstall|status [--agent claude|codex] [--settings PATH]")
                 }
                 return
             }
@@ -280,7 +307,8 @@ struct CoffeeCLI {
     barista history [--json]
     barista run [--name "Build"] [--display] [--max-awake 28800] -- COMMAND [ARG ...]
     barista mcp
-    barista hooks install|uninstall|status [--settings PATH]
+    barista hooks install|uninstall|status [--agent claude|codex] [--settings PATH]
+    barista setup [--agent claude|codex]
     barista version
 
     Agent sessions default to screen-off-friendly, expire after 5 minutes without renewal,
@@ -289,7 +317,9 @@ struct CoffeeCLI {
     and releases its own session on completion. Other sessions remain active.
     Stopping a session never terminates the underlying command.
 
-    hooks install connects Claude Code: prompts start a session, tool calls renew it,
+    setup connects every agent it finds (Claude Code, Codex) and starts Barista.
+    hooks install connects Claude Code (or Codex with --agent codex, which then asks you to
+    trust the hooks once with /hooks): prompts start a session, tool calls renew it,
     and the session ends when Claude finishes its turn or exits (or, if Claude left
     background commands running, once they finish).
 
@@ -302,17 +332,22 @@ struct CoffeeCLI {
 struct AgentHook {
     let socketPath: String
     let noLaunch: Bool
+    var agent: HookAgent = .claude
     static let ttl: Double = 1200
     static let hardCap: Double = 28800
 
     func run() {
         let input = FileHandle.standardInput.readData(ofLength: 1_048_576)
-        guard let event = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any],
-              let name = event["hook_event_name"] as? String,
-              let key = (event["session_id"] as? String).flatMap(HookLeaseStore.key) else { return }
+        let event = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any]
+        let name = event?["hook_event_name"] as? String
+        // Codex requires JSON on stdout from Stop hooks; an empty object means "carry on".
+        defer { if agent == .codex && name == "Stop" { print("{}") } }
+        guard let event, let name, let session = event["session_id"] as? String,
+              // Codex and Claude sessions never share a lease, even if their IDs collide.
+              let key = HookLeaseStore.key(agent == .claude ? session : "codex-\(session)") else { return }
         let store = HookLeaseStore(socketPath: socketPath)
         let cwd = (event["cwd"] as? String).map { ($0 as NSString).lastPathComponent } ?? ""
-        let title = cwd.isEmpty ? "Claude Code" : "Claude Code · \(cwd.prefix(80))"
+        let title = cwd.isEmpty ? agent.displayName : "\(agent.displayName) · \(cwd.prefix(80))"
         switch name {
         case "UserPromptSubmit": ensure(key, store: store, title: title, userInitiated: true)
         case "PreToolUse", "PostToolUse": ensure(key, store: store, title: title, userInitiated: false)
@@ -364,7 +399,8 @@ struct AgentHook {
     /// Claude finished its turn. If commands it started in the background are still running
     /// (T3 and Claude Code show this as "Waiting"), keep the Mac awake until they exit.
     private func stop(_ key: String, store: HookLeaseStore) {
-        if let agent = SystemState.agentProcessID() {
+        // Background-command tracking relies on how Claude Code's Bash tool runs commands.
+        if agent == .claude, let agent = SystemState.agentProcessID() {
             let pids = SystemState.backgroundCommandPIDs(of: agent, excluding: SystemState.ancestry())
             let kept = !pids.isEmpty && ((try? store.withLock(key) { () -> Bool in
                 guard let saved = store.lease(for: key) else { return false }

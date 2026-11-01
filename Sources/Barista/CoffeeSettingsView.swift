@@ -49,7 +49,8 @@ struct CoffeeSettingsView: View {
             }
 
             Section {
-                claudeRow
+                agentRow(.claude)
+                agentRow(.codex)
                 Toggle("Allow local CLI and MCP access", isOn: $runtime.agentAccess)
                 HStack {
                     Button("Copy CLI path") { runtime.copy(runtime.cliPath, message: "CLI path copied. Run it with help to see commands.") }
@@ -60,7 +61,7 @@ struct CoffeeSettingsView: View {
                     }
                 }
             } header: { Text("Agents") } footer: {
-                Text("Everything stays on this Mac. No network port or account.")
+                Text("Everything stays on this Mac. No network port or account. Codex asks you to trust new hooks once: type /hooks in Codex.")
             }
 
             Section {
@@ -115,33 +116,38 @@ struct CoffeeSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in runtime.refreshPermissions() }
         .frame(width: 460, height: 720)
         .tint(CoffeeTheme.accent)
-        .onAppear { runtime.refreshClaudeStatus() }
+        .onAppear { runtime.refreshAgentStatus() }
     }
 
-    private var claudeRow: some View {
-        HStack {
+    private func agentRow(_ agent: HookAgent) -> some View {
+        let status = runtime.status(of: agent)
+        return HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Claude Code")
-                Text(claudeDetail).font(.caption).foregroundStyle(.secondary)
+                Text(agent == .claude ? "Claude Code" : "ChatGPT Codex")
+                Text(agentDetail(agent, status)).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            switch runtime.claudeStatus {
+            switch status {
             case .connected:
-                Button("Disconnect") { runtime.setClaudeConnected(false) }
+                Button("Disconnect") { runtime.setConnected(agent, false) }
             case .moved:
-                Button("Repair") { runtime.setClaudeConnected(true) }
+                Button("Repair") { runtime.setConnected(agent, true) }
             case .disconnected, .notFound:
-                Button("Connect") { runtime.setClaudeConnected(true) }
-                    .disabled(runtime.claudeStatus == .notFound)
+                Button("Connect") { runtime.setConnected(agent, true) }
+                    .disabled(status == .notFound)
             }
         }
     }
-    private var claudeDetail: String {
-        switch runtime.claudeStatus {
-        case .connected: "Awake while Claude works, then lets your Mac sleep."
-        case .moved: "The connection is incomplete or points to an older copy. Reconnect to repair it."
-        case .disconnected: "Adds hooks to ~/.claude/settings.json. No MCP setup needed."
-        case .notFound: "Claude Code isn’t installed for this user."
+    private func agentDetail(_ agent: HookAgent, _ status: AgentStatus) -> String {
+        switch (agent, status) {
+        case (.claude, .connected): "Awake while Claude works, then lets your Mac sleep."
+        case (.codex, .connected): "Awake while Codex works. If it isn’t, type /hooks in Codex and trust Barista’s hooks."
+        case (_, .moved): "The connection is incomplete or points to an older copy. Reconnect to repair it."
+        case (.claude, .disconnected): "Adds hooks to ~/.claude/settings.json. No MCP setup needed."
+        case (.codex, .disconnected): "Adds hooks to ~/.codex/hooks.json for Codex in ChatGPT and the Codex CLI."
+        case (.claude, .notFound): "Claude Code isn’t installed for this user."
+        case (.codex, .notFound): "Codex isn’t set up for this user. Open Codex in ChatGPT once, then connect."
         }
     }
 

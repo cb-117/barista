@@ -142,6 +142,42 @@ public final class AwakeSession: ObservableObject {
         finish(ids: Set(sessions.map(\.id)), reason: reason)
         error = nil
     }
+    // MARK: Update handoff
+
+    private struct Handoff: Codable {
+        let sessions: [CoffeeLease]
+        let stopToken: String
+        let savedAt: Date
+    }
+    /// Active sessions, saved so the next copy of the app (relaunched by an update) can continue them.
+    public func handoff() -> Data? {
+        refresh()
+        return try? CoffeeJSON.encoder().encode(Handoff(sessions: sessions, stopToken: stopToken, savedAt: currentDate))
+    }
+    /// Lets go of the power assertion for an update relaunch without ending sessions or recording history.
+    public func suspendForHandoff() {
+        sessions = []
+        reconcilePower()
+    }
+    /// Continues sessions from `handoff()` if it's recent. Skips anything that expired or whose
+    /// process exited meanwhile. Keeps the stop token, so agents' hooks and commands carry on.
+    @discardableResult
+    public func restore(_ data: Data, maxAge: TimeInterval = 300) -> Int {
+        refresh()
+        guard sessions.isEmpty, let saved = try? CoffeeJSON.decoder().decode(Handoff.self, from: data),
+              currentDate.timeIntervalSince(saved.savedAt) <= maxAge, currentDate >= saved.savedAt else { return 0 }
+        let live = saved.sessions.filter { lease in
+            if let end = lease.expiresAt, end <= currentDate { return false }
+            if let pid = lease.processID { return processIdentity(pid) == lease.processIdentity }
+            return true
+        }
+        stopToken = saved.stopToken
+        guard !live.isEmpty else { return 0 }
+        sessions = live
+        reconcilePower()
+        return sessions.count
+    }
+
     public func stopManual() {
         finish(ids: Set(sessions.filter { $0.source == .manual }.map(\.id)), reason: .stopped)
     }

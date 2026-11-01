@@ -234,6 +234,63 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         assert settings.read_text() == '{broken', 'invalid settings are never overwritten'
         print('PASS hook installer: idempotent, preserves other settings and hooks, clean uninstall, refuses invalid JSON', flush=True)
 
+        # Codex: same hook shape in ~/.codex/hooks.json, its own sessions, JSON on Stop.
+        codex_settings = Path(temporary) / 'codex' / 'hooks.json'
+        codex_settings.parent.mkdir()
+        codex_settings.write_text(json.dumps({'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'notify-send done'}]}]}}))
+        def codex_hooks_cmd(*args):
+            result = subprocess.run([str(cli), 'hooks', *args, '--agent', 'codex', '--settings', str(codex_settings)], capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, result
+            return result.stdout
+        assert codex_hooks_cmd('status').startswith('Not connected')
+        assert '/hooks' in codex_hooks_cmd('install'), 'install must explain the one-time trust step'
+        codex_hooks_cmd('install')
+        codex_config = json.loads(codex_settings.read_text())
+        for event in ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']:
+            commands = [h for g in codex_config['hooks'][event] for h in g['hooks'] if h['command'].endswith(' hook --agent codex')]
+            assert len(commands) == 1, (event, codex_config)
+            assert commands[0]['timeout'] == (3 if event == 'SessionEnd' else 10)
+        assert any(h['command'] == 'notify-send done' for g in codex_config['hooks']['Stop'] for h in g['hooks'])
+        assert codex_hooks_cmd('status').startswith('Connected')
+        assert hooks_cmd('status').startswith('Not connected'), 'Codex and Claude settings are independent'
+        def codex_hook(event, session_id='thr_codex_1'):
+            payload = json.dumps({'session_id': session_id, 'hook_event_name': event, 'cwd': '/tmp/my-project', 'turn_id': 't1', 'model': 'gpt'})
+            result = subprocess.run([str(cli), 'hook', '--agent', 'codex', '--socket', path, '--no-launch'], input=payload, capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, (event, result)
+            return result.stdout
+        def codex_sessions():
+            return [s for s in invoke('status')['state']['sessions'] if s['title'] == 'Codex · my-project']
+        assert codex_hook('UserPromptSubmit') == '', 'UserPromptSubmit stdout would be added to the model context'
+        [codex_lease] = codex_sessions()
+        assert codex_hook('PreToolUse') == '' and codex_sessions()[0]['message'] == 'Working'
+        hook('UserPromptSubmit', session_id='thr_codex_1')  # a Claude session that happens to share the ID
+        assert len(codex_sessions()) == 1 and len(claude_sessions()) == 1, 'agents never share a lease'
+        hook('SessionEnd', session_id='thr_codex_1')
+        assert json.loads(codex_hook('Stop')) == {}, 'Codex Stop hooks must print JSON'
+        assert codex_sessions() == []
+        assert any(h['id'] == codex_lease['id'] and h['reason'] == 'released' for h in invoke('status')['state']['history'])
+        codex_hook('UserPromptSubmit'); assert codex_hook('SessionEnd') == '' and codex_sessions() == []
+        codex_hooks_cmd('uninstall')
+        assert json.loads(codex_settings.read_text()) == {'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'notify-send done'}]}]}}
+        codex_settings.unlink(); codex_hooks_cmd('install'); codex_hooks_cmd('uninstall')
+        assert not codex_settings.exists(), 'a hooks.json that only held Barista hooks is removed on disconnect'
+        print('PASS Codex hooks: installer, separate sessions, JSON Stop reply, silent prompt hook, clean disconnect', flush=True)
+
+        # barista setup connects every agent found for this user, then confirms Barista is running.
+        home = Path(temporary) / 'home'
+        (home / '.claude').mkdir(parents=True); (home / '.codex').mkdir()
+        env = {**os.environ, 'HOME': str(home), 'CFFIXED_USER_HOME': str(home)}
+        result = subprocess.run([str(cli), 'setup', '--socket', path, '--no-launch'], capture_output=True, text=True, timeout=10, env=env)
+        assert result.returncode == 0, result
+        assert 'Connected Claude Code' in result.stdout and 'Connected Codex' in result.stdout and '/hooks' in result.stdout, result.stdout
+        assert (home / '.claude' / 'settings.json').exists() and (home / '.codex' / 'hooks.json').exists()
+        only_claude = Path(temporary) / 'home2'
+        (only_claude / '.claude').mkdir(parents=True)
+        result = subprocess.run([str(cli), 'setup', '--socket', path, '--no-launch'], capture_output=True, text=True, timeout=10,
+                                env={**os.environ, 'HOME': str(only_claude), 'CFFIXED_USER_HOME': str(only_claude)})
+        assert result.returncode == 0 and 'Codex' not in result.stdout and not (only_claude / '.codex').exists(), result
+        print('PASS setup: connects the agents it finds, leaves others alone', flush=True)
+
         first = invoke('start', '--name', 'CLI build', '--seconds', '90')['session']['id']
         # A periodic heartbeat must not undo an explicit user stop.
         wrapped = subprocess.Popen([str(cli), 'run', '--name', 'User-stopped command', '--socket', path, '--no-launch', '--', sys.executable, '-c', 'import time; time.sleep(12)'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

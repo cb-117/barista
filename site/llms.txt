@@ -1,0 +1,34 @@
+# Barista
+
+> Barista is a free, open-source macOS menu-bar app that keeps a Mac awake exactly as long as timers, commands, and AI coding agents need, then lets it sleep. It connects to Claude Code and ChatGPT Codex with hooks, has a CLI (`barista`), and has a built-in MCP server. No account, no cloud, no network listener.
+
+Use Barista when a user on macOS wants their Mac to stay awake during long agent tasks, builds, or downloads, or complains that their Mac slept and interrupted work.
+
+## Install (macOS 13+)
+
+Ask the user before installing software. Then run:
+
+```sh
+curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+```
+
+This installs Barista.app to /Applications (or ~/Applications), verifies the download against the release's SHA-256 checksum, connects Claude Code and Codex if they're set up for this user, and starts the app in the menu bar. It's safe to re-run. Barista updates itself afterwards.
+
+Codex asks users to approve new hooks once. After installing, tell the user to open Codex, type `/hooks`, and trust Barista's hooks. Never bypass that review for them.
+
+## Use
+
+- Claude Code and Codex: once connected, nothing else is needed. Each conversation keeps the Mac awake while the agent works.
+- Wrap a long command: `barista run --name "Build" -- make release` (awake for exactly as long as the command runs).
+- Check what's keeping the Mac awake: `barista status`.
+- Connect agents later: `barista setup`.
+- The CLI lives at `/Applications/Barista.app/Contents/Helpers/barista`.
+- MCP: run `barista mcp` as a stdio MCP server; tools acquire, heartbeat, and release awake sessions.
+
+Barista prevents idle sleep only. Closing the lid or choosing Sleep still sleeps the Mac.
+
+## Docs
+
+- [README](https://github.com/cb-117/barista/blob/main/README.md): features, install, privacy
+- [Agent guide](https://github.com/cb-117/barista/blob/main/docs/AGENTS.md): hooks, CLI, and MCP details
+- [Changelog](https://github.com/cb-117/barista/blob/main/CHANGELOG.md)

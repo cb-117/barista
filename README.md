@@ -27,18 +27,26 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 
 - A coffee-cup menu-bar control with one simple panel: pick 15m, 1h, 4h, or ∞ and press **Keep awake**. **More** has custom minutes, an end time, and “while an app runs.”
 - **Right-click** the cup for one-click timers. **Option-click** toggles your last session.
-- **One-click Claude Code support:** Settings → Agents → **Connect**. Your Mac stays awake while Claude works and can sleep once it finishes. No MCP setup needed.
+- **One-click Claude Code and ChatGPT Codex support:** Settings → Agents → **Connect**. Your Mac stays awake while the agent works and can sleep once it finishes. No MCP setup needed. (Codex asks you to trust the hooks once with `/hooks`.)
 - Tasks that keep the Mac awake (agents, commands, watched apps) appear in the panel with live progress and individual stop buttons, and in the right-click menu. The menu bar shows your own timer’s time left, or how many tasks are running. Settings shows the last sessions.
 - **Task-owned sessions:** commands renew their own short leases and release them on exit. Agents heartbeat during work and release when done. A missing heartbeat or watched process exit ends the session automatically.
 - Separate display control. Agent/command sessions allow the display to sleep by default.
 - Battery protection: stops awake sessions at 20% while on battery by default, with a configurable cutoff. Your actual work continues; awake sessions do not restart automatically.
 - Launch at login, configurable global shortcut, Option-click quick toggle, optional completion notifications, and saved preferences.
 - A bundled CLI and stdio MCP server. No third-party runtime, API key, cloud account, simulated input, or network listener.
-- One-click updates: once a day Barista checks GitHub for a newer release. Click **Update** in the panel and it downloads it, verifies its signature, replaces itself, and relaunches. Turn checks off or check now in Settings → Updates.
+- One-click updates: once a day Barista checks GitHub for a newer release. Click **Update** in the panel and it downloads it, verifies its signature, replaces itself, and relaunches. Running sessions carry over to the new version. Turn checks off or check now in Settings → Updates.
 
 ## Install
 
 [Download Barista.dmg](https://github.com/cb-117/barista/releases/latest/download/Barista.dmg), open it, and drag **Barista** into Applications. Builds aren’t notarized yet, so the first time you open it macOS says it can’t verify Barista: click **Done**, then go to System Settings → Privacy & Security and click **Open Anyway**. You only do this once.
+
+Or install from Terminal, which also connects Claude Code and Codex for you. AI agents can run it too (see [llms.txt](https://cb-117.github.io/barista/llms.txt)); it skips the “Open Anyway” step because the download isn’t marked as coming from a browser:
+
+```sh
+curl -fsSL https://cb-117.github.io/barista/install.sh | sh
+```
+
+The script installs the latest release to Applications after checking it against the release’s SHA-256, then runs `barista setup`. Already installed? Run `barista setup` (inside `Barista.app/Contents/Helpers/`) to connect any agents you’ve added since.
 
 After that, Barista updates itself: when a new version is out, click **Update** in its panel and it installs and relaunches.
 
@@ -70,6 +78,12 @@ build/barista hooks install     # status | uninstall
 ```
 
 This adds Barista hooks to `~/.claude/settings.json` and leaves your other settings and hooks in place. A backup is saved next to the file as `settings.json.barista-backup`. Each conversation gets its own session: a prompt starts it, tool calls renew it, and it ends when Claude finishes its turn or exits. If Claude finishes while commands it started in the background are still running (shown as “Waiting” in Claude Code and T3), the session stays on until they exit. If you stop it in Barista, it stays stopped until your next prompt. If you move the app or a hook goes missing, Settings shows **Repair**.
+
+## ChatGPT Codex
+
+Choose **Settings → Agents → ChatGPT Codex → Connect**, or run `build/barista hooks install --agent codex`. This adds the same hooks to `~/.codex/hooks.json`, used by Codex in the ChatGPT app and the Codex CLI.
+
+Codex asks you to approve new hooks once: type `/hooks` in Codex and trust Barista’s hooks. After that, each Codex task keeps your Mac awake while it works, shown as “Codex · <folder>”.
 
 ## Use from a terminal or agent
 

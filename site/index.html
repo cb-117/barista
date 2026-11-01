@@ -10,6 +10,7 @@
 <meta property="og:image" content="https://cb-117.github.io/barista/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="alternate" type="text/plain" href="llms.txt" title="Barista for AI agents">
 <link rel="icon" href="assets/favicon-32.png" sizes="32x32">
 <style>
   :root {
@@ -133,6 +134,7 @@
         <a class="btn ghost" href="https://github.com/cb-117/barista">View on GitHub</a>
       </div>
       <p class="small">Open the download and drag Barista into Applications. No account. No cloud. No tracking. Just coffee.</p>
+      <p class="small">Or in Terminal, or ask your AI agent to run it: <code>curl -fsSL https://cb-117.github.io/barista/install.sh | sh</code></p>
     </div>
     <img class="hero-art steam" src="assets/hero.svg" alt="An espresso machine serving several cups, each with an order ticket: you for one hour, make test, and Claude Code.">
   </header>
@@ -224,11 +226,13 @@
 <section id="agents">
   <div class="wrap split">
     <div>
-      <div class="kicker">For Claude Code &amp; friends</div>
+      <div class="kicker">For Claude Code, ChatGPT Codex &amp; friends</div>
       <h2>Your agent orders. Barista pours.</h2>
       <p class="sub">Leaving Claude Code on a long refactor? Click <b>Connect</b> in Settings. A prompt opens an order, tool calls keep it going, and it closes when Claude finishes, or once any background commands it left running are done. Then your Mac can sleep.</p>
       <ul class="ticks">
         <li>One-click Claude Code hooks, with a backup of your settings</li>
+        <li>One-click ChatGPT Codex hooks (approve them once with <code>/hooks</code>)</li>
+        <li>Agents can install and connect it themselves: the installer runs <code>barista setup</code>, and <a href="llms.txt">llms.txt</a> tells them how</li>
         <li><code>barista run -- make test</code> stays awake for exactly that command</li>
         <li>Built-in MCP server for any agent that speaks MCP</li>
         <li>If you stop an order, it stays stopped until you start new work</li>
@@ -236,9 +240,10 @@
     </div>
     <div class="term" role="img" aria-label="Terminal example using the barista command">
       <div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="c"># connect Claude Code (or use Settings → Connect)</span>
-<span class="p">$</span> barista hooks install
+<pre><span class="c"># install and connect Claude Code + Codex in one go</span>
+<span class="p">$</span> curl -fsSL https://cb-117.github.io/barista/install.sh | sh
 <span class="ok">Connected Claude Code</span>
+<span class="ok">Connected Codex</span>
 
 <span class="c"># awake for exactly the length of a command</span>
 <span class="p">$</span> barista run --name "Nightly build" -- make release
@@ -260,7 +265,7 @@ Awake · 3 session(s) · display allowed to sleep
     <details><summary>Does it keep my Mac awake with the lid closed?</summary><p>No. Barista prevents <em>idle</em> sleep. Closing the lid, choosing Sleep, or a dead battery still put the Mac to sleep. For lid-closed work, connect power and an external display.</p></details>
     <details><summary>How is this different from <code>caffeinate</code> or Amphetamine?</summary><p>Those have one switch for the whole Mac. Barista tracks who needs the Mac awake and for how long, and ends each one on its own when that job finishes or stops checking in. It also connects to Claude Code in one click.</p></details>
     <details><summary>Does anything leave my Mac?</summary><p>No personal data, ever. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions). The one network request is an optional once-a-day check with GitHub for a newer version. It sends nothing about you, and you can turn it off in Settings.</p></details>
-    <details><summary>How do I get updates?</summary><p>Barista checks for a new version once a day. When one is out, click <b>Update</b> in its panel: it downloads the update, checks its signature, installs it, and relaunches. You can also check right away in Settings → Updates.</p></details>
+    <details><summary>How do I get updates?</summary><p>Barista checks for a new version once a day. When one is out, click <b>Update</b> in its panel: it downloads the update, checks its signature, installs it, and relaunches, and anything that was keeping your Mac awake keeps going. You can also check right away in Settings → Updates.</p></details>
     <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet, so macOS says it can’t verify Barista the first time. Click <b>Done</b>, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. You only do this once: in-app updates don’t ask again.</p></details>
   </div>
 </section>

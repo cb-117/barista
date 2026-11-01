@@ -9,9 +9,18 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-11-01
+
 ### Added
+- **ChatGPT Codex support.** Settings → Agents → ChatGPT Codex → **Connect** keeps your Mac awake while Codex works, in the ChatGPT app or the Codex CLI. Codex asks you to approve new hooks once: type `/hooks` in Codex and trust Barista’s. Also available as `barista hooks install --agent codex`.
+- **Agents can set Barista up for you.** A one-line installer (`curl -fsSL https://cb-117.github.io/barista/install.sh | sh`) installs the latest release, checks its checksum, connects Claude Code and Codex, and starts Barista, with no “Open Anyway” step. The website’s `llms.txt` tells AI agents how and when to use it.
+- `barista setup` connects every agent it finds and starts Barista.
+- If Claude Code or Codex is installed but not connected, the panel offers to **Connect** it in one click.
 - A **Permissions** section in Settings with one-click buttons to the right pages in System Settings: Login Items, Notifications, and Privacy & Security. Each shows its current status, and it refreshes when you come back.
 - Messages that ask you to approve something in System Settings now have an **Open System Settings** button.
+
+### Fixed
+- Updating no longer drops what was keeping your Mac awake. Timers, commands, and Claude or Codex sessions running when you click **Update** carry over to the new version.
 
 ## [0.0.4] - 2026-11-01
 

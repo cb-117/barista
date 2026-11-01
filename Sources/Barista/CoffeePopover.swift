@@ -55,6 +55,7 @@ struct CoffeePopover: View {
                              action: { if let pane = runtime.noticePane { runtime.openSystemSettings(pane) } }) { runtime.notice = nil }
             }
             if let update = runtime.visibleUpdate { UpdateBanner(update: update, runtime: runtime) }
+            if !runtime.agentsToSuggest.isEmpty { AgentSuggestionBanner(runtime: runtime) }
             if session.batteryBlocked {
                 Label("Battery protection is on. Connect power to start a session.", systemImage: "battery.25")
                     .font(.system(size: 11)).foregroundStyle(accent)
@@ -83,6 +84,7 @@ struct CoffeePopover: View {
         .tint(accent)
         .onAppear {
             session.refresh()
+            runtime.refreshAgentStatus()
             customMinutes = min(1440, max(1, customMinutes))
             customText = String(customMinutes)
         }
@@ -298,6 +300,26 @@ struct UpdateBanner: View {
                 Button { runtime.dismissUpdate() } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Dismiss update")
             }
+        }
+        .padding(10).background(CoffeeTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+struct AgentSuggestionBanner: View {
+    @ObservedObject var runtime: AppRuntime
+    var body: some View {
+        let names = runtime.agentsToSuggest.map { $0 == .claude ? "Claude Code" : "Codex" }.joined(separator: " and ")
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "sparkles").foregroundStyle(CoffeeTheme.accent)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Keep your Mac awake while \(names) works?").font(.system(size: 11, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Connect") { runtime.connectSuggestedAgents() }
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(CoffeeTheme.accent)
+            }
+            Spacer(minLength: 0)
+            Button { runtime.dismissAgentSuggestion() } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Not now")
         }
         .padding(10).background(CoffeeTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
     }
