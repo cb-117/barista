@@ -38,20 +38,41 @@ jobs:
       - name: Build universal app
         if: steps.version.outputs.publish == 'true'
         run: zsh scripts/build-app.sh --universal
-      - name: Publish release
+      - name: Package, sign, and publish
         if: steps.version.outputs.publish == 'true'
+        env:
+          BARISTA_UPDATE_KEY: ${{ secrets.BARISTA_UPDATE_KEY }}
         run: |
+          set -euo pipefail
           version="${{ steps.version.outputs.version }}"
+          [ -n "$BARISTA_UPDATE_KEY" ] || { echo "The BARISTA_UPDATE_KEY secret is missing; refusing to ship an unsigned update."; exit 1; }
           zip="Barista-$version.zip"
           ditto -c -k --sequesterRsrc --keepParent build/Barista.app "$zip"
-          shasum -a 256 "$zip" > "$zip.sha256"
-          cat > notes.md <<NOTES
-          Download **$zip**, unzip it, and drag **Barista** to Applications.
 
-          This build isn't notarized yet. The first time you open it, macOS will block it: go to
-          **System Settings → Privacy & Security** and click **Open Anyway**.
+          # Sign the update archive, and make sure it's the key the app trusts.
+          signed="$(swift scripts/update-signing.swift sign "$zip")"
+          echo "$signed"
+          trusted="$(sed -n 's/.*static let publicKey = "\(.*\)".*/\1/p' Sources/BaristaCore/UpdateCheck.swift)"
+          [[ "$signed" == *"public key $trusted" ]] || { echo "Signing key doesn't match UpdateSignature.publicKey"; exit 1; }
+
+          # Disk image for first-time installs: drag Barista into Applications.
+          python3 -m venv "$RUNNER_TEMP/dmg"
+          "$RUNNER_TEMP/dmg/bin/pip" install --quiet dmgbuild==1.6.5
+          DMGBUILD_PYTHON="$RUNNER_TEMP/dmg/bin/python" zsh scripts/make-dmg.sh
+          dmg="Barista-$version.dmg"
+          mv "build/$dmg" "$dmg"
+          cp "$dmg" Barista.dmg   # stable name, so the website can link straight to the latest download
+          shasum -a 256 "$dmg" "$zip" > SHA256SUMS.txt
+
+          cat > notes.md <<NOTES
+          **New install:** download **$dmg**, open it, and drag **Barista** into Applications.
+
+          This build isn't notarized yet. The first time you open it, macOS will block it: click **Done**,
+          then go to **System Settings → Privacy & Security** and click **Open Anyway**.
+
+          **Already have Barista?** It will offer this update in its panel. Click **Update** and it installs and relaunches.
 
           Works on Apple Silicon and Intel Macs running macOS 13 or later.
           NOTES
-          gh release create "v$version" "$zip" "$zip.sha256" --target "$GITHUB_SHA" \
+          gh release create "v$version" "$dmg" Barista.dmg "$zip" "$zip.sig" SHA256SUMS.txt --target "$GITHUB_SHA" \
             --title "Barista $version" --notes-file notes.md --generate-notes

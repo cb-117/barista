@@ -271,16 +271,22 @@ struct NoticeBanner: View {
 
 struct UpdateBanner: View {
     let update: AvailableUpdate
-    let runtime: AppRuntime
+    @ObservedObject var runtime: AppRuntime
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "arrow.down.circle.fill").foregroundStyle(CoffeeTheme.accent)
-            Text("Barista \(update.version) is available").font(.system(size: 11, weight: .medium))
+            Text(runtime.isInstallingUpdate ? "Updating to \(update.version)…" : "Barista \(update.version) is available")
+                .font(.system(size: 11, weight: .medium))
             Spacer(minLength: 0)
-            Button("Download") { runtime.openUpdate() }
-                .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(CoffeeTheme.accent)
-            Button { runtime.dismissUpdate() } label: { Image(systemName: "xmark.circle.fill") }
-                .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Dismiss update")
+            if runtime.isInstallingUpdate {
+                ProgressView().controlSize(.small)
+            } else {
+                Button(runtime.canInstallUpdate ? "Update" : "Download") { runtime.installUpdate() }
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(CoffeeTheme.accent)
+                    .help(runtime.canInstallUpdate ? "Install the update and relaunch Barista. Your sessions stop while it restarts." : "Open the download")
+                Button { runtime.dismissUpdate() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Dismiss update")
+            }
         }
         .padding(10).background(CoffeeTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
     }

@@ -61,11 +61,12 @@ struct CoffeeSettingsView: View {
                     }
                     Spacer()
                     if let update = runtime.availableUpdate {
-                        Button("Download \(update.version)") { runtime.openUpdate() }
+                        Button(runtime.canInstallUpdate ? "Update to \(update.version)" : "Download \(update.version)") { runtime.installUpdate() }
+                            .disabled(runtime.isInstallingUpdate)
                     }
                 }
             } header: { Text("Updates") } footer: {
-                Text("Once a day, Barista asks GitHub whether there’s a newer release. Nothing about you or your Mac is sent.")
+                Text("Once a day, Barista asks GitHub whether there’s a newer release. Nothing about you or your Mac is sent. Updates are signed; Barista installs them and relaunches.")
             }
 
             Section {

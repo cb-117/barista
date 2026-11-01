@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import BaristaCore
+import CryptoKit
 
 @MainActor
 private final class FakePower: PowerAsserting {
@@ -193,18 +194,36 @@ func updateCheckComparesReleases() {
     expect(!UpdateCheck.isVersion("nightly", newerThan: "0.0.1"))
     expect(!UpdateCheck.isVersion("1.0-beta", newerThan: "0.0.1"))
     func release(_ fields: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: fields) }
+    let base = "https://github.com/cb-117/barista/releases/download/v0.2.0/"
+    func asset(_ name: String) -> [String: Any] { ["name": name, "browser_download_url": base + name] }
     let newer = release(["tag_name": "v0.2.0", "html_url": "https://github.com/cb-117/barista/releases/tag/v0.2.0",
-                         "assets": [["browser_download_url": "https://github.com/cb-117/barista/releases/download/v0.2.0/Barista-0.2.0.zip"]]])
+                         "assets": [asset("Barista-0.2.0.zip"), asset("Barista-0.2.0.zip.sig"), asset("Barista-0.2.0.dmg")]])
     let update = UpdateCheck.newerRelease(in: newer, than: "0.0.1")
     expect(update?.version == "0.2.0")
-    expect(update?.downloadURL?.lastPathComponent == "Barista-0.2.0.zip")
+    expect(update?.downloadURL?.lastPathComponent == "Barista-0.2.0.dmg")
+    expect(update?.archiveURL?.lastPathComponent == "Barista-0.2.0.zip")
+    expect(update?.signatureURL?.lastPathComponent == "Barista-0.2.0.zip.sig")
+    expect(update?.canInstallInPlace == true)
     expect(UpdateCheck.newerRelease(in: newer, than: "0.2.0") == nil)
+    // Without a signature there's no in-place install, only a download.
+    let unsigned = UpdateCheck.newerRelease(in: release(["tag_name": "v0.2.0", "assets": [asset("Barista-0.2.0.zip")]]), than: "0.0.1")
+    expect(unsigned?.canInstallInPlace == false && unsigned?.downloadURL?.lastPathComponent == "Barista-0.2.0.zip")
     expect(UpdateCheck.newerRelease(in: release(["tag_name": "v9.0.0", "prerelease": true]), than: "0.0.1") == nil)
     // Release data can't send the app to an arbitrary site.
     let hostile = release(["tag_name": "v9.0.0", "html_url": "https://evil.example/x",
-                           "assets": [["browser_download_url": "http://github.com/x.zip"]]])
+                           "assets": [["name": "Barista-9.0.0.zip", "browser_download_url": "http://github.com/x.zip"],
+                                      ["name": "Barista-9.0.0.zip.sig", "browser_download_url": "https://evil.example/x.sig"]]])
     expect(UpdateCheck.newerRelease(in: hostile, than: "0.0.1")?.pageURL == UpdateCheck.releasesPage)
-    expect(UpdateCheck.newerRelease(in: hostile, than: "0.0.1")?.downloadURL == nil)
+    expect(UpdateCheck.newerRelease(in: hostile, than: "0.0.1")?.canInstallInPlace == false)
+    // Only archives signed by the release key verify.
+    let key = Curve25519.Signing.PrivateKey()
+    let publicKey = key.publicKey.rawRepresentation.base64EncodedString()
+    let archive = Data("barista archive".utf8)
+    let signature = Data(try! key.signature(for: archive).base64EncodedString().utf8)
+    expect(UpdateSignature.isValid(signature: signature, for: archive, publicKey: publicKey))
+    expect(!UpdateSignature.isValid(signature: signature, for: Data("tampered".utf8), publicKey: publicKey))
+    expect(!UpdateSignature.isValid(signature: signature, for: archive))  // the real release key didn't sign it
+    expect(!UpdateSignature.isValid(signature: Data("garbage".utf8), for: archive, publicKey: publicKey))
     expect(UpdateCheck.newerRelease(in: Data("not json".utf8), than: "0.0.1") == nil)
 }
 

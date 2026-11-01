@@ -34,11 +34,13 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 - Battery protection: stops awake sessions at 20% while on battery by default, with a configurable cutoff. Your actual work continues; awake sessions do not restart automatically.
 - Launch at login, configurable global shortcut, Option-click quick toggle, optional completion notifications, and saved preferences.
 - A bundled CLI and stdio MCP server. No third-party runtime, API key, cloud account, simulated input, or network listener.
-- Update notices: once a day Barista checks GitHub for a newer release and shows a Download link in the panel. Turn it off or check now in Settings → Updates.
+- One-click updates: once a day Barista checks GitHub for a newer release. Click **Update** in the panel and it downloads it, verifies its signature, replaces itself, and relaunches. Turn checks off or check now in Settings → Updates.
 
 ## Install
 
-Download the latest `Barista-<version>.zip` from [Releases](https://github.com/cb-117/barista/releases/latest), unzip it, and drag **Barista** to Applications. Builds aren’t notarized yet, so the first time you open it, go to System Settings → Privacy & Security and click **Open Anyway**.
+[Download Barista.dmg](https://github.com/cb-117/barista/releases/latest/download/Barista.dmg), open it, and drag **Barista** into Applications. Builds aren’t notarized yet, so the first time you open it macOS says it can’t verify Barista: click **Done**, then go to System Settings → Privacy & Security and click **Open Anyway**. You only do this once.
+
+After that, Barista updates itself: when a new version is out, click **Update** in its panel and it installs and relaunches.
 
 ## Build and run
 
@@ -93,7 +95,13 @@ The version lives in one place: `Sources/BaristaCore/Version.swift`. `scripts/bu
 1. Bump `BaristaVersion.current` (for example `0.0.1` → `0.0.2`).
 2. Commit and push to `main`.
 
-The **Release** workflow notices the new version, runs the checks, builds a universal app, and publishes `v0.0.2` on GitHub Releases with the zip and its SHA-256. Pushes that don’t change the version don’t create a release. Running apps see the update within a day, or right away from Settings → Updates → **Check now**.
+The **Release** workflow notices the new version, runs the checks, builds a universal app, and publishes `v0.0.2` on GitHub Releases with:
+
+- `Barista-<version>.dmg` and `Barista.dmg` (the same disk image; the website links to the stable name)
+- `Barista-<version>.zip` and `Barista-<version>.zip.sig`, which the in-app updater uses
+- `SHA256SUMS.txt`
+
+The app installs an update only if the zip is signed with the release key. The private key is the `BARISTA_UPDATE_KEY` Actions secret (a backup is in the maintainer’s Keychain as “Barista update signing key”), and the public key is `UpdateSignature.publicKey` in `Sources/BaristaCore/UpdateCheck.swift`. The workflow refuses to publish if they don’t match. To package a disk image locally: `pip install dmgbuild==1.6.5`, then `zsh scripts/make-dmg.sh`. Pushes that don’t change the version don’t create a release. Running apps see the update within a day, or right away from Settings → Updates → **Check now**.
 
 Every push to `main` also attaches a universal `Barista.zip` to its **CI** run (kept for 30 days), so you can try any commit without releasing it.
 
@@ -105,7 +113,7 @@ Agent leases default to five minutes and an eight-hour hard cap. Commands renew 
 
 Sessions are visible and controllable in the app. The local control socket is restricted to your user account; no TCP port is opened. History stores only the last 20 task names, start/end times, and completion reasons in local preferences. Command arguments/output are not recorded. Active sessions are never restored after an app restart. You can clear history or disable agent access in Settings.
 
-The only network request Barista makes is the optional update check: an anonymous HTTPS request to GitHub’s public releases API, at most once a day. It sends no identifiers, usage, or session data. Turn it off in Settings → Updates.
+The only network requests Barista makes are for updates: an anonymous HTTPS request to GitHub’s public releases API at most once a day, and downloading an update when you click **Update**. They send no identifiers, usage, or session data. Turn automatic checks off in Settings → Updates.
 
 The build is ad-hoc signed for local use, and release builds aren’t notarized yet. After the first launch, allow the app in System Settings → Privacy & Security → **Open Anyway**. Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.
 

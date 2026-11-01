@@ -24,6 +24,7 @@ final class AppRuntime: ObservableObject {
     @Published private(set) var availableUpdate: AvailableUpdate?
     @Published private(set) var updateStatus: String?
     @Published private(set) var isCheckingForUpdates = false
+    @Published private(set) var isInstallingUpdate = false
     private let defaults = UserDefaults.standard
     private let server = ControlServer()
     private var shortcut: GlobalHotKey?
@@ -223,6 +224,34 @@ final class AppRuntime: ObservableObject {
     func openUpdate() {
         guard let update = availableUpdate else { return }
         NSWorkspace.shared.open(update.downloadURL ?? update.pageURL)
+    }
+    /// Whether clicking Update will install in place (otherwise it downloads).
+    var canInstallUpdate: Bool {
+        guard let update = availableUpdate, update.canInstallInPlace else { return false }
+        if case .success = Updater.installLocation() { return true }
+        return false
+    }
+    /// Downloads, verifies, installs, and relaunches. Falls back to the download page when it can't.
+    func installUpdate() {
+        guard let update = availableUpdate, !isInstallingUpdate else { return }
+        guard canInstallUpdate else {
+            if case .failure(let failure) = Updater.installLocation(), !failure.offerDownload { notice = failure.message }
+            else { openUpdate() }
+            return
+        }
+        isInstallingUpdate = true
+        updateStatus = "Updating to \(update.version)…"
+        Task { @MainActor in
+            do {
+                try await Updater.install(update) { self.shutdown() }
+            } catch {
+                isInstallingUpdate = false
+                updateStatus = nil
+                let failure = error as? Updater.Failure
+                notice = failure?.message ?? "Couldn’t install the update: \(error.localizedDescription)"
+                if failure?.offerDownload ?? true { openUpdate() }
+            }
+        }
     }
     private func scheduleUpdateChecks() {
         updateTimer?.invalidate()
