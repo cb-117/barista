@@ -4,15 +4,15 @@ Barista exposes independent, expiring awake sessions to local agents. Prefer **c
 
 ## Claude Code hooks (recommended)
 
-In the app choose **Settings → Agents → Connect**, or run `barista hooks install`. Use `hooks status` or `hooks uninstall` to check or remove it, and `--settings PATH` to target a different settings file. Barista adds one `barista hook` command to each of these events in `~/.claude/settings.json`. Other hooks and settings are preserved, and the previous file is saved as `settings.json.barista-backup`.
+In the app choose **Settings → Agents → Connect**, or run `barista hooks install`. Use `hooks status` (reports *Needs repair* if any event is missing or points at another copy) or `hooks uninstall` to check or remove it, and `--settings PATH` to target a different settings file. Barista adds one `barista hook` command to each of these events in `~/.claude/settings.json`. Other hooks and settings are preserved, and the previous file is saved as `settings.json.barista-backup`.
 
 | Event | Effect |
 | --- | --- |
-| `UserPromptSubmit` | Acquire or renew this conversation’s session (20-minute lease, launches the app if needed). |
-| `PreToolUse`, `PostToolUse` | Renew the lease. A session the user stopped is not reacquired. |
+| `UserPromptSubmit` | Start a turn: acquire or renew this conversation’s session (20-minute lease, 8-hour cap per turn, launches the app if needed). Only a prompt can start a session. |
+| `PreToolUse`, `PostToolUse` | Renew the turn’s lease. If it lapsed during a long tool call it is replaced within the turn’s cap, but only if Barista confirms nothing was stopped since the turn began. Never restarts a session after a user Stop or Stop all (including stopping your own timer), battery protection, an app restart, Claude’s `Stop`, or the cap; never launches the app. |
 | `Stop`, `SessionEnd` | Release the session. |
 
-Each conversation (`session_id`) gets its own lease, tied to the Claude Code process. If Claude exits or crashes, the session ends. The hook never writes to stdout and always exits 0, so it can’t block or alter Claude. The lease is renewed on tool calls. A single tool call that runs longer than 20 minutes can lapse until the next call, so wrap long jobs with `barista run`. Interrupting Claude with Esc skips the `Stop` hook. The lease then expires within 20 minutes, or immediately when Claude exits.
+Each conversation (`session_id`) gets its own lease, tied to the Claude Code process. If Claude exits or crashes, the session ends. The hook never writes to stdout and always exits 0, so it can’t block or alter Claude. The lease is renewed on tool calls. A single tool call that runs longer than 20 minutes can lapse until the next call (which restores it), so wrap long jobs with `barista run`. Interrupting Claude with Esc skips the `Stop` hook. The lease then expires within 20 minutes, or immediately when Claude exits.
 
 `barista hook` reads the Claude Code hook JSON (`session_id`, `hook_event_name`, `cwd`) from stdin. Any tool that emits the same events can use it.
 
@@ -85,10 +85,10 @@ SESSION_ID="$("$CTL" start --name "Research" --minutes 5)"
 ## Ownership, limits, and transport
 
 - All sessions combine their requirements. If any active session needs the display on, it stays on. Stopping one session leaves others alone.
-- Agent sessions must expire; TTL and hard caps are greater than zero and at most 24 hours. The hard cap starts at acquisition and cannot be extended by heartbeats.
+- Agent sessions must expire; TTL and hard caps are greater than zero and at most 24 hours. The hard cap starts at acquisition. Ordinary heartbeats cannot extend it; a heartbeat that sets `maxSeconds` restarts it from now (the Claude Code hook does this only when you send a new prompt). The cap is a safety net for stuck agents, not a security boundary: any local client can also acquire a new lease.
 - At most 64 sessions are active simultaneously. Task names fit on one line and are at most 100 characters.
 - Battery protection applies to every owner. Low battery while on external power does not block sessions. Reconnecting power permits new sessions; old sessions stay ended.
 - The private Unix socket is `/tmp/com.connorbescos.barista-UID/control.sock` (directory mode 700, socket mode 600). Peer user IDs are checked. No TCP port or network service is used. This is user-account isolation, not isolation between mutually untrusted processes running as the same account.
 - Sandboxed command tools may need permission to reach the local socket. A client-managed MCP server runs under that client’s applicable permissions. The app cannot override a host’s sandbox policy.
-- Disabling **Local agent access** stops the control service and ends agent/command awake leases. It does not kill their work. App-owned/manual sessions remain.
+- Disabling **Local agent access** makes the control socket reply “disabled” to every request (it stays bound so clients don’t try to relaunch Barista), ends agent/command awake leases, and revokes any lapsed Claude turn so it needs a new prompt. It does not kill their work. App-owned/manual sessions remain.
 - Closing the laptop lid or manually choosing Sleep can still put the Mac to sleep. Barista does not claim to bypass those actions.

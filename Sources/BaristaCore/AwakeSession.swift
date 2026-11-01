@@ -27,6 +27,10 @@ public final class AwakeSession: ObservableObject {
     private let defaults: UserDefaults?
     private var timer: Timer?
     private var assertionDisplay: Bool?
+    private var powerRetryPending = false
+    private var wasBatteryBlocked = false
+    /// Random per app run; replaced on every user stop, battery cutoff, or quit.
+    public private(set) var stopToken = UUID().uuidString.lowercased()
 
     public init(power: any PowerAsserting = PowerAssertion(), schedulesTimer: Bool = true,
                 now: @escaping () -> Date = Date.init,
@@ -126,7 +130,11 @@ public final class AwakeSession: ObservableObject {
         return lease
     }
 
+    /// Revokes every agent turn's right to resume a lapsed lease, active or not.
+    public func revokeAgentTurns() { stopToken = UUID().uuidString.lowercased() }
     public func stop(reason: EndReason = .stopped) {
+        // Revokes lapsed agent turns too, even when nothing is visibly active.
+        revokeAgentTurns()
         finish(ids: Set(sessions.map(\.id)), reason: reason)
         error = nil
     }
@@ -154,14 +162,17 @@ public final class AwakeSession: ObservableObject {
         guard candidate.timeIntervalSince(currentDate) <= 86400 else { throw CoffeeError.message("A session can have at most 24 hours remaining.") }
         sessions[index].expiresAt = sessions[index].hardDeadline.map { min($0, candidate) } ?? candidate
     }
-    public func heartbeat(id: String, seconds: TimeInterval = 300, progress: Double? = nil, message: String? = nil) throws -> CoffeeLease {
+    public func heartbeat(id: String, seconds: TimeInterval = 300, progress: Double? = nil, message: String? = nil,
+                          restartingCap: TimeInterval? = nil) throws -> CoffeeLease {
         refresh()
         try validateDuration(seconds)
+        if let restartingCap { try validateDuration(restartingCap) }
         if let progress, !progress.isFinite || !(0...1).contains(progress) { throw CoffeeError.message("Progress must be between 0 and 1.") }
         if let message, message.count > 200 || message.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
             throw CoffeeError.message("Status messages must fit on one line and be at most 200 characters.")
         }
         guard let index = sessions.firstIndex(where: { $0.id == id && $0.isTask }) else { throw CoffeeError.message("Agent session not found. It may have expired; acquire a new session.") }
+        if let restartingCap { sessions[index].hardDeadline = currentDate.addingTimeInterval(restartingCap) }
         let candidate = currentDate.addingTimeInterval(seconds)
         sessions[index].expiresAt = sessions[index].hardDeadline.map { min($0, candidate) } ?? candidate
         sessions[index].lastHeartbeat = currentDate
@@ -174,9 +185,13 @@ public final class AwakeSession: ObservableObject {
         currentDate = now()
         battery = batteryProvider()
         if batteryBlocked {
+            // Entering protection revokes lapsed turns even when no session is active.
+            if !wasBatteryBlocked { revokeAgentTurns() }
+            wasBatteryBlocked = true
             finish(ids: Set(sessions.map(\.id)), reason: .batteryLow)
             return
         }
+        wasBatteryBlocked = false
         let exited = Set(sessions.filter { lease in
             guard let pid = lease.processID else { return false }
             return processIdentity(pid) != lease.processIdentity
@@ -184,12 +199,13 @@ public final class AwakeSession: ObservableObject {
         finish(ids: exited, reason: .processExited)
         let expired = Set(sessions.filter { $0.expiresAt.map { $0 <= currentDate } ?? false }.map(\.id))
         finish(ids: expired, reason: .expired)
+        reconcilePower()
     }
     public func snapshot() -> SessionSnapshot {
         refresh()
         return SessionSnapshot(version: "1.0.0", awake: isActive, displayAwake: assertionDisplay == true,
                                battery: battery, batteryThreshold: batteryThreshold, batteryBlocked: batteryBlocked,
-                               sessions: sessions, history: history, error: error)
+                               sessions: sessions, history: history, error: error, stopToken: stopToken)
     }
     public func handle(_ request: ControlRequest) -> ControlReply {
         do {
@@ -198,12 +214,16 @@ public final class AwakeSession: ObservableObject {
             case .status, .history: break
             case .acquire:
                 let source: SessionSource = request.source == .command ? .command : .agent
+                if let token = request.stopToken, token != stopToken {
+                    throw CoffeeError.message("Sessions were stopped since this turn began. Waiting for new user-initiated work.")
+                }
                 lease = try acquire(title: request.title ?? "Agent task", source: source,
                                     duration: request.seconds ?? 300, display: request.display ?? false,
                                     processID: request.processID, maxDuration: request.maxSeconds ?? 28800)
             case .heartbeat:
                 lease = try heartbeat(id: try requiredID(request.id), seconds: request.seconds ?? 300,
-                                      progress: request.progress, message: request.message)
+                                      progress: request.progress, message: request.message,
+                                      restartingCap: request.maxSeconds)
             case .release: release(id: try requiredID(request.id))
             case .extend:
                 guard let seconds = request.seconds else { throw CoffeeError.message("Specify how many seconds to add.") }
@@ -227,6 +247,7 @@ public final class AwakeSession: ObservableObject {
         guard !ids.isEmpty else { return }
         let finished = sessions.filter { ids.contains($0.id) }
         guard !finished.isEmpty else { return }
+        if [.stopped, .batteryLow, .appQuit, .powerError].contains(reason) { stopToken = UUID().uuidString.lowercased() }
         sessions.removeAll { ids.contains($0.id) }
         for lease in finished {
             let completion = SessionCompletion(id: lease.id, title: lease.title, source: lease.source,
@@ -249,7 +270,15 @@ public final class AwakeSession: ObservableObject {
         do {
             try power.activate(keepDisplayAwake: display)
             assertionDisplay = display
+            if powerRetryPending { error = nil; powerRetryPending = false }
         } catch {
+            // The previous assertion is still held: keep it (and every session) rather than
+            // dropping all protection, and retry on the next refresh.
+            if assertionDisplay != nil {
+                self.error = error.localizedDescription
+                powerRetryPending = true
+                return
+            }
             power.deactivate()
             assertionDisplay = nil
             let finished = sessions

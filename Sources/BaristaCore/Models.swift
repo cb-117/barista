@@ -10,7 +10,7 @@ public struct CoffeeLease: Codable, Identifiable, Sendable, Equatable {
     public let source: SessionSource
     public let startedAt: Date
     public var expiresAt: Date?
-    public let hardDeadline: Date?
+    public var hardDeadline: Date?
     public var keepDisplayAwake: Bool
     public let processID: Int32?
     public let processIdentity: String?
@@ -61,6 +61,9 @@ public struct SessionSnapshot: Codable, Sendable {
     public let sessions: [CoffeeLease]
     public let history: [SessionCompletion]
     public let error: String?
+    /// Changes whenever the user stops sessions, battery protection triggers, or the app restarts.
+    /// Hooks pass it back to resume a lapsed turn only if nothing was stopped in between.
+    public var stopToken: String? = nil
 }
 
 public enum ControlAction: String, Codable, Sendable {
@@ -77,13 +80,18 @@ public struct ControlRequest: Codable, Sendable {
     public var progress: Double?
     public var message: String?
     public var source: SessionSource?
+    /// acquire: hard cap. heartbeat: if set, restarts the hard cap from now (a new user turn).
     public var maxSeconds: Double?
+    /// acquire: refuse unless `SessionSnapshot.stopToken` still equals this value.
+    public var stopToken: String?
     public init(action: ControlAction, id: String? = nil, title: String? = nil, seconds: Double? = nil,
                 display: Bool? = nil, processID: Int32? = nil, progress: Double? = nil,
-                message: String? = nil, source: SessionSource? = nil, maxSeconds: Double? = nil) {
+                message: String? = nil, source: SessionSource? = nil, maxSeconds: Double? = nil,
+                stopToken: String? = nil) {
         self.action = action; self.id = id; self.title = title; self.seconds = seconds
         self.display = display; self.processID = processID; self.progress = progress
         self.message = message; self.source = source; self.maxSeconds = maxSeconds
+        self.stopToken = stopToken
     }
 }
 

@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { [weak self] in self?.showPanel() }
         }
     }
-    /// Login launches start quietly in the menu bar instead of opening the panel.
+    /// Fallback for when the app itself is the login item (the helper passes --background).
     private var launchedAsLoginItem: Bool {
         guard let event = NSAppleEventManager.shared().currentAppleEvent,
               event.eventID == AEEventID(kAEOpenApplication) else { return false }

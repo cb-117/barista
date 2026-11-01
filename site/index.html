@@ -64,6 +64,21 @@
   .menu span:last-child { color: #f3a77f; font-weight: 700; }
   .menu small { display: block; color: var(--latte); font-size: 14px; }
 
+  .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 30px; align-items: start; margin-top: 30px; }
+  .shots figure, .menubar-shot { margin: 0; text-align: center; }
+  .shots img { width: 100%; max-width: 322px; height: auto; filter: drop-shadow(0 12px 22px rgba(43,26,18,.22)); }
+  .menubar-shot { margin-top: 30px; }
+  .menubar-shot img { max-width: 100%; height: auto; border-radius: 10px; box-shadow: 0 10px 30px rgba(43,26,18,.18); }
+  figcaption { color: var(--muted); font-size: 15px; margin-top: 14px; }
+  .menubar-shot figcaption { margin-top: 12px; }
+
+  .perks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 32px; }
+  .perk { background: var(--card); border: 2px solid var(--latte); border-radius: 18px; padding: 20px; }
+  .perk .icon { font-size: 26px; line-height: 1; }
+  .perk h3 { margin: 10px 0 4px; font-size: 18px; }
+  .perk p { margin: 0; color: var(--muted); font-size: 15px; }
+  kbd { font-family: var(--round); font-weight: 700; background: #fff; border: 1px solid var(--latte); border-bottom-width: 3px; border-radius: 6px; padding: 0 6px; }
+
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
   .term { background: var(--espresso); color: #f5e6d3; border-radius: 18px; padding: 0 0 20px; font-family: var(--mono); font-size: 14px; box-shadow: 0 20px 50px rgba(43,26,18,.3); overflow: hidden; }
   .term .bar { display: flex; gap: 7px; padding: 14px 16px; background: #3b2419; margin-bottom: 16px; }
@@ -85,7 +100,8 @@
 
   @media (max-width: 820px) {
     .hero, .split { grid-template-columns: 1fr; }
-    .features { grid-template-columns: 1fr; }
+    .features, .shots { grid-template-columns: 1fr; }
+    .perks { grid-template-columns: 1fr 1fr; }
     .menu { grid-template-columns: 1fr; }
     nav .links a:not(.gh) { display: none; }
     .board { padding: 28px; }
@@ -98,7 +114,9 @@
   <nav>
     <a class="brand" href="#"><img src="assets/logo-mark.svg" alt="">Barista</a>
     <div class="links">
+      <a href="#tour">Tour</a>
       <a href="#menu">Menu</a>
+      <a href="#everyday">Features</a>
       <a href="#agents">Agents</a>
       <a href="#faq">FAQ</a>
       <a class="gh" href="https://github.com/cb-117/barista">GitHub</a>
@@ -119,6 +137,28 @@
     <img class="hero-art steam" src="assets/hero.svg" alt="An espresso machine serving several cups, each with an order ticket: you for one hour, make test, and Claude Code.">
   </header>
 </div>
+
+<section id="tour">
+  <div class="wrap">
+    <div class="kicker">In your menu bar</div>
+    <h2>One cup. One click.</h2>
+    <p class="sub">The cup lives in your menu bar and shows the time left. Click it for the panel. Commands and agents that are keeping the Mac awake appear underneath, each with its own stop button.</p>
+    <figure class="menubar-shot">
+      <img src="assets/screenshots/menubar-active-light.png" width="376" height="30" alt="The macOS menu bar with Barista's coffee cup showing 53 minutes left.">
+      <figcaption>Filled cup and a countdown while awake. Empty cup while resting.</figcaption>
+    </figure>
+    <div class="shots">
+      <figure>
+        <img src="assets/screenshots/panel-idle-light.png" width="322" height="230" loading="lazy" alt="Barista's panel while resting: duration chips for 15 minutes, 1 hour, 4 hours, until stopped, and More, a Keep display on switch, and a Keep awake button.">
+        <figcaption>Pick a size and press Keep awake.</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/screenshots/panel-active-light.png" width="322" height="473" loading="lazy" alt="Barista's panel while awake: a 52:12 countdown with a Stop button, plus Claude Code and make test listed as also keeping the Mac awake.">
+        <figcaption>Your timer, plus what Claude Code and <code>make test</code> are brewing.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
 
 <section id="how">
   <div class="wrap">
@@ -159,6 +199,24 @@
         <div><span><b>Barista’s choice</b><small>Custom minutes or an end time</small></span><span class="dots"></span><span>your call</span></div>
         <div><span><b>To go</b><small>While an app stays open</small></span><span class="dots"></span><span>auto</span></div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="everyday">
+  <div class="wrap">
+    <div class="kicker">The everyday stuff</div>
+    <h2>A great keep-awake app first.</h2>
+    <p class="sub">You don’t need an agent to use Barista. On its own, it’s a simple, friendly replacement for <code>caffeinate</code>.</p>
+    <div class="perks">
+      <div class="perk"><div class="icon">🖥️</div><h3>Display on or off</h3><p>Keep the screen lit, or keep the Mac running and let the display sleep.</p></div>
+      <div class="perk"><div class="icon">⏱️</div><h3>Time in the menu bar</h3><p>A countdown sits next to the cup. Turn it off if you’d rather just see the cup.</p></div>
+      <div class="perk"><div class="icon">➕</div><h3>Add 15 minutes</h3><p>Need a little longer? Top up a running timer without starting over.</p></div>
+      <div class="perk"><div class="icon">📦</div><h3>Until an app quits</h3><p>Stay awake while an export, download, or render app is open, then sleep.</p></div>
+      <div class="perk"><div class="icon">⌨️</div><h3>Keyboard shortcut</h3><p><kbd>⌃⌥⌘C</kbd> toggles your last session from anywhere. You can pick another.</p></div>
+      <div class="perk"><div class="icon">🚀</div><h3>Launch at login</h3><p>Starts quietly in the menu bar, ready when you are.</p></div>
+      <div class="perk"><div class="icon">🔔</div><h3>Done notifications</h3><p>Optionally get a heads-up when a session ends and the Mac can sleep.</p></div>
+      <div class="perk"><div class="icon">🧾</div><h3>Recent history</h3><p>See your last sessions in Settings, including how each one ended.</p></div>
     </div>
   </div>
 </section>

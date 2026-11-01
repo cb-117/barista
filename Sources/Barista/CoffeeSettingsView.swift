@@ -92,7 +92,7 @@ struct CoffeeSettingsView: View {
             case .connected:
                 Button("Disconnect") { runtime.setClaudeConnected(false) }
             case .moved:
-                Button("Reconnect") { runtime.setClaudeConnected(true) }
+                Button("Repair") { runtime.setClaudeConnected(true) }
             case .disconnected, .notFound:
                 Button("Connect") { runtime.setClaudeConnected(true) }
                     .disabled(runtime.claudeStatus == .notFound)
@@ -102,7 +102,7 @@ struct CoffeeSettingsView: View {
     private var claudeDetail: String {
         switch runtime.claudeStatus {
         case .connected: "Awake while Claude works, then lets your Mac sleep."
-        case .moved: "Barista moved since you connected. Reconnect to update."
+        case .moved: "The connection is incomplete or points to an older copy. Reconnect to repair it."
         case .disconnected: "Adds hooks to ~/.claude/settings.json. No MCP setup needed."
         case .notFound: "Claude Code isn’t installed for this user."
         }

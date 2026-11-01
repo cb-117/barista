@@ -75,10 +75,70 @@ func displayPreferenceUpdatesActiveAssertion() {
     session.keepDisplayAwake = false
     expect(power.active && !power.display)
     expect(session.isActive)
+    // A failed upgrade keeps the working assertion and the session, then retries.
     power.shouldFail = true
     session.keepDisplayAwake = true
-    expect(!session.isActive && !power.active)
+    expect(session.isActive && power.active && !power.display)
     expect(session.error != nil)
+    power.shouldFail = false
+    session.refresh()
+    expect(session.isActive && power.active && power.display)
+    expect(session.error == nil)
+}
+
+@MainActor
+func stopTokenAndTurnCap() {
+    let power = FakePower()
+    var now = Date(timeIntervalSince1970: 1000)
+    let session = AwakeSession(power: power, schedulesTimer: false, now: { now }, processIdentity: { _ in "same" }, batteryProvider: { nil })
+    let token = session.stopToken
+    let lease = try! session.acquire(title: "Agent", source: .agent, duration: 60, maxDuration: 100)
+    session.release(id: lease.id)
+    expect(session.stopToken == token)  // An owner's release is not a user stop.
+    expect(session.handle(ControlRequest(action: .acquire, title: "Resume", seconds: 60, stopToken: token)).ok)
+    session.stop()
+    expect(session.stopToken != token)
+    expect(!session.handle(ControlRequest(action: .acquire, title: "Resume", seconds: 60, stopToken: token)).ok)
+    // A heartbeat with maxSeconds restarts the hard cap (a new user turn).
+    let turn = try! session.acquire(title: "Turn", source: .agent, duration: 60, maxDuration: 100)
+    now = now.addingTimeInterval(50)
+    _ = try! session.heartbeat(id: turn.id, seconds: 60, restartingCap: 100)  // Cap now t=150, not t=100.
+    now = now.addingTimeInterval(50)
+    _ = try! session.heartbeat(id: turn.id, seconds: 60)
+    now = now.addingTimeInterval(40)
+    session.refresh()
+    expect(session.sessions.contains { $0.id == turn.id })
+    now = now.addingTimeInterval(20)
+    session.refresh()
+    expect(!session.sessions.contains { $0.id == turn.id })
+    expect(session.sessions.isEmpty)
+    // Battery protection revokes lapsed turns even with nothing active, and stays revoked after reconnecting.
+    var battery = BatteryState(percent: 50, onBattery: true)
+    let guarded = AwakeSession(power: power, schedulesTimer: false, now: { now }, batteryProvider: { battery })
+    let before = guarded.stopToken
+    battery = BatteryState(percent: 10, onBattery: true)
+    guarded.refresh()
+    let during = guarded.stopToken
+    expect(during != before)
+    guarded.refresh()
+    expect(guarded.stopToken == during)  // Rotates on entry, not every tick.
+    battery = BatteryState(percent: 10, onBattery: false)
+    expect(!guarded.handle(ControlRequest(action: .acquire, title: "Resume", seconds: 60, stopToken: before)).ok)
+}
+
+@MainActor
+func failedDowngradeKeepsOtherSessionsProtected() {
+    let power = FakePower()
+    let session = AwakeSession(power: power, schedulesTimer: false, processIdentity: { _ in "same" }, batteryProvider: { nil })
+    let display = try! session.acquire(title: "Display task", source: .agent, duration: 300, display: true)
+    _ = try! session.acquire(title: "Build", source: .command, duration: 300, display: false)
+    power.shouldFail = true
+    session.release(id: display.id)
+    expect(session.sessions.map(\.title) == ["Build"])
+    expect(power.active && power.display) // Keeps the stronger assertion rather than none.
+    power.shouldFail = false
+    session.refresh()
+    expect(power.active && !power.display)
 }
 
 @MainActor
@@ -125,8 +185,10 @@ struct SessionChecks {
         extensionMovesDeadlineAndCannotReviveExpiredSession()
         displayPreferenceUpdatesActiveAssertion()
         failedAndInvalidStartsDoNotClaimMacIsAwake()
+        failedDowngradeKeepsOtherSessionsProtected()
+        stopTokenAndTurnCap()
         customDurationRejectsInvalidText()
-        print("Passed all 6 session checks: expiration, indefinite sessions, extensions, display changes, failures, and custom-duration input.")
+        print("Passed all 8 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, and custom-duration input.")
         try await runTaskSessionChecks()
         if CommandLine.arguments.contains("--power") {
             try checkNativePowerAssertions()

@@ -4,6 +4,16 @@ import Foundation
 public enum ControlEndpoint {
     public static var directory: String { "/tmp/com.connorbescos.barista-\(getuid())" }
     public static var path: String { directory + "/control.sock" }
+
+    /// Creates `path` (mode 700) if needed and refuses anything not private to this user.
+    public static func ensurePrivateDirectory(_ path: String) throws {
+        if mkdir(path, 0o700) != 0 && errno != EEXIST { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0 else {
+            throw CoffeeError.message("The control directory must be a private, user-owned directory (mode 700).")
+        }
+    }
 }
 
 /// Single-request Unix sockets. No TCP listener, web server, or network permission.
@@ -30,14 +40,7 @@ public final class ControlServer {
         guard source == nil else { return }
         // A client that disconnects mid-reply must never kill the host process.
         signal(SIGPIPE, SIG_IGN)
-        let directory = (path as NSString).deletingLastPathComponent
-        if mkdir(directory, 0o700) != 0 && errno != EEXIST { throw UnixWire.lastError() }
-        var directoryInfo = stat()
-        guard lstat(directory, &directoryInfo) == 0,
-              directoryInfo.st_mode & S_IFMT == S_IFDIR,
-              directoryInfo.st_uid == getuid(), directoryInfo.st_mode & 0o077 == 0 else {
-            throw CoffeeError.message("The control directory must be a private, user-owned directory (mode 700).")
-        }
+        try ControlEndpoint.ensurePrivateDirectory((path as NSString).deletingLastPathComponent)
         var info = stat()
         if lstat(path, &info) == 0 {
             guard info.st_mode & S_IFMT == S_IFSOCK, info.st_uid == getuid() else {

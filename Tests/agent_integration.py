@@ -145,14 +145,45 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         assert len(claude_sessions()) == 2, 'separate conversations get separate sessions'
         hook('SessionEnd'); hook('SessionEnd', session_id='claude-test-2')
         assert claude_sessions() == []
+        # Claude's Stop ends the turn: a late tool event must not start another session.
+        hook('UserPromptSubmit'); hook('Stop'); hook('PostToolUse')
+        assert claude_sessions() == [], 'late tool events must not revive a finished turn'
+        # A user stop is respected even after it scrolls out of the 20-entry history.
+        hook('UserPromptSubmit')
+        invoke('stop', '--all')
+        for index in range(21):
+            invoke('stop', invoke('start', '--name', f'filler {index}', '--seconds', '60')['session']['id'])
+        hook('PreToolUse')
+        assert claude_sessions() == [], 'tool calls must not override an old user stop'
+        hook('UserPromptSubmit')
+        assert len(claude_sessions()) == 1
+        hook('SessionEnd')
+        assert claude_sessions() == []
+        # A turn that lapsed during a long tool call resumes on its next tool event...
+        state_file = Path(path).parent / 'hooks' / 'claude-test-1'
+        def lapsed_turn():
+            lapsed = invoke('start', '--name', 'Lapsing turn', '--seconds', '1')['session']['id']
+            time.sleep(1.5)
+            state_file.write_text(f"{lapsed} {int(time.time())} {invoke('status')['state']['stopToken']}")
+        lapsed_turn(); hook('PostToolUse')
+        assert len(claude_sessions()) == 1, 'a lapsed turn resumes within its cap'
+        hook('Stop')
+        # ...but never after Stop all, even though its old lease ended as "expired".
+        lapsed_turn(); invoke('stop', '--all'); hook('PostToolUse')
+        assert claude_sessions() == [], 'Stop all revokes a lapsed turn'
         hook('UserPromptSubmit', raw='not json')
         hook('UserPromptSubmit', session_id='../escape')
         assert claude_sessions() == []
-        print('PASS Claude Code hooks: prompt acquires, tools renew, stop releases, user stop respected, silent stdout', flush=True)
+        # Cold start: hooks create the private control directory before Barista ever ran.
+        cold = Path(temporary) / 'cold' / 'control.sock'
+        result = subprocess.run([str(cli), 'hook', '--socket', str(cold), '--no-launch'], input=json.dumps({'session_id': 'cold-1', 'hook_event_name': 'UserPromptSubmit'}), capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0 and result.stdout == ''
+        assert (cold.parent / 'hooks').is_dir() and cold.parent.stat().st_mode & 0o777 == 0o700, 'hook must get past its lock on a fresh account'
+        print('PASS Claude Code hooks: prompt acquires, tools renew, stop releases, user stop respected, no revival, cold start, silent stdout', flush=True)
 
         settings = Path(temporary) / 'claude' / 'settings.json'
         settings.parent.mkdir()
-        settings.write_text(json.dumps({'model': 'opus', 'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'say done'}]}]}}))
+        settings.write_text(json.dumps({'model': 'opus', 'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'say done'}, {'type': 'command', 'command': 'echo barista hook'}]}]}}))
         def hooks_cmd(*args):
             result = subprocess.run([str(cli), 'hooks', *args, '--settings', str(settings)], capture_output=True, text=True, timeout=10)
             assert result.returncode == 0, result
@@ -161,14 +192,23 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         hooks_cmd('install'); hooks_cmd('install')
         config = json.loads(settings.read_text())
         assert config['model'] == 'opus'
-        ours = lambda groups: [h for g in groups for h in g['hooks'] if h['command'].endswith(' hook')]
+        ours = lambda groups: [h for g in groups for h in g['hooks'] if h['command'].endswith(' hook') and not h['command'].startswith('echo')]
         for event in ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']:
             assert len(ours(config['hooks'][event])) == 1, (event, config)
         assert any(h['command'] == 'say done' for g in config['hooks']['Stop'] for h in g['hooks'])
         assert hooks_cmd('status').startswith('Connected')
         assert (settings.parent / 'settings.json.barista-backup').exists()
         hooks_cmd('uninstall')
-        assert json.loads(settings.read_text()) == {'model': 'opus', 'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'say done'}]}]}}
+        assert json.loads(settings.read_text()) == {'model': 'opus', 'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'say done'}, {'type': 'command', 'command': 'echo barista hook'}]}]}}, 'unrelated hooks ending in "barista hook" must survive'
+        # A partial install (only the Stop hook) must not report as connected.
+        hooks_cmd('install')
+        partial = json.loads(settings.read_text())
+        for event in ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SessionEnd']:
+            del partial['hooks'][event]
+        settings.write_text(json.dumps(partial))
+        assert hooks_cmd('status').startswith('Needs repair')
+        hooks_cmd('install'); assert hooks_cmd('status').startswith('Connected')
+        hooks_cmd('uninstall')
         settings.write_text('{broken')
         assert subprocess.run([str(cli), 'hooks', 'install', '--settings', str(settings)], capture_output=True, timeout=10).returncode == 1
         assert settings.read_text() == '{broken', 'invalid settings are never overwritten'

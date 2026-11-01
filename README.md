@@ -6,6 +6,23 @@
 
 Keep your Mac awake for a timer, until an app quits, or while a command or agent is actually working. Independent tasks share one power assertion; one task finishing never ends somebody else’s session.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/screenshots/menubar-active-dark.png">
+    <img src="site/assets/screenshots/menubar-active-light.png" width="376" alt="Barista's coffee cup in the macOS menu bar showing 53 minutes left">
+  </picture>
+</p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/screenshots/panel-idle-dark.png">
+    <img src="site/assets/screenshots/panel-idle-light.png" width="322" alt="Barista's panel while resting, with duration chips and a Keep awake button">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/screenshots/panel-active-dark.png">
+    <img src="site/assets/screenshots/panel-active-light.png" width="322" alt="Barista's panel while awake, with a countdown and Claude Code and make test keeping the Mac awake">
+  </picture>
+</p>
+
 ## What’s included
 
 - A coffee-cup menu-bar control with one simple panel: pick 15m, 1h, 4h, or ∞ and press **Keep awake**. **More** has custom minutes, an end time, and “while an app runs.”
@@ -35,7 +52,7 @@ zsh scripts/build-app.sh --universal
 
 Move `build/Barista.app` to Applications for everyday use. The app opens its panel on a normal launch; agent-triggered launches stay in the background. The power icon quits the app. **Stop** ends only your own timer; **Stop all** stops every awake session without terminating work.
 
-Settings opens in its own window from the gear icon, the right-click menu, or ⌘, in the panel. The default shortcut is **Control–Option–Command–C**. Change it in Settings. The first time Barista runs from Applications, it adds itself to macOS Login Items. At login it starts quietly in the menu bar. Turn this off in Settings → **Launch at login**; it stays off. macOS may ask you to approve it in System Settings → General → Login Items. Notifications request permission only when you enable them.
+Settings opens in its own window from the gear icon, the right-click menu, or ⌘, in the panel. The default shortcut is **Control–Option–Command–C**. Change it in Settings. The first time Barista runs from Applications, it adds itself to macOS Login Items. At login a tiny bundled helper opens it quietly in the menu bar. Turn this off in Settings → **Launch at login**; it stays off. macOS may ask you to approve it in System Settings → General → Login Items. Notifications request permission only when you enable them.
 
 ## Claude Code
 
@@ -45,7 +62,7 @@ Choose **Settings → Agents → Connect**, or run:
 build/barista hooks install     # status | uninstall
 ```
 
-This adds Barista hooks to `~/.claude/settings.json` and leaves your other settings and hooks in place. A backup is saved next to the file as `settings.json.barista-backup`. Each conversation gets its own session: a prompt starts it, tool calls renew it, and it ends when Claude finishes its turn or exits. If you stop it in Barista, it stays stopped until your next prompt. If you move the app, choose **Reconnect**.
+This adds Barista hooks to `~/.claude/settings.json` and leaves your other settings and hooks in place. A backup is saved next to the file as `settings.json.barista-backup`. Each conversation gets its own session: a prompt starts it, tool calls renew it, and it ends when Claude finishes its turn or exits. If you stop it in Barista, it stays stopped until your next prompt. If you move the app or a hook goes missing, Settings shows **Repair**.
 
 ## Use from a terminal or agent
 
@@ -66,7 +83,7 @@ See [the agent guide](docs/AGENTS.md) for MCP setup, all commands, ownership rul
 
 ## Limits and privacy
 
-This prevents **idle sleep**. It does not override closing a laptop lid, choosing Sleep, shutdown, or a depleted battery. Timers use wall-clock deadlines, so manual sleep does not pause them. Watched-app sessions monitor process lifetime, not whether an app is doing useful work. Use the command runner or agent heartbeats for precise job lifetimes.
+This prevents **idle sleep**. It does not override closing a laptop lid, choosing Sleep, shutdown, or a depleted battery. Timers use wall-clock deadlines, so manual sleep does not pause them. Watched-app sessions last exactly as long as the app runs (no time cap) and track process lifetime, not whether the app is doing useful work. Use the command runner or agent heartbeats for precise job lifetimes.
 
 Agent leases default to five minutes and an eight-hour hard cap. Commands renew a 45-second lease every ten seconds, tied to the runner’s PID and process start time. TTL and hard limits cannot exceed 24 hours. An explicit Stop or battery cutoff cannot be reversed by a heartbeat. Never reacquire automatically to override a user’s Stop.
 

@@ -138,7 +138,10 @@ struct CoffeeCLI {
                     print("Disconnected Claude Code: \(url.path)")
                 case "status":
                     let commands = ClaudeHooks.installedCommands(settings: url)
-                    print(commands.isEmpty ? "Not connected" : "Connected: \(commands.joined(separator: ", "))")
+                    let cli = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+                    if commands.isEmpty { print("Not connected") }
+                    else if ClaudeHooks.isFullyInstalled(cliPath: cli, settings: url) { print("Connected: \(commands.joined(separator: ", "))") }
+                    else { print("Needs repair (incomplete or another copy): run barista hooks install") }
                 default: throw CoffeeError.message("Use: barista hooks install|uninstall|status [--settings PATH]")
                 }
                 return
@@ -215,6 +218,8 @@ struct CoffeeCLI {
                                      maxSeconds: try options.number("--max-awake", default: 28800))
         let reply = try connection.send(request)
         guard reply.ok, let lease = reply.session else { throw CoffeeError.message(reply.error ?? "Couldn’t acquire a session.") }
+        // Only the initial acquire may open Barista; maintenance never reopens an app the user quit.
+        let connection = AgentConnection(path: connection.path, autoLaunch: false)
         defer { _ = try? connection.send(ControlRequest(action: .release, id: lease.id)) }
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -228,8 +233,9 @@ struct CoffeeCLI {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 10, repeating: 10)
         timer.setEventHandler {
-            // Do not reacquire a lease the user stopped, or defeat battery protection.
-            _ = try? connection.send(ControlRequest(action: .heartbeat, id: lease.id, seconds: 45))
+            // Never reacquire a lease the user stopped, or defeat battery protection.
+            // Once Barista reports the lease gone, stop renewing; the command keeps running.
+            if let reply = try? connection.send(ControlRequest(action: .heartbeat, id: lease.id, seconds: 45)), !reply.ok { timer.cancel() }
         }
         timer.resume()
         var signals: [DispatchSourceSignal] = []
@@ -282,6 +288,7 @@ struct AgentHook {
     let socketPath: String
     let noLaunch: Bool
     static let ttl: Double = 1200
+    static let hardCap: Double = 28800
 
     func run() {
         let input = FileHandle.standardInput.readData(ofLength: 1_048_576)
@@ -304,27 +311,44 @@ struct AgentHook {
     }
 
     private func ensure(_ key: String, store: HookLeaseStore, title: String, userInitiated: Bool) {
-        // Only a new prompt may launch the app; tool calls stay quiet if it's closed.
+        // Only a new prompt may launch the app or start a turn (with a fresh 8-hour cap). Tool calls
+        // renew the turn's lease; they may replace it only if it lapsed from a missed renewal (a long
+        // tool call) and the app confirms nothing was stopped since: never after a user Stop or
+        // Stop all, battery cutoff, app restart, Claude's Stop, or the turn's hard cap.
         let connection = connection(launch: userInitiated)
         _ = try? store.withLock(key) {
-            if let id = store.lease(for: key) {
-                let reply = try connection.send(ControlRequest(action: .heartbeat, id: id, seconds: Self.ttl))
-                if reply.ok { return }
-                // Respect the user: a stopped session stays stopped until they send a new prompt.
-                let ended = reply.state?.history.first { $0.id == id }
-                if !userInitiated, let ended, [.stopped, .batteryLow].contains(ended.reason) { return }
-            }
-            let reply = try connection.send(ControlRequest(action: .acquire, title: title, seconds: Self.ttl,
+            var turnStarted = Date()
+            var stopToken: String?
+            if let saved = store.lease(for: key) {
+                let reply = try connection.send(ControlRequest(action: .heartbeat, id: saved.id, seconds: Self.ttl,
+                                                               maxSeconds: userInitiated ? Self.hardCap : nil))
+                if reply.ok {
+                    if userInitiated { store.save(saved.id, turnStarted: Date(), stopToken: reply.state?.stopToken, for: key) }
+                    return
+                }
+                store.remove(key)
+                if !userInitiated {
+                    let ended = reply.state?.history.first { $0.id == saved.id }
+                    guard ended?.reason == .expired, let token = saved.stopToken else { return }
+                    turnStarted = saved.turnStarted
+                    stopToken = token
+                }
+            } else if !userInitiated { return }
+            let remaining = Self.hardCap - Date().timeIntervalSince(turnStarted)
+            guard remaining >= 1 else { return }
+            let reply = try connection.send(ControlRequest(action: .acquire, title: title, seconds: min(Self.ttl, remaining),
                                                            display: false, processID: SystemState.agentProcessID(),
-                                                           maxSeconds: 28800))
-            if let lease = reply.session { store.save(lease.id, for: key) }
+                                                           maxSeconds: remaining, stopToken: stopToken))
+            if let lease = reply.session {
+                store.save(lease.id, turnStarted: turnStarted, stopToken: reply.state?.stopToken, for: key)
+            }
         }
     }
 
     private func release(_ key: String, store: HookLeaseStore) {
         _ = try? store.withLock(key) {
-            if let id = store.lease(for: key) {
-                _ = try? connection(launch: false).send(ControlRequest(action: .release, id: id))
+            if let saved = store.lease(for: key) {
+                _ = try? connection(launch: false).send(ControlRequest(action: .release, id: saved.id))
             }
             store.remove(key)
         }

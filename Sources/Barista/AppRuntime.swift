@@ -35,26 +35,58 @@ final class AppRuntime: ObservableObject {
         session.keepDisplayAwake = defaults.object(forKey: "keepDisplayAwake") as? Bool ?? true
         session.batteryThreshold = defaults.object(forKey: "batteryThreshold") as? Int ?? 20
         session.onCompletion = { [weak self] completion in self?.notify(completion) }
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        launchAtLogin = loginItem.status == .enabled || SMAppService.mainApp.status == .enabled
     }
 
-    /// Turns on Launch at login the first time Barista runs from an Applications folder.
-    /// Runs once; if the user later turns it off in Settings, it stays off.
+    /// Login launches go through a tiny bundled helper that opens Barista with `--background`,
+    /// so it starts quietly in the menu bar instead of relying on launch metadata.
+    private let loginItem = SMAppService.loginItem(identifier: "com.connorbescos.barista.launcher")
+    private let loginChoiceKey = "launchAtLoginChoiceMade"
+
+    private var loginEnabled: Bool { loginItem.status == .enabled || SMAppService.mainApp.status == .enabled }
+    private var loginNeedsApproval: Bool { loginItem.status == .requiresApproval || SMAppService.mainApp.status == .requiresApproval }
+    /// Prefers the helper (quiet start). Falls back to registering the app itself if macOS
+    /// rejects the helper; AppDelegate then detects login launches from the launch event.
+    private func registerLogin() throws {
+        do {
+            try loginItem.register()
+            retireMainAppIfHelperEnabled()
+        } catch { try SMAppService.mainApp.register() }
+    }
+    private func unregisterLogin() throws {
+        for service in [loginItem, SMAppService.mainApp] where service.status != .notRegistered { try service.unregister() }
+    }
+
+    /// Turns on Launch at login the first time Barista runs from an Applications folder,
+    /// unless the user already chose a setting. If they turn it off later, it stays off.
     func enableLaunchAtLoginOnFirstInstall() {
-        let key = "didAutoEnableLaunchAtLogin"
-        guard !defaults.bool(forKey: key) else { return }
+        defer {
+            launchAtLogin = loginEnabled
+            // Registered but not yet approved: nothing will launch at login until the user allows it.
+            if !loginEnabled && loginNeedsApproval {
+                notice = "Approve Barista in System Settings → General → Login Items to start it at login."
+            }
+        }
+        // Earlier builds registered the app itself; move that to the helper when possible.
+        if SMAppService.mainApp.status == .enabled, loginItem.status != .enabled {
+            try? loginItem.register()
+        }
+        retireMainAppIfHelperEnabled()
+        if loginEnabled { defaults.set(true, forKey: loginChoiceKey) }
+        guard !defaults.bool(forKey: loginChoiceKey) else { return }
         let path = Bundle.main.bundleURL.resolvingSymlinksInPath().path
         // Skip dev builds and quarantined copies macOS runs from a temporary
         // location; registering those paths would break once the app moves.
         let applicationFolders = ["/Applications/", NSHomeDirectory() + "/Applications/"]
         guard applicationFolders.contains(where: path.hasPrefix), !path.contains("/AppTranslocation/") else { return }
-        if SMAppService.mainApp.status != .enabled {
-            do { try SMAppService.mainApp.register() } catch { return }
-        }
-        defaults.set(true, forKey: key)
-        launchAtLogin = SMAppService.mainApp.status == .enabled
-        if !launchAtLogin, SMAppService.mainApp.status == .requiresApproval {
-            notice = "Approve Barista in System Settings → General → Login Items to start it at login."
+        do { try registerLogin() } catch { return }
+        defaults.set(true, forKey: loginChoiceKey)
+    }
+    /// Only drop the app's own registration once the helper is actually allowed to run;
+    /// a helper awaiting approval would otherwise leave nothing launching at login.
+    private func retireMainAppIfHelperEnabled() {
+        if loginItem.status == .enabled, SMAppService.mainApp.status != .notRegistered {
+            try? SMAppService.mainApp.unregister()
         }
     }
 
@@ -82,9 +114,10 @@ final class AppRuntime: ObservableObject {
     }
     func watch(_ app: NSRunningApplication) {
         do {
+            // Lasts exactly as long as the app runs; Stop and battery protection still apply.
             _ = try session.acquire(title: app.localizedName ?? "Application", source: .application,
-                                    duration: 28800, display: session.keepDisplayAwake,
-                                    processID: app.processIdentifier, maxDuration: 28800)
+                                    duration: nil, display: session.keepDisplayAwake,
+                                    processID: app.processIdentifier)
         } catch { notice = error.localizedDescription }
     }
     var runningApps: [NSRunningApplication] {
@@ -99,9 +132,9 @@ final class AppRuntime: ObservableObject {
     }
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
-            if enabled { try SMAppService.mainApp.register() }
-            else { try SMAppService.mainApp.unregister() }
-            launchAtLogin = SMAppService.mainApp.status == .enabled
+            if enabled { try registerLogin() } else { try unregisterLogin() }
+            defaults.set(true, forKey: loginChoiceKey)
+            launchAtLogin = loginEnabled
             if enabled && !launchAtLogin { notice = "Approve Barista in System Settings → General → Login Items." }
         } catch { notice = "Couldn’t change login settings: \(error.localizedDescription). Move Barista to Applications and try again." }
     }
@@ -129,7 +162,7 @@ final class AppRuntime: ObservableObject {
     func refreshClaudeStatus() {
         let installed = ClaudeHooks.installedCommands()
         if !installed.isEmpty {
-            claudeStatus = installed == [ClaudeHooks.command(cliPath: cliPath)] ? .connected : .moved
+            claudeStatus = ClaudeHooks.isFullyInstalled(cliPath: cliPath) ? .connected : .moved
         } else {
             claudeStatus = ClaudeHooks.isClaudeInstalled ? .disconnected : .notFound
         }
@@ -153,18 +186,19 @@ final class AppRuntime: ObservableObject {
         notice = message
     }
     private func configureAgentAccess() {
-        if agentAccess {
-            do {
-                try server.start { [weak self] request in
-                    await MainActor.run {
-                        guard let self else { return ControlReply(ok: false, error: "Barista is shutting down.") }
-                        guard self.agentAccess else { return ControlReply(ok: false, error: "Local agent access is disabled in Settings.") }
-                        return self.session.handle(request)
-                    }
+        // The socket stays up even when access is off, so clients get a clear "disabled"
+        // reply instead of concluding Barista isn't running and trying to relaunch it.
+        do {
+            try server.start { [weak self] request in
+                await MainActor.run {
+                    guard let self else { return ControlReply(ok: false, error: "Barista is shutting down.") }
+                    guard self.agentAccess else { return ControlReply(ok: false, error: "Local agent access is disabled in Barista Settings.") }
+                    return self.session.handle(request)
                 }
-            } catch { notice = "Agent access: \(error.localizedDescription)" }
-        } else {
-            server.stop()
+            }
+        } catch { notice = "Agent access: \(error.localizedDescription)" }
+        if !agentAccess {
+            session.revokeAgentTurns()
             for lease in session.sessions where lease.isTask { session.cancel(id: lease.id) }
         }
     }

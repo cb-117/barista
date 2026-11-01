@@ -18,8 +18,25 @@ public enum ClaudeHooks {
     public static func command(cliPath: String) -> String {
         "'" + cliPath.replacingOccurrences(of: "'", with: "'\\''") + "' hook"
     }
+    /// True only for the exact shape `command(cliPath:)` generates (or a bare `…/barista hook`),
+    /// so unrelated user hooks that merely end in "barista hook" are never touched.
     static func isOurs(_ command: String) -> Bool {
-        command.hasSuffix("/barista' hook") || command.hasSuffix("barista hook")
+        guard command.hasSuffix(" hook") else { return false }
+        let executable = String(command.dropLast(" hook".count))
+        let path: String
+        if executable.hasPrefix("'") {
+            // A single-quoted word where embedded quotes appear only as '\''.
+            guard executable.count >= 2, executable.hasSuffix("'") else { return false }
+            let body = String(executable.dropFirst().dropLast())
+            let parts = body.components(separatedBy: "'\\''")
+            guard !parts.contains(where: { $0.contains("'") }) else { return false }
+            path = parts.joined(separator: "'")
+        } else {
+            let safe = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "/._-+@"))
+            guard !executable.isEmpty, executable.unicodeScalars.allSatisfy({ safe.contains($0) && $0.isASCII }) else { return false }
+            path = executable
+        }
+        return path == "barista" || (path.hasPrefix("/") && path.hasSuffix("/barista"))
     }
 
     /// Commands Barista has installed, or an empty array when not connected.
@@ -27,13 +44,33 @@ public enum ClaudeHooks {
         guard let root = try? read(url), let hooks = root["hooks"] as? [String: Any] else { return [] }
         var found: [String] = []
         for event in events {
-            for group in hooks[event] as? [[String: Any]] ?? [] {
-                for hook in group["hooks"] as? [[String: Any]] ?? [] {
-                    if let command = hook["command"] as? String, isOurs(command), !found.contains(command) { found.append(command) }
+            for (_, command) in ourEntries(hooks, event: event) where !found.contains(command) { found.append(command) }
+        }
+        return found
+    }
+
+    /// True when every event Barista needs runs exactly this CLI, with tool events matching all tools.
+    public static func isFullyInstalled(cliPath: String, settings url: URL = defaultSettingsURL) -> Bool {
+        guard let root = try? read(url), let hooks = root["hooks"] as? [String: Any] else { return false }
+        let expected = command(cliPath: cliPath)
+        return events.allSatisfy { event in
+            let entries = ourEntries(hooks, event: event)
+            return !entries.isEmpty && entries.allSatisfy { group, command in
+                command == expected && (!toolEvents.contains(event) || group["matcher"] as? String == "*")
+            }
+        }
+    }
+
+    private static func ourEntries(_ hooks: [String: Any], event: String) -> [(group: [String: Any], command: String)] {
+        var result: [(group: [String: Any], command: String)] = []
+        for group in hooks[event] as? [[String: Any]] ?? [] {
+            for hook in group["hooks"] as? [[String: Any]] ?? [] {
+                if hook["type"] as? String ?? "command" == "command", let command = hook["command"] as? String, isOurs(command) {
+                    result.append((group, command))
                 }
             }
         }
-        return found
+        return result
     }
 
     public static func install(cliPath: String, settings url: URL = defaultSettingsURL) throws {
@@ -116,20 +153,27 @@ public struct HookLeaseStore {
 
     /// Serializes concurrent hooks for one conversation (parallel tool calls fire hooks at once).
     public func withLock<T>(_ key: String, _ body: () throws -> T) throws -> T {
-        if mkdir(directory, 0o700) != 0 && errno != EEXIST { throw CoffeeError.message("Cannot create \(directory).") }
+        // Create the private control directory too: hooks may run before Barista ever has.
+        try ControlEndpoint.ensurePrivateDirectory((directory as NSString).deletingLastPathComponent)
+        try ControlEndpoint.ensurePrivateDirectory(directory)
         let fd = open(directory + "/\(key).lock", O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw CoffeeError.message("Cannot lock agent session state.") }
         defer { flock(fd, LOCK_UN); close(fd) }
         flock(fd, LOCK_EX)
         return try body()
     }
-    public func lease(for key: String) -> String? {
+    /// The conversation's lease, when its turn began (for the hard cap), and the app's stop token then.
+    public func lease(for key: String) -> (id: String, turnStarted: Date, stopToken: String?)? {
         guard let text = try? String(contentsOfFile: directory + "/\(key)", encoding: .utf8) else { return nil }
-        let id = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return UUID(uuidString: id) == nil ? nil : id
+        let parts = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let id = parts.first, UUID(uuidString: id) != nil else { return nil }
+        let started = parts.count > 1 ? Double(parts[1]).map(Date.init(timeIntervalSince1970:)) : nil
+        return (id, started ?? Date(), parts.count > 2 && parts[2] != "-" ? parts[2] : nil)
     }
-    public func save(_ id: String, for key: String) {
-        try? Data(id.utf8).write(to: URL(fileURLWithPath: directory + "/\(key)"), options: .atomic)
+    public func save(_ id: String, turnStarted: Date, stopToken: String?, for key: String) {
+        let token = stopToken.flatMap { UUID(uuidString: $0) == nil ? nil : $0 } ?? "-"
+        let text = "\(id) \(Int(turnStarted.timeIntervalSince1970)) \(token)"
+        try? Data(text.utf8).write(to: URL(fileURLWithPath: directory + "/\(key)"), options: .atomic)
     }
     public func remove(_ key: String) {
         unlink(directory + "/\(key)")

@@ -11,23 +11,30 @@ fi
 mkdir -p build
 staging="$PWD/build/.Barista-stage-$$.app"
 trap 'rm -rf "$staging"' EXIT
-mkdir -p "$staging/Contents/MacOS" "$staging/Contents/Helpers" "$staging/Contents/Resources"
+launcher="$staging/Contents/Library/LoginItems/BaristaLauncher.app"
+mkdir -p "$staging/Contents/MacOS" "$staging/Contents/Helpers" "$staging/Contents/Resources" "$launcher/Contents/MacOS"
 app_binaries=()
 cli_binaries=()
+launcher_binaries=()
 for architecture in "${architectures[@]}"; do
     triple="${architecture}-apple-macosx13.0"
     swift build -c release --triple "$triple" --product BaristaApp "$@"
     swift build -c release --triple "$triple" --product barista "$@"
+    swift build -c release --triple "$triple" --product BaristaLauncher "$@"
     bin_dir="$(swift build -c release --triple "$triple" --show-bin-path "$@")"
     app_binaries+=("$bin_dir/BaristaApp")
     cli_binaries+=("$bin_dir/barista")
+    launcher_binaries+=("$bin_dir/BaristaLauncher")
 done
 lipo -create "${app_binaries[@]}" -output "$staging/Contents/MacOS/Barista"
 lipo -create "${cli_binaries[@]}" -output "$staging/Contents/Helpers/barista"
+lipo -create "${launcher_binaries[@]}" -output "$launcher/Contents/MacOS/BaristaLauncher"
+cp Support/LauncherInfo.plist "$launcher/Contents/Info.plist"
 cp Support/Barista.icns "$staging/Contents/Resources/Barista.icns"
 cp Support/Info.plist "$staging/Contents/Info.plist"
 cp docs/AGENTS.md "$staging/Contents/Resources/AgentGuide.md"
 codesign --force --sign - --options runtime "$staging/Contents/Helpers/barista"
+codesign --force --sign - --options runtime "$launcher"
 codesign --force --sign - --options runtime "$staging"
 
 # Swap complete bundles; never overwrite a running executable in place.
