@@ -122,6 +122,15 @@ struct CoffeeCLI {
                 MCPServer(connection: connection).run()
                 return
             }
+            if options.command == "hook-wait" {
+                // Spawned by the Stop hook; detached, silent, and never fails loudly.
+                try? options.validate()
+                if let key = options.positionals.first.flatMap(HookLeaseStore.key) {
+                    HookWaiter(socketPath: options.values["--socket"] ?? ControlEndpoint.path, key: key,
+                               pids: options.positionals.dropFirst().compactMap { Int32($0) }.filter { $0 > 1 }).run()
+                }
+                exit(0)
+            }
             if options.command == "hook" {
                 // Called by agent hooks: never fail the agent, never write to stdout.
                 try? options.validate()
@@ -281,7 +290,8 @@ struct CoffeeCLI {
     Stopping a session never terminates the underlying command.
 
     hooks install connects Claude Code: prompts start a session, tool calls renew it,
-    and the session ends when Claude finishes its turn or exits.
+    and the session ends when Claude finishes its turn or exits (or, if Claude left
+    background commands running, once they finish).
 
     Global options: --json, --no-launch, --socket PATH. The app launches automatically
     when needed. MCP uses newline-delimited JSON-RPC over stdio; no TCP port is opened.
@@ -306,7 +316,8 @@ struct AgentHook {
         switch name {
         case "UserPromptSubmit": ensure(key, store: store, title: title, userInitiated: true)
         case "PreToolUse", "PostToolUse": ensure(key, store: store, title: title, userInitiated: false)
-        case "Stop", "SessionEnd": release(key, store: store)
+        case "Stop": stop(key, store: store)
+        case "SessionEnd": release(key, store: store)
         default: break
         }
     }
@@ -326,7 +337,7 @@ struct AgentHook {
             var stopToken: String?
             if let saved = store.lease(for: key) {
                 let reply = try connection.send(ControlRequest(action: .heartbeat, id: saved.id, seconds: Self.ttl,
-                                                               maxSeconds: userInitiated ? Self.hardCap : nil))
+                                                               message: "Working", maxSeconds: userInitiated ? Self.hardCap : nil))
                 if reply.ok {
                     if userInitiated { store.save(saved.id, turnStarted: Date(), stopToken: reply.state?.stopToken, for: key) }
                     return
@@ -350,6 +361,22 @@ struct AgentHook {
         }
     }
 
+    /// Claude finished its turn. If commands it started in the background are still running
+    /// (T3 and Claude Code show this as "Waiting"), keep the Mac awake until they exit.
+    private func stop(_ key: String, store: HookLeaseStore) {
+        if let agent = SystemState.agentProcessID() {
+            let pids = SystemState.backgroundCommandPIDs(of: agent, excluding: SystemState.ancestry())
+            let kept = !pids.isEmpty && ((try? store.withLock(key) { () -> Bool in
+                guard let saved = store.lease(for: key) else { return false }
+                let reply = try connection(launch: false).send(ControlRequest(
+                    action: .heartbeat, id: saved.id, seconds: HookWaiter.grace, message: HookWaiter.waitingMessage))
+                return reply.ok
+            }) ?? false)
+            if kept && HookWaiter.spawn(socketPath: socketPath, key: key, pids: pids) { return }
+        }
+        release(key, store: store)
+    }
+
     private func release(_ key: String, store: HookLeaseStore) {
         _ = try? store.withLock(key) {
             if let saved = store.lease(for: key) {
@@ -357,5 +384,57 @@ struct AgentHook {
             }
             store.remove(key)
         }
+    }
+}
+
+/// Keeps a Claude session's lease alive while background commands it started are still running,
+/// then lets it lapse within a couple of minutes. Gives up as soon as the lease is stopped,
+/// replaced, or a new prompt starts a new turn (that turn's hooks take over).
+struct HookWaiter {
+    static let grace: Double = 120
+    static let interval: UInt32 = 30
+    static let waitingMessage = "Waiting on background work"
+    let socketPath: String
+    let key: String
+    let pids: [Int32]
+
+    func run() {
+        let store = HookLeaseStore(socketPath: socketPath)
+        guard let start = store.lease(for: key), !pids.isEmpty else { return }
+        let identities = Dictionary(uniqueKeysWithValues: pids.map { ($0, SystemState.processIdentity($0)) })
+        let connection = AgentConnection(path: socketPath, autoLaunch: false)
+        let giveUp = Date().addingTimeInterval(AgentHook.hardCap)
+        while Date() < giveUp {
+            sleep(Self.interval)
+            let alive = identities.contains { pid, identity in identity != nil && SystemState.processIdentity(pid) == identity }
+            guard alive else { return }  // The last heartbeat's short grace runs out on its own.
+            let keepGoing = (try? store.withLock(key) { () -> Bool in
+                guard let current = store.lease(for: key), current.id == start.id,
+                      current.turnStarted == start.turnStarted else { return false }
+                return try connection.send(ControlRequest(action: .heartbeat, id: start.id, seconds: Self.grace,
+                                                          message: Self.waitingMessage)).ok
+            }) ?? false
+            guard keepGoing else { return }
+        }
+    }
+
+    /// Starts `barista hook-wait` in its own session so it outlives the hook's 10-second timeout.
+    static func spawn(socketPath: String, key: String, pids: [Int32]) -> Bool {
+        guard let executable = Bundle.main.executablePath else { return false }
+        let arguments = [executable, "hook-wait", "--socket", socketPath, key] + pids.map(String.init)
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID))
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
+            posix_spawn_file_actions_addopen(&actions, descriptor, "/dev/null", descriptor == STDIN_FILENO ? O_RDONLY : O_WRONLY, 0)
+        }
+        var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        var pid: pid_t = 0
+        return posix_spawn(&pid, executable, &actions, &attributes, &argv, environ) == 0
     }
 }

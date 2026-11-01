@@ -10,7 +10,8 @@ In the app choose **Settings → Agents → Connect**, or run `barista hooks ins
 | --- | --- |
 | `UserPromptSubmit` | Start a turn: acquire or renew this conversation’s session (20-minute lease, 8-hour cap per turn, launches the app if needed). Only a prompt can start a session. |
 | `PreToolUse`, `PostToolUse` | Renew the turn’s lease. If it lapsed during a long tool call it is replaced within the turn’s cap, but only if Barista confirms nothing was stopped since the turn began. Never restarts a session after a user Stop or Stop all (including stopping your own timer), battery protection, an app restart, Claude’s `Stop`, or the cap; never launches the app. |
-| `Stop`, `SessionEnd` | Release the session. |
+| `Stop` | Release the session, unless Bash commands Claude started in the background are still running. Then a detached `barista hook-wait` renews a two-minute lease every 30 seconds until they exit, shown as “Waiting on background work”. A new prompt, a user Stop, or the turn’s cap ends the wait. Other child processes, like MCP servers, never count. |
+| `SessionEnd` | Release the session. |
 
 Each conversation (`session_id`) gets its own lease, tied to the Claude Code process. If Claude exits or crashes, the session ends. The hook never writes to stdout and always exits 0, so it can’t block or alter Claude. The lease is renewed on tool calls. A single tool call that runs longer than 20 minutes can lapse until the next call (which restores it), so wrap long jobs with `barista run`. Interrupting Claude with Esc skips the `Stop` hook. The lease then expires within 20 minutes, or immediately when Claude exits.
 

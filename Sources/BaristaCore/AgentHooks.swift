@@ -197,3 +197,42 @@ extension SystemState {
         return nil
     }
 }
+
+extension SystemState {
+    /// Claude Code's Bash tool runs each command as `<shell> -c source …/.claude/shell-snapshots/…`.
+    /// Once Claude has stopped, any of those still running are background commands it's waiting on.
+    /// Long-lived children such as MCP servers don't match, so they never keep the Mac awake.
+    public static func backgroundCommandPIDs(of agent: Int32, excluding excluded: Set<Int32> = []) -> [Int32] {
+        childPIDs(of: agent).filter { pid in
+            !excluded.contains(pid) && (commandLine(of: pid)?.contains("/.claude/shell-snapshots/") ?? false)
+        }
+    }
+    public static func childPIDs(of parent: Int32) -> [Int32] {
+        var pids = [Int32](repeating: 0, count: 1024)
+        let bytes = proc_listpids(UInt32(PROC_PPID_ONLY), UInt32(parent), &pids, Int32(pids.count * MemoryLayout<Int32>.size))
+        guard bytes > 0 else { return [] }
+        return pids.prefix(Int(bytes) / MemoryLayout<Int32>.size).filter { $0 > 0 }
+    }
+    /// The process's arguments joined by spaces, or nil if it can't be read.
+    public static func commandLine(of pid: Int32) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+        let text = buffer.prefix(size).dropFirst(MemoryLayout<Int32>.size).map { $0 == 0 ? UInt8(ascii: " ") : $0 }
+        return String(decoding: text, as: UTF8.self)
+    }
+    /// This process and its ancestors, so a hook never counts its own shell as background work.
+    public static func ancestry(of pid: Int32 = getpid()) -> Set<Int32> {
+        var chain: Set<Int32> = []
+        var current = pid
+        for _ in 0..<16 where current > 1 && chain.insert(current).inserted {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(current, PROC_PIDTBSDINFO, 0, &info, size) == size else { break }
+            current = Int32(info.pbi_ppid)
+        }
+        return chain
+    }
+}

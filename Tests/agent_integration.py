@@ -171,6 +171,26 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         # ...but never after Stop all, even though its old lease ended as "expired".
         lapsed_turn(); invoke('stop', '--all'); hook('PostToolUse')
         assert claude_sessions() == [], 'Stop all revokes a lapsed turn'
+        # Stop while one of Claude's background commands still runs keeps the Mac awake for it...
+        hook('UserPromptSubmit')
+        background = subprocess.Popen(['/bin/sh', '-c', 'sleep 20; : /.claude/shell-snapshots/test'])
+        other_child = subprocess.Popen(['/bin/sleep', '20'])  # e.g. an MCP server: never counts
+        try:
+            hook('Stop')
+            [waiting] = claude_sessions()
+            assert waiting['message'] == 'Waiting on background work', waiting
+            hook('PreToolUse')  # Claude resumes when the command reports back.
+            [working] = claude_sessions()
+            assert working['id'] == waiting['id'] and working['message'] == 'Working'
+            hook('SessionEnd')
+            assert claude_sessions() == []
+            background.kill(); background.wait()
+            # ...but other children, like MCP servers, never do.
+            hook('UserPromptSubmit'); hook('Stop')
+            assert claude_sessions() == [], 'only Claude background commands keep a finished turn awake'
+        finally:
+            for child in (background, other_child):
+                child.kill(); child.wait()
         hook('UserPromptSubmit', raw='not json')
         hook('UserPromptSubmit', session_id='../escape')
         assert claude_sessions() == []
@@ -179,7 +199,7 @@ with tempfile.TemporaryDirectory(prefix='caf-', dir='/tmp') as temporary:
         result = subprocess.run([str(cli), 'hook', '--socket', str(cold), '--no-launch'], input=json.dumps({'session_id': 'cold-1', 'hook_event_name': 'UserPromptSubmit'}), capture_output=True, text=True, timeout=10)
         assert result.returncode == 0 and result.stdout == ''
         assert (cold.parent / 'hooks').is_dir() and cold.parent.stat().st_mode & 0o777 == 0o700, 'hook must get past its lock on a fresh account'
-        print('PASS Claude Code hooks: prompt acquires, tools renew, stop releases, user stop respected, no revival, cold start, silent stdout', flush=True)
+        print('PASS Claude Code hooks: prompt acquires, tools renew, stop releases, background commands kept awake, user stop respected, no revival, cold start, silent stdout', flush=True)
 
         settings = Path(temporary) / 'claude' / 'settings.json'
         settings.parent.mkdir()
