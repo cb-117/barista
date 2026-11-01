@@ -32,6 +32,7 @@ jobs:
       - name: Test
         if: steps.version.outputs.publish == 'true'
         run: |
+          swift build
           swift run BaristaChecks
           python3 Tests/agent_integration.py
       - name: Build universal app
