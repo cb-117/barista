@@ -339,10 +339,13 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
         stamp = when.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
         return json.dumps({'type': 'assistant', 'timestamp': stamp, 'sessionId': 'z', 'requestId': message,
                            'message': {'id': message, 'model': 'claude-opus-5-5', 'usage': {'input_tokens': 100, 'output_tokens': 0}}}) + '\n'
-    lines = (entry(early, 'm1') if early <= now else '') + entry(future, 'm2')
+    # Windows ignores TZ (it uses the system time zone), so there only "nothing after now" is checked;
+    # otherwise the result would depend on whether it's the same date in Kolkata and on the runner.
+    counts_early = os.name != 'nt' and early <= now
+    lines = (entry(early, 'm1') if counts_early else '') + entry(future, 'm2')
     (project / 's.jsonl').write_text(lines)
     today = usage(zone_home, zone_data, 'today', tz='Asia/Kolkata')['agents'][0]
-    assert today['inputTokens'] == (100 if early <= now else 0), ('a request at 00:15 local time is today; future ones are not', today)
+    assert today['inputTokens'] == (100 if counts_early else 0), ('a request at 00:15 local time is today; future ones are not', today)
     print('PASS periods: exact boundaries in half-hour time zones, nothing after now', flush=True)
 
     # Periods: requests from the fixture's past dates are outside today; a fresh one is inside.
