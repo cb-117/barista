@@ -40,6 +40,7 @@
   .brand img { width: 34px; height: 34px; }
   nav .links a { margin-left: 22px; color: var(--muted); text-decoration: none; font-weight: 600; }
   nav .links a:hover { color: var(--crema); }
+  nav .links .short { display: none; }
 
   .hero { display: grid; grid-template-columns: 1fr 1.1fr; gap: 40px; align-items: center; padding: 40px 0 70px; }
   h1 { font-size: clamp(40px, 6vw, 66px); line-height: 1.02; letter-spacing: -.035em; margin: 0 0 18px; }
@@ -121,6 +122,9 @@
     .perks { grid-template-columns: 1fr 1fr; }
     .menu { grid-template-columns: 1fr; }
     nav .links a:not(.gh) { display: none; }
+    nav .links a { margin-left: 16px; }
+    nav .links .full { display: none; }
+    nav .links .short { display: inline; }
     .board { padding: 28px; }
   }
   @media (prefers-reduced-motion: reduce) { .steam { animation: none; } html { scroll-behavior: auto; } }
@@ -137,6 +141,7 @@
       <a href="#agents">Agents</a>
       <a href="#faq">FAQ</a>
       <a class="gh" href="https://github.com/cb-117/barista">★ GitHub</a>
+      <a class="gh" href="https://buymeacoffee.com/baristatime">☕ <span class="full">Buy me a coffee</span><span class="short">Coffee</span></a>
     </div>
   </nav>
 
