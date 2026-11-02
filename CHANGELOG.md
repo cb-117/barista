@@ -9,6 +9,18 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Added
+- **Projects and History, inside Barista.** On a Mac, Usage & Limits is now a resizable window with **Overview**, **Projects**, and **History** tabs (⌘1–⌘3), a period menu (now including **All time**), **Export**, and **Share** in its toolbar. On Windows, the panel's **Projects & history** button, its new 7-day chart, and the tray menu open a usage window. The numbers update while it's open, instead of a snapshot in your browser. Linux, and `barista report`, still open the report in your browser.
+- **Select a day** in History's chart to see only that day's time, tokens, and cost per project.
+- **Right-click** a number, project name, or folder to copy it, and click the folder icon to show a project in Finder or File Explorer.
+- **Export** as CSV (one row per project), a web page, or a PDF; on a Mac also an image, or **Share** the report. In a browser, the report has **Download CSV**.
+- **Last 7 days**: a small chart of your active time in the menu-bar popover (Mac) and the panel (Windows). Click it for History.
+- **Weekly summary**: on Monday, a notification with last week's active time, projects, and estimated cost. Click it for History. Turn it off in Settings (**Weekly usage summary**).
+
+### Changed
+- Windows: notifications now come from **Barista**, with its cup, instead of "Windows PowerShell", and the weekly summary has an **Open history** button.
+- Windows: Apps & features (Control Panel) shows Barista's cup and **Barista** as the publisher, and `barista-app.exe` has the cup icon and version details (Start menu, taskbar, Task Manager).
+
 ## [0.0.13] - 2026-11-01
 
 ### Fixed

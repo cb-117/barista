@@ -990,12 +990,70 @@ public extension UsageReport {
         default: return String(format: "%.1fB", n / 1e9)
         }
     }
-    static func formatCost(_ cost: Double?) -> String {
+    public static func formatCost(_ cost: Double?) -> String {
         guard let cost else { return "no price" }
         if cost > 0 && cost < 0.01 { return "<$0.01" }
         return String(format: "~$%.2f", cost)
     }
-    static func formatDuration(_ seconds: Int) -> String {
+    public static func formatDuration(_ seconds: Int) -> String {
         seconds >= 3600 ? "\(seconds / 3600)h \(seconds % 3600 / 60)m" : "\(max(0, seconds) / 60)m"
+    }
+}
+
+/// Last week's totals, for the Monday summary (docs/USAGE.md, "Weekly summary").
+public struct WeeklySummary: Sendable, Equatable {
+    /// Monday 00:00 of the week summarized.
+    public let weekStart: Date
+    public let activeSeconds: Int
+    public let projects: Int
+    public let estimatedCost: Double
+    /// "14h 5m across 5 projects, about $38."
+    public var text: String {
+        let time = UsageReport.formatDuration(activeSeconds)
+        let where_ = projects == 1 ? "in 1 project" : "across \(projects) projects"
+        let cost = estimatedCost >= 0.01 ? String(format: ", about $%.0f at API prices", estimatedCost.rounded()) : ""
+        return "Last week: \(time) \(where_)\(cost)."
+    }
+}
+
+public extension UsageReport {
+    /// Active seconds for each of the last `days` days, oldest first, ending today. Needs the all-time period.
+    func dailyActiveSeconds(days: Int, now: Date = Date(), calendar: Calendar = .current) -> [(date: Date, seconds: Int)]? {
+        guard let all = periods.first(where: { $0.period == .all }) else { return nil }
+        let keys = Self.dayKeys(calendar: calendar)
+        var totals: [String: Int] = [:]
+        for project in all.projects { for day in project.days { totals[day.date, default: 0] += day.activeSeconds } }
+        let today = calendar.startOfDay(for: now)
+        return (0..<days).reversed().compactMap { offset in
+            calendar.date(byAdding: .day, value: -offset, to: today).map { ($0, totals[keys.string(from: $0)] ?? 0) }
+        }
+    }
+
+    /// Monday-to-Sunday totals for the week before `now`'s week, or nil with no activity. Needs the all-time period.
+    func lastWeekSummary(now: Date = Date(), calendar: Calendar = .current) -> WeeklySummary? {
+        guard let all = periods.first(where: { $0.period == .all }),
+              let thisWeek = UsagePeriod.week.start(now: now, calendar: calendar),
+              let lastWeek = calendar.date(byAdding: .day, value: -7, to: thisWeek) else { return nil }
+        let keys = Self.dayKeys(calendar: calendar)
+        let dates = Set((0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: lastWeek).map(keys.string(from:)) })
+        var seconds = 0, cost = 0.0, projects = 0
+        for project in all.projects {
+            let days = project.days.filter { dates.contains($0.date) }
+            let active = days.reduce(0) { $0 + $1.activeSeconds }
+            if active > 0 || days.contains(where: { $0.totalTokens > 0 }) { projects += 1 }
+            seconds += active
+            cost += days.reduce(0) { $0 + $1.estimatedCost }
+        }
+        guard seconds >= 60 else { return nil }
+        return WeeklySummary(weekStart: lastWeek, activeSeconds: seconds, projects: projects, estimatedCost: cost)
+    }
+
+    private static func dayKeys(calendar: Calendar) -> DateFormatter {
+        let format = DateFormatter()
+        format.calendar = calendar
+        format.timeZone = calendar.timeZone
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd"
+        return format
     }
 }

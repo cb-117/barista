@@ -1378,6 +1378,99 @@ pub fn report(periods: &[Period]) -> Value {
 
 // MARK: Visual report
 
+/// The report page's template with no data, for Barista's own window (it sends the data live).
+pub fn report_template() -> &'static str {
+    REPORT_TEMPLATE
+}
+
+/// Active seconds for each of the `days` days ending on `today`, oldest first, from the report's
+/// all-time period (docs/USAGE.md, "Weekly summary"). None without that period.
+pub fn daily_active_seconds(report: &Value, days: u32, today: NaiveDate) -> Option<Vec<(NaiveDate, u64)>> {
+    let all = report["periods"].as_array()?.iter().find(|period| period["id"] == "all")?;
+    let mut totals: HashMap<String, u64> = HashMap::new();
+    for project in all["projects"].as_array().into_iter().flatten() {
+        for day in project["days"].as_array().into_iter().flatten() {
+            if let Some(date) = day["date"].as_str() {
+                *totals.entry(date.to_string()).or_default() += day["activeSeconds"].as_u64().unwrap_or(0);
+            }
+        }
+    }
+    Some(
+        (0..i64::from(days))
+            .rev()
+            .map(|back| {
+                let date = today - Duration::days(back);
+                (date, totals.get(&date.format("%Y-%m-%d").to_string()).copied().unwrap_or(0))
+            })
+            .collect(),
+    )
+}
+
+/// Last week's totals (Monday to Sunday before `today`'s week).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeeklySummary {
+    pub week_start: NaiveDate,
+    pub active_seconds: u64,
+    pub projects: usize,
+    pub estimated_cost: f64,
+}
+
+impl WeeklySummary {
+    /// "Last week: 14h 5m across 5 projects, about $38 at API prices."
+    pub fn text(&self) -> String {
+        let place = if self.projects == 1 {
+            "in 1 project".to_string()
+        } else {
+            format!("across {} projects", self.projects)
+        };
+        let cost = if self.estimated_cost >= 0.01 {
+            format!(", about ${:.0} at API prices", self.estimated_cost.round())
+        } else {
+            String::new()
+        };
+        format!("Last week: {} {place}{cost}.", duration_text(self.active_seconds))
+    }
+}
+
+fn duration_text(seconds: u64) -> String {
+    if seconds >= 3600 {
+        format!("{}h {}m", seconds / 3600, seconds % 3600 / 60)
+    } else {
+        format!("{}m", seconds / 60)
+    }
+}
+
+/// Last week's summary from the report's all-time period, or None with under a minute of activity.
+pub fn last_week_summary(report: &Value, today: NaiveDate) -> Option<WeeklySummary> {
+    let all = report["periods"].as_array()?.iter().find(|period| period["id"] == "all")?;
+    let this_week = Period::Week.start_date(today)?;
+    let week_start = this_week - Duration::days(7);
+    let dates: Vec<String> = (0..7)
+        .map(|offset| (week_start + Duration::days(offset)).format("%Y-%m-%d").to_string())
+        .collect();
+    let (mut seconds, mut cost, mut projects) = (0u64, 0f64, 0usize);
+    for project in all["projects"].as_array().into_iter().flatten() {
+        let days: Vec<&Value> = project["days"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|day| day["date"].as_str().is_some_and(|date| dates.iter().any(|d| d == date)))
+            .collect();
+        let active: u64 = days.iter().map(|day| day["activeSeconds"].as_u64().unwrap_or(0)).sum();
+        if active > 0 || days.iter().any(|day| day["totalTokens"].as_u64().unwrap_or(0) > 0) {
+            projects += 1;
+        }
+        seconds += active;
+        cost += days.iter().map(|day| day["estimatedCost"].as_f64().unwrap_or(0.0)).sum::<f64>();
+    }
+    (seconds >= 60).then_some(WeeklySummary {
+        week_start,
+        active_seconds: seconds,
+        projects,
+        estimated_cost: cost,
+    })
+}
+
 /// The report page: the template with the data placeholder replaced by `report` plus `initialPeriod`,
 /// with `<`, `>`, and `&` escaped so no text from the data can close the script.
 pub fn report_page(report: &Value, initial: Period) -> String {
@@ -1860,6 +1953,34 @@ mod tests {
         assert_eq!(project_name(&main), "main");
         assert_eq!(project_name("/a/b/"), "b");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn last_week_and_the_last_seven_days_come_from_all_time() {
+        let report = json!({"periods": [{"id": "all", "projects": [
+            {"days": [
+                {"date": "2026-10-26", "activeSeconds": 3600, "totalTokens": 10, "estimatedCost": 1.25},
+                {"date": "2026-11-01", "activeSeconds": 1800, "totalTokens": 5, "estimatedCost": 2.5},
+                {"date": "2026-11-02", "activeSeconds": 600, "totalTokens": 1, "estimatedCost": 9.0}
+            ]},
+            {"days": [{"date": "2026-10-30", "activeSeconds": 0, "totalTokens": 7, "estimatedCost": 0.25}]},
+            {"days": [{"date": "2026-10-20", "activeSeconds": 900, "totalTokens": 1, "estimatedCost": 0.5}]}
+        ]}]});
+        // Monday, Nov 2: last week is Oct 26 to Nov 1.
+        let today = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let summary = last_week_summary(&report, today).unwrap();
+        assert_eq!(summary.week_start, NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
+        assert_eq!((summary.active_seconds, summary.projects), (5400, 2));
+        assert!((summary.estimated_cost - 4.0).abs() < 1e-9);
+        assert_eq!(summary.text(), "Last week: 1h 30m across 2 projects, about $4 at API prices.");
+        let days = daily_active_seconds(&report, 7, today).unwrap();
+        assert_eq!(days.len(), 7);
+        assert_eq!(days[0], (NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(), 0));
+        assert_eq!(days[5].1, 1800);
+        assert_eq!(days[6].1, 600);
+        // Nothing last week: no summary.
+        assert!(last_week_summary(&report, NaiveDate::from_ymd_opt(2026, 11, 20).unwrap()).is_none());
+        assert!(last_week_summary(&json!({"periods": []}), today).is_none());
     }
 
     #[test]

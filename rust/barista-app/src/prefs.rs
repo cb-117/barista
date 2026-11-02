@@ -22,6 +22,10 @@ pub struct Prefs {
     pub watch_chatgpt: bool,
     /// Ask Anthropic for the Claude plan's limits with Claude Code's saved login.
     pub claude_account_limits: bool,
+    /// A notification on Mondays with last week's active time, projects, and estimated cost.
+    pub weekly_summary: bool,
+    /// The Monday (YYYY-MM-DD) of the last week summarized, so each week is sent once.
+    pub weekly_summary_sent: Option<String>,
 }
 
 impl Default for Prefs {
@@ -40,6 +44,8 @@ impl Default for Prefs {
             watch_cowork: true,
             watch_chatgpt: true,
             claude_account_limits: true,
+            weekly_summary: true,
+            weekly_summary_sent: None,
         }
     }
 }

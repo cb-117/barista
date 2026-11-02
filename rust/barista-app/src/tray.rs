@@ -18,6 +18,9 @@ pub enum UserEvent {
     /// Windows: the cup was left-clicked, at this rectangle (x, y, width, height in physical pixels).
     #[cfg(windows)]
     Toggle(Option<(i32, i32, i32, i32)>),
+    /// Windows: a message from the usage window's page (or about the window itself).
+    #[cfg(windows)]
+    Report(serde_json::Value),
 }
 
 /// Runs the tray until Quit. `wait` blocks for up to a second and returns the next tray event while
@@ -33,6 +36,18 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
     let mut short_menu = panel.is_some();
     #[cfg(not(windows))]
     let short_menu = false;
+    // Windows: Projects & History in Barista's own window (the browser if WebView2 can't run).
+    #[cfg(windows)]
+    let report = crate::report::ReportWindow::new(sender.clone());
+    // A click on a notification's button runs its command here.
+    {
+        let sender = std::sync::Mutex::new(sender.clone());
+        platform::on_notification_action(move |command| {
+            if let Ok(sender) = sender.lock() {
+                let _ = sender.send(UserEvent::Menu(command));
+            }
+        });
+    }
     let build = |short: bool| if short { menu::build_short(&app) } else { menu::build(&app) };
     let model = build(short_menu);
     let tray = backend::Tray::create(&model, &icons, sender);
@@ -111,6 +126,39 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
                     }
                 }
             }
+            #[cfg(windows)]
+            Some(UserEvent::Report(message)) => {
+                if let Some(report) = &report {
+                    match message["cmd"].as_str() {
+                        Some("failed") => {
+                            // No WebView2: hide the empty window and use the browser instead.
+                            report.reset();
+                            crate::open_usage_report(&app, barista_core::usage::Period::Week);
+                        }
+                        Some("process-failed") => report.reset(),
+                        Some("printed") => report.printed(message["text"].as_str().unwrap_or("Saved")),
+                        _ => report.handle(&app, message),
+                    }
+                }
+            }
+            // Windows: `usage-report[:<period>|:projects|:history]` opens the usage window.
+            #[cfg(windows)]
+            Some(UserEvent::Menu(id))
+                if (id == "usage-report" || id.starts_with("usage-report:")) && report.as_ref().is_some_and(|report| !report.failed()) =>
+            {
+                let argument = id.split_once(':').map(|(_, argument)| argument).unwrap_or("");
+                // A period (from the panel's Usage view) opens Projects on that period.
+                let view = if argument == "history" { "history" } else { "projects" };
+                let period = barista_core::usage::Period::parse(argument);
+                if let Some(panel) = &panel {
+                    panel.hide();
+                }
+                if let Some(report) = &report {
+                    refresh_usage(&app, Duration::from_secs(60));
+                    report.show(Some(view), period);
+                    report.update(&app);
+                }
+            }
             Some(UserEvent::Menu(id)) => {
                 if menu::handle(&app, &id) {
                     lock(&app).shutdown();
@@ -145,6 +193,12 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
         #[cfg(windows)]
         if let Some(panel) = panel.as_ref().filter(|panel| panel.visible()) {
             panel.post(&menu::panel_state(&app));
+        }
+        // The open usage window stays current: logs re-read at most once a minute, sent when new.
+        #[cfg(windows)]
+        if let Some(report) = report.as_ref().filter(|report| report.visible()) {
+            refresh_usage(&app, Duration::from_secs(60));
+            report.update(&app);
         }
     }
 }

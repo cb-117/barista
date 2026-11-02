@@ -6,6 +6,7 @@ import SwiftUI
 struct UsageView: View {
     @ObservedObject var runtime: AppRuntime
     @AppStorage("usagePeriod") private var usagePeriod: String = UsagePeriod.week.rawValue
+    var showTab: (UsageTab) -> Void = { _ in }
 
     var body: some View {
         Form {
@@ -27,25 +28,18 @@ struct UsageView: View {
             }
 
             Section {
-                Picker("Period", selection: $usagePeriod) {
-                    ForEach([UsagePeriod.today, .week, .month], id: \.rawValue) { Text($0.label).tag($0.rawValue) }
-                }
-                .pickerStyle(.segmented).labelsHidden()
                 if let period = runtime.usage?.periods.first(where: { $0.period.rawValue == usagePeriod }) {
                     ForEach(period.agents, id: \.agent) { agent in usageRow(agent) }
                 } else {
                     Text(runtime.isRefreshingUsage ? "Reading agent logs…" : "No usage yet").foregroundStyle(.secondary)
                 }
-            } header: { Text("Usage") } footer: {
+            } header: { Text("Usage · \((UsagePeriod(rawValue: usagePeriod) ?? .week).label)") } footer: {
                 Text("From Claude Code’s and Codex’s logs on this Mac, and Cursor’s hooks once connected (Cursor reports turns, not tokens). Costs are estimates at API list prices, not what your subscription charges. Also in Terminal: barista usage.")
             }
 
             Section {
                 if let period = runtime.usage?.periods.first(where: { $0.period.rawValue == usagePeriod }), !period.projects.isEmpty {
-                    ForEach(period.projects.prefix(6)) { project in projectRow(project) }
-                    if period.projects.count > 6 {
-                        Text("and \(period.projects.count - 6) more in the report").font(.caption).foregroundStyle(.secondary)
-                    }
+                    ForEach(period.projects.prefix(5)) { project in projectRow(project) }
                 } else {
                     Text(runtime.isRefreshingUsage ? "Reading agent logs…" : "No project activity yet").foregroundStyle(.secondary)
                 }
@@ -53,19 +47,16 @@ struct UsageView: View {
                 HStack {
                     Text("Projects")
                     Spacer()
-                    if runtime.isWritingReport { ProgressView().controlSize(.small) }
-                    else {
-                        Button("Open report") { runtime.openUsageReport(period: UsagePeriod(rawValue: usagePeriod) ?? .week) }
-                            .buttonStyle(.link)
-                            .help("A visual report of time, tokens, models, and cost per project, opened in your browser. Nothing is uploaded.")
-                    }
+                    Button("Show all projects") { showTab(.projects) }
+                        .buttonStyle(.link)
+                        .help("Time, tokens, models, and cost for every project, with a chart of each day in History.")
                 }
             } footer: {
                 Text("Grouped by Git repository. Active time is time an agent was working or you replied within 15 minutes, across all agents in the project. Also in Terminal: barista report.")
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 720)
+        .frame(minWidth: 460, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
         .tint(CoffeeTheme.accent)
         .onAppear { runtime.refreshUsage(force: true) }
     }
@@ -204,24 +195,3 @@ struct UsageView: View {
     }
 }
 
-/// The Usage & Limits window; this is a menu-bar app with no SwiftUI App scene.
-@MainActor
-final class UsageWindowController {
-    private var window: NSWindow?
-    private let runtime: AppRuntime
-    init(runtime: AppRuntime) { self.runtime = runtime }
-
-    func show() {
-        if window == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: UsageView(runtime: runtime)))
-            window.title = "Usage & Limits"
-            window.styleMask = [.titled, .closable]
-            window.isReleasedWhenClosed = false
-            window.center()
-            self.window = window
-        }
-        runtime.refreshUsage(force: true)
-        NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-    }
-}

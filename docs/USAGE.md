@@ -337,7 +337,61 @@ The page is the template in `Sources/BaristaCore/ReportTemplate.swift` (the Rust
 between its `#"""` markers) with the one occurrence of `/*BARISTA_REPORT_DATA*/null` replaced by the
 report JSON (the `barista usage --json` shape with all four periods, plus `"initialPeriod": "<period>"`),
 in which every `<`, `>`, and `&` is written as `\u003c`, `\u003e`, and `\u0026`. The page renders all text
-with `textContent`, never as HTML. The Barista app opens the same report from Usage & Limits.
+with `textContent`, never as HTML.
+
+### In Barista's window
+
+The same page (with the placeholder left as `null`) is Barista's **Projects** and **History** views: on a
+Mac, tabs of the Usage & Limits window (a `WKWebView`; Overview is native); on Windows, the usage window
+opened from the panel's **Projects & history** button, the panel's 7-day chart, or the tray menu (WebView2).
+Linux, and Windows without WebView2, open the file in the browser instead. In the window:
+
+- The page detects its host (`window.webkit.messageHandlers.barista` on a Mac, `window.chrome.webview`
+  on Windows), hides the browser-only header (Mac) or turns it into tabs, period, and Export (Windows),
+  and posts `{"cmd": "ready"}`. Barista then sends messages to `window.barista.receive` (Mac:
+  `evaluateJavaScript`; Windows: `PostWebMessageAsJson`):
+  `{"type": "data", "report": <report JSON, all four periods>, "period": "<id>"}` (again whenever the
+  numbers change: at most once a minute while the window is open), `{"type": "period", "id"}`,
+  `{"type": "view", "id": "projects"|"history"}`, `{"type": "exporting", "on": bool}` (show every
+  section on a solid background, for an image or PDF), `{"type": "export-csv"}`, `{"type": "copied"}`, and
+  `{"type": "saved", "text"}`. A redraw keeps the period, selected day, measure, open rows, and scroll.
+- The page sends `{"cmd": "period"|"view", "id"}`, `{"cmd": "copy", "text"}` (right-click on a number,
+  name, or folder; at most 10,000 characters), `{"cmd": "open-folder", "path"}` (Barista opens it only if
+  the current report lists that project folder and it exists), and `{"cmd": "export", "format":
+  "csv", "filename", "text"}` or `{"cmd": "export", "format": "html"|"pdf"|"browser", "period"}`
+  (Windows; on a Mac the toolbar's Export menu does these).
+- The page loads once from a string; Barista cancels every other navigation and new window, and only
+  accepts messages from that page (`about:blank`).
+
+**Projects** shows the totals, time (or tokens, or cost) per project, and the project table; **History**
+shows the totals, active time per day, time per project, and the agent table. **Selecting a day** in the
+chart shows only that day in the totals, the per-project bars, and the table (each project's day entry;
+sessions and requests aren't kept per day, so they show `—`); select it again, press Escape, or use
+**Show the whole period** to go back.
+
+**CSV** (built by the page, so every platform matches): one row per project for the period or day showing,
+columns `Project, Folder, Period, Active minutes, Sessions, Requests, Cursor turns, Tokens, Estimated cost
+(USD)`, CRLF line ends, fields quoted when they hold `"`, `,`, or a line break, and a `'` put before any
+field starting with `=`, `+`, `-`, `@`, tab, or carriage return so spreadsheets don't run it. The file is
+named `barista-usage-<period or day>-<YYYY-MM-DD>.csv`. In a browser the page offers **Download CSV**.
+
+**Exports:** web page (the standalone report, as `barista report` writes it), CSV, PDF (the whole
+report; on Windows through WebView2's printing, light colors), and on a Mac also an image (the PDF drawn at
+2×) and **Share** (the web page).
+
+## Weekly summary
+
+On Mondays from 9:00 local time through Tuesday, Barista sends one notification for the week before
+(Monday 00:00 to Sunday 24:00, local): `Last week: <active time> across <n> projects, about $<cost> at API
+prices.` (`in 1 project`; the cost part is left out under $0.01, and the cost is rounded to whole dollars).
+Active time and cost are the sums of every project's `days` entries for those seven dates, from the
+`all` period; a project counts if it has active time or tokens on any of them. Nothing is sent with under a
+minute of active time. Each week is sent once (the app remembers the week's Monday). It needs
+notifications on (Mac: allowed for Barista; Windows and Linux: **Notify me when sessions end**) and the
+**Weekly usage summary** setting (default on). Clicking it, or its **Open history** button, opens History.
+
+The menu-bar popover (Mac) and the panel (Windows) also show the **last 7 days** of active time (each
+day's sum over the `all` period's projects, today last) as a small chart; clicking it opens History.
 
 ## Cursor hooks
 

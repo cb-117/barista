@@ -7,9 +7,15 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+build = "build.rs"
+
 [[bin]]
 name = "barista-app"
 path = "src/main.rs"
+
+[build-dependencies]
+# Windows only (build.rs checks): the cup icon and version details in barista-app.exe.
+winresource = "0.1"
 
 [dependencies]
 barista = { path = "../barista" }
@@ -19,6 +25,7 @@ dirs = "6"
 png = "0.18"
 notify-rust = "4"
 arboard = { version = "3", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Linux: the tray is a StatusNotifierItem served over D-Bus with ksni, so no GTK, glib, or appindicator.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -35,6 +42,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 # The panel: WebView2 (built into Windows 11 and current Windows 10) through its COM API directly.
 # Not wry: wry's Linux backend would put GTK and glib back into Cargo.lock.
 webview2-com = "0.39"
+# Notifications as Barista (its own app id and cup) with a button; notify-rust's Windows backend
+# can't set either. The version notify-rust already uses.
+tauri-winrt-notification = "0.8"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
@@ -42,6 +52,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

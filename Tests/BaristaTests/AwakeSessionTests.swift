@@ -280,6 +280,7 @@ struct SessionChecks {
         updateHandoffContinuesSessions()
         print("Passed all 11 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, custom-duration input, menu-bar text, update checks, and update handoff.")
         try await runTaskSessionChecks()
+        weeklySummaryChecks()
         if CommandLine.arguments.contains("--power") {
             try checkNativePowerAssertions()
         }

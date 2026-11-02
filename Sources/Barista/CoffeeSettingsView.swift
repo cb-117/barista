@@ -17,6 +17,8 @@ struct CoffeeSettingsView: View {
             Section {
                 Toggle("Launch at login", isOn: Binding(get: { runtime.launchAtLogin }, set: { runtime.setLaunchAtLogin($0) }))
                 Toggle("Notify when a session ends", isOn: Binding(get: { runtime.notificationsEnabled }, set: { runtime.setNotifications($0) }))
+                Toggle("Weekly usage summary on Mondays", isOn: $runtime.weeklySummary)
+                    .help("Last week’s active time, projects, and estimated cost. Click it to open History.")
                 Toggle("Show time remaining in the menu bar", isOn: $runtime.showCountdown)
                 Toggle("Global shortcut", isOn: $runtime.shortcutEnabled)
                 if runtime.shortcutEnabled {
@@ -84,7 +86,7 @@ struct CoffeeSettingsView: View {
             }
 
             Section {
-                Button("Open Usage & Limits…") { runtime.onShowUsage?() }
+                Button("Open Usage & Limits…") { runtime.onShowUsage?(.overview) }
             } header: { Text("Usage & limits") } footer: {
                 Text("Your Claude and ChatGPT plan limits, and tokens per agent, in one window.")
             }

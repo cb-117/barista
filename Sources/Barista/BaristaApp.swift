@@ -37,9 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.animates = true
         runtime.onAppearanceChange = { [weak self] in self?.updateStatus() }
         runtime.onShowPanel = { [weak self] in self?.showPanel() }
-        runtime.onShowUsage = { [weak self] in
+        runtime.onShowUsage = { [weak self] tab in
             self?.popover.performClose(nil)
-            self?.usageWindow.show()
+            self?.usageWindow.show(tab: tab)
         }
         runtime.onShowSettings = { [weak self] in
             self?.popover.performClose(nil)
@@ -53,6 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         runtime.start()
         updateStatus()
+        // `--usage overview|projects|history` opens Usage & Limits on that tab (handy for screenshots and support).
+        if let index = CommandLine.arguments.firstIndex(of: "--usage"), index + 1 < CommandLine.arguments.count,
+           let tab = UsageTab.allCases.first(where: { $0.title.lowercased() == CommandLine.arguments[index + 1] }) {
+            DispatchQueue.main.async { [weak self] in self?.usageWindow.show(tab: tab) }
+        }
         if !CommandLine.arguments.contains("--background") && !launchedAsLoginItem {
             DispatchQueue.main.async { [weak self] in self?.showPanel() }
         }
@@ -127,8 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(action("Stop all") { session.stop() })
         }
         menu.addItem(.separator())
-        menu.addItem(action("Usage & Limits…") { [weak self] in self?.usageWindow.show() })
-        menu.addItem(action("Usage Report…") { [weak self] in self?.runtime.openUsageReport(period: .week) })
+        menu.addItem(action("Usage & Limits…") { [weak self] in self?.usageWindow.show(tab: .overview) })
+        menu.addItem(action("Projects & History…") { [weak self] in self?.usageWindow.show(tab: .projects) })
         menu.addItem(action("Settings…", key: ",") { [weak self] in self?.settings.show() })
         menu.addItem(action("Quit Barista", key: "q") { [weak self] in
             self?.runtime.shutdown()
@@ -150,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @MainActor
-private final class ClosureMenuItem: NSMenuItem {
+final class ClosureMenuItem: NSMenuItem {
     private let handler: @MainActor () -> Void
     init(title: String, keyEquivalent: String, handler: @escaping @MainActor () -> Void) {
         self.handler = handler

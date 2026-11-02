@@ -77,6 +77,9 @@ struct CoffeePopover: View {
             }
             primaryButton
             if session.manualSession != nil && !tasks.isEmpty { taskList }
+            if let days = runtime.usage?.dailyActiveSeconds(days: 7), days.contains(where: { $0.seconds > 0 }) {
+                WeekSparkline(days: days, accent: accent) { runtime.onShowUsage?(.history) }
+            }
             footer
         }
         .padding(18)
@@ -242,7 +245,7 @@ struct CoffeePopover: View {
                 Button("Stop all") { session.stop() }
                     .help("End every awake session. Commands and agents keep running.")
             }
-            Button { runtime.onShowUsage?() } label: {
+            Button { runtime.onShowUsage?(.overview) } label: {
                 Label(usageButtonTitle, systemImage: "chart.bar").lineLimit(1)
             }
             .help("Usage & Limits: your plan limits and each agent’s tokens. Costs are API-price estimates, not your subscription bill.")
@@ -335,5 +338,42 @@ struct AgentSuggestionBanner: View {
                 .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Not now")
         }
         .padding(10).background(CoffeeTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+/// The last seven days of active time; click for History.
+struct WeekSparkline: View {
+    let days: [(date: Date, seconds: Int)]
+    let accent: Color
+    let action: () -> Void
+
+    var body: some View {
+        let peak = max(1, days.map(\.seconds).max() ?? 1)
+        let total = days.reduce(0) { $0 + $1.seconds }
+        Button(action: action) {
+            HStack(alignment: .bottom, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Last 7 days").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    Text(UsageReport.formatDuration(total)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                }
+                Spacer(minLength: 8)
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(Array(days.enumerated()), id: \.offset) { index, day in
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(day.seconds > 0 ? accent.opacity(index == days.count - 1 ? 1 : 0.55) : Color.primary.opacity(0.12))
+                            .frame(width: 9, height: max(3, 26 * CGFloat(day.seconds) / CGFloat(peak)))
+                            .help("\(day.date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())): \(UsageReport.formatDuration(day.seconds))")
+                    }
+                }
+                .frame(height: 26, alignment: .bottom)
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .help("Active time per day across your projects. Click for History.")
+        .accessibilityLabel("Last 7 days: \(UsageReport.formatDuration(total)) active. Open History.")
     }
 }

@@ -44,13 +44,16 @@ AppId={{8F3C2A1E-6B4D-4E7A-9C51-2D7F0B3A9E64}
 AppName=Barista
 AppVersion={#AppVersion}
 AppVerName=Barista {#AppVersion}
-AppPublisher=cb-117
+AppPublisher=Barista
 AppPublisherURL=https://baristatime.app
 AppSupportURL=https://github.com/cb-117/barista/issues
 AppUpdatesURL=https://github.com/cb-117/barista/releases
 AppComments=Keeps your PC awake while timers, commands, and AI agents work.
 VersionInfoVersion={#AppVersion}
 VersionInfoDescription=Barista Setup
+VersionInfoCompany=Barista
+VersionInfoProductName=Barista
+VersionInfoProductVersion={#AppVersion}
 DefaultDirName={autopf}\Barista
 DefaultGroupName=Barista
 DisableProgramGroupPage=yes
@@ -95,10 +98,13 @@ Source: "{#SourceDir}\barista-app.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#LicensePath}"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Barista"; Filename: "{app}\barista-app.exe"; Comment: "Keeps your PC awake while work happens"
-Name: "{autodesktop}\Barista"; Filename: "{app}\barista-app.exe"; Comment: "Keeps your PC awake while work happens"; Tasks: desktopicon
+; AppUserModelID matches the app's (platform.rs, identity::APP_ID), so notifications show as Barista.
+Name: "{autoprograms}\Barista"; Filename: "{app}\barista-app.exe"; Comment: "Keeps your PC awake while work happens"; AppUserModelID: "Barista.App"
+Name: "{autodesktop}\Barista"; Filename: "{app}\barista-app.exe"; Comment: "Keeps your PC awake while work happens"; AppUserModelID: "Barista.App"; Tasks: desktopicon
 
 [Registry]
+; Notifications' name and icon (Barista also writes this itself, for zip installs). Removed on uninstall.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\Barista.App"; ValueType: string; ValueName: "DisplayName"; ValueData: "Barista"; Flags: uninsdeletekey
 ; The uninstaller removes it in [Code], and only while it still points into this install.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Barista"; ValueData: """{app}\barista-app.exe"" --background"; Tasks: startup
 

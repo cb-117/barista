@@ -205,6 +205,11 @@ pub fn build(app: &Shared) -> Model {
         "Notify me when sessions end",
         prefs.notifications_enabled,
     ));
+    settings.push(check(
+        "toggle:weekly-summary",
+        "Weekly usage summary on Mondays",
+        prefs.weekly_summary,
+    ));
     settings.push(check("toggle:updates", "Check for updates daily", prefs.checks_for_updates));
     settings.push(item(
         "check-updates",
@@ -267,7 +272,14 @@ pub fn build(app: &Shared) -> Model {
         enabled: true,
         children: usage,
     });
-    menu.push(item("usage-report", "Open usage report…"));
+    menu.push(item(
+        "usage-report",
+        if cfg!(windows) {
+            "Projects & history…"
+        } else {
+            "Open usage report…"
+        },
+    ));
 
     let mut history = Vec::new();
     for event in session.history().iter().take(10) {
@@ -344,6 +356,10 @@ pub fn handle(app: &Shared, id: &str) -> bool {
             "notifications" => {
                 let value = !state.prefs.notifications_enabled;
                 state.set_notifications(value)
+            }
+            "weekly-summary" => {
+                state.prefs.weekly_summary = !state.prefs.weekly_summary;
+                state.save();
             }
             "updates" => {
                 let value = !state.prefs.checks_for_updates;
@@ -429,7 +445,7 @@ pub fn handle(app: &Shared, id: &str) -> bool {
 
 /// Copies text, keeping the clipboard owner alive on Linux (X11 and Wayland clipboards are
 /// served by the copying app until something else is copied).
-fn copy(text: &str) -> std::result::Result<(), String> {
+pub(crate) fn copy(text: &str) -> std::result::Result<(), String> {
     use std::sync::{Mutex, OnceLock};
     static CLIPBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
     let holder = CLIPBOARD.get_or_init(|| Mutex::new(arboard::Clipboard::new().ok()));
@@ -569,7 +585,14 @@ pub fn build_short(app: &Shared) -> Model {
         menu.push(item("stop-all", "Stop all"));
     }
     menu.push(Entry::Separator);
-    menu.push(item("usage-report", "Open usage report…"));
+    menu.push(item(
+        "usage-report",
+        if cfg!(windows) {
+            "Projects & history…"
+        } else {
+            "Open usage report…"
+        },
+    ));
     menu.push(item("panel:open", "Open Barista"));
     menu.push(item("quit", "Quit Barista"));
     signature.push(session.is_active().to_string());
@@ -733,7 +756,15 @@ pub fn panel_state(app: &Shared) -> serde_json::Value {
             "watchCowork": prefs.watch_cowork,
             "watchChatgpt": prefs.watch_chatgpt,
             "launchAtLogin": state.launch_at_login,
+            "weeklySummary": prefs.weekly_summary,
         },
+        "week": state.usage.as_ref().and_then(|usage| {
+            barista_core::usage::daily_active_seconds(usage, 7, chrono::Local::now().date_naive())
+        }).map(|days| days.into_iter().map(|(date, seconds)| json!({
+            "date": date.format("%Y-%m-%d").to_string(),
+            "label": date.format("%a %b %-d").to_string(),
+            "seconds": seconds,
+        })).collect::<Vec<_>>()),
         "agents": agents,
         "usage": state.usage,
         "usageLoading": state.usage_loading,

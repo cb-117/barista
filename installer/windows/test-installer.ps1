@@ -85,7 +85,25 @@ if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notconta
 $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Barista.lnk'
 if (-not (Test-Path $shortcut)) { Fail "No Start menu shortcut at $shortcut" }
 if (Get-BaristaProcesses $dir) { Fail '/NOLAUNCH still started Barista' }
-Write-Host 'Fresh install: files, version, startup entry, PATH, and shortcut verified.'
+# Branding: Apps & features shows Barista as publisher with the cup; notifications come from Barista.
+$entry = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' |
+    ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -eq 'Barista' } | Select-Object -First 1
+if (-not $entry) { Fail 'No Apps & features entry named Barista' }
+if ($entry.Publisher -ne 'Barista') { Fail "Publisher is '$($entry.Publisher)', expected 'Barista'" }
+if ($entry.DisplayIcon -notlike '*barista-app.exe*') { Fail "DisplayIcon is '$($entry.DisplayIcon)'" }
+$exe = Join-Path $dir 'barista-app.exe'
+Add-Type -Namespace Barista -Name Shell -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconExW(string file, int index, IntPtr[] large, IntPtr[] small, uint count);'
+if ([Barista.Shell]::ExtractIconExW($exe, -1, $null, $null, 0) -lt 1) { Fail 'barista-app.exe has no icon resource' }
+$details = (Get-Item $exe).VersionInfo
+if ($details.ProductName -ne 'Barista' -or $details.FileDescription -ne 'Barista') { Fail "barista-app.exe details: '$($details.ProductName)' / '$($details.FileDescription)'" }
+if ($details.ProductVersion -ne $Version) { Fail "barista-app.exe product version is '$($details.ProductVersion)', expected $Version" }
+$aumid = 'HKCU:\Software\Classes\AppUserModelId\Barista.App'
+if ((Get-ItemProperty $aumid -ErrorAction SilentlyContinue).DisplayName -ne 'Barista') { Fail 'Notification identity Barista.App is not registered' }
+$link = (New-Object -ComObject Shell.Application).Namespace((Split-Path $shortcut)).ParseName((Split-Path $shortcut -Leaf))
+$linkId = $link.ExtendedProperty('System.AppUserModel.ID')
+if (-not $linkId) { Write-Host "::warning::Couldn't read the Start menu shortcut's AppUserModelID." }
+elseif ($linkId -ne 'Barista.App') { Fail "Start menu shortcut AppUserModelID is '$linkId', expected Barista.App" }
+Write-Host 'Fresh install: files, version, startup entry, PATH, shortcut, and branding verified.'
 
 # --- 2. Upgrade over a running Barista, keeping the user's choices --------------------------------
 $app = Start-Process -FilePath (Join-Path $dir 'barista-app.exe') -ArgumentList '--background' -PassThru
@@ -117,6 +135,7 @@ Uninstall-Barista $dir 'uninstall.log'
 if ($null -ne (Get-RunValue)) { Fail 'Uninstall left the startup entry' }
 if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $dir) { Fail 'Uninstall left the PATH entry' }
 if (Test-Path $shortcut) { Fail 'Uninstall left the Start menu shortcut' }
+if (Test-Path $aumid) { Fail 'Uninstall left the notification identity in the registry' }
 Write-Host 'Uninstall: files, startup entry, PATH, and shortcut removed.'
 
 # --- 4. All users (needs an elevated runner, as GitHub's are) ------------------------------------

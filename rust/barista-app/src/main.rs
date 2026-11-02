@@ -13,6 +13,8 @@ mod tray;
 // Windows: the panel that opens when you left-click the cup (WebView2).
 #[cfg(windows)]
 mod panel;
+#[cfg(windows)]
+mod report;
 
 use barista_core::activity::{self, ActivityTracker, WatchedApp};
 use barista_core::control::{default_path, ControlServer};
@@ -348,12 +350,40 @@ pub fn refresh_usage(app: &Shared, max_age: Duration) {
     let app = app.clone();
     std::thread::spawn(move || {
         use barista_core::usage::{report, Period};
-        let value = report(&[Period::Today, Period::Week, Period::Month]);
+        let value = report(&[Period::Today, Period::Week, Period::Month, Period::All]);
         let mut state = lock(&app);
+        send_weekly_summary_if_due(&mut state, &value, chrono::Local::now().naive_local());
         state.usage = Some(value);
         state.usage_updated = Some(std::time::Instant::now());
         state.usage_loading = false;
     });
+}
+
+/// Once a week, from Monday 9:00 through Tuesday: last week's totals, if there were any and
+/// notifications are on (docs/USAGE.md, "Weekly summary").
+fn send_weekly_summary_if_due(state: &mut App, report: &serde_json::Value, now: chrono::NaiveDateTime) {
+    use chrono::{Datelike, Timelike, Weekday};
+    if state.ephemeral || !state.prefs.notifications_enabled || !state.prefs.weekly_summary {
+        return;
+    }
+    let due = match now.weekday() {
+        Weekday::Mon => now.hour() >= 9,
+        Weekday::Tue => true,
+        _ => false,
+    };
+    if !due {
+        return;
+    }
+    let Some(summary) = barista_core::usage::last_week_summary(report, now.date()) else {
+        return;
+    };
+    let week = summary.week_start.format("%Y-%m-%d").to_string();
+    if state.prefs.weekly_summary_sent.as_deref() == Some(week.as_str()) {
+        return;
+    }
+    state.prefs.weekly_summary_sent = Some(week);
+    state.save();
+    platform::notify_with_action("Your week in Barista", &summary.text(), "Open history", "usage-report:history");
 }
 
 /// Writes the visual usage report (`barista report`) and opens it in the browser, off the main thread.
@@ -476,6 +506,11 @@ fn main() {
         return;
     }
     let ephemeral = options.serve.is_some();
+    // Windows: notifications and the taskbar show Barista's name and cup.
+    #[cfg(windows)]
+    if !ephemeral {
+        platform::identity::register();
+    }
     let prefs = if ephemeral { Prefs::default() } else { Prefs::load() };
     // `--serve PATH` is the isolated test service: fake power, no saved state.
     let mut session = if ephemeral {

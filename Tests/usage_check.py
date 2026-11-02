@@ -167,7 +167,7 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert reply == {'opened': False, 'path': str(out)} or (reply['opened'] is False and same_path(reply['path'], str(out))), reply
     page = out.read_text()
     assert page.count('/*BARISTA_REPORT_DATA*/') == 0 and '<html' in page.lower(), 'the template was filled in'
-    start = page.index('const DATA = ') + len('const DATA = ')
+    start = page.index('let DATA = ') + len('let DATA = ')
     embedded = json.JSONDecoder().raw_decode(page[start:])[0]
     assert embedded['initialPeriod'] == 'month', embedded.get('initialPeriod')
     assert [p['id'] for p in embedded['periods']] == ['today', 'week', 'month', 'all'], [p['id'] for p in embedded['periods']]

@@ -549,7 +549,7 @@ fn position(anchor: Option<Anchor>, point: POINT, work: RECT, screen: RECT, widt
 /// NavigationStarting reports it as a `data:` URI, but its messages report `about:blank` as their
 /// source, so the two never match. Every other navigation is cancelled, so the only page that can be
 /// showing is the panel; this still refuses messages before it loaded and from any web or file page.
-fn from_panel_page(loaded: bool, source: &str) -> bool {
+pub(crate) fn from_panel_page(loaded: bool, source: &str) -> bool {
     loaded && (source == "about:blank" || source.starts_with("data:"))
 }
 

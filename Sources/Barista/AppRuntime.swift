@@ -38,7 +38,7 @@ final class AppRuntime: ObservableObject {
     var onAppearanceChange: (() -> Void)?
     var onShowPanel: (() -> Void)?
     var onShowSettings: (() -> Void)?
-    var onShowUsage: (() -> Void)?
+    var onShowUsage: ((UsageTab?) -> Void)?
     /// "Claude 24% · ChatGPT 6%": each plan's most-used current window, for the panel.
     var limitsSummary: String? {
         let parts = (usage?.limits ?? []).compactMap { plan -> String? in
@@ -51,10 +51,17 @@ final class AppRuntime: ObservableObject {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
     @Published private(set) var agentStatus: [HookAgent: AgentStatus] = [:]
-    /// Today, this week, and this month, from local agent logs. Computed off the main thread.
+    /// Every period (today through all time), from local agent logs. Computed off the main thread.
     @Published private(set) var usage: UsageReport?
     @Published private(set) var isRefreshingUsage = false
-    @Published private(set) var isWritingReport = false
+    /// A notification on Mondays with last week's active time, projects, and estimated cost.
+    @Published var weeklySummary: Bool = UserDefaults.standard.object(forKey: "weeklySummary") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(weeklySummary, forKey: "weeklySummary")
+            if weeklySummary && notificationAuthorization == .notDetermined { setNotifications(true) }
+        }
+    }
+    private let notificationDelegate = NotificationDelegate()
     /// Ask Anthropic for the Claude plan's limits with Claude Code's saved login (read-only).
     @Published var claudeAccountLimits: Bool = UserDefaults.standard.object(forKey: "claudeAccountLimits") as? Bool ?? true {
         didSet {
@@ -190,6 +197,8 @@ final class AppRuntime: ObservableObject {
     }
 
     func start() {
+        notificationDelegate.onOpen = { [weak self] tab in self?.onShowUsage?(tab) }
+        UNUserNotificationCenter.current().delegate = notificationDelegate
         enableLaunchAtLoginOnFirstInstall()
         configureShortcut()
         configureAgentAccess()
@@ -314,23 +323,30 @@ final class AppRuntime: ObservableObject {
         if !force, let usage, Date().timeIntervalSince(usage.generatedAt) < 60 { return }
         isRefreshingUsage = true
         Task.detached(priority: .utility) {
-            let report = UsageStore.report(periods: [.today, .week, .month])
+            let report = UsageStore.report(periods: UsagePeriod.allCases)
             await MainActor.run {
                 self.usage = report
                 self.isRefreshingUsage = false
+                self.sendWeeklySummaryIfDue(report)
             }
         }
     }
-    /// Writes the visual usage report (every period, opening on `period`) and opens it in the browser.
-    func openUsageReport(period: UsagePeriod) {
-        isWritingReport = true
-        Task.detached(priority: .userInitiated) {
-            let url = try? ReportTemplate.write(initialPeriod: period)
-            await MainActor.run {
-                self.isWritingReport = false
-                if let url { NSWorkspace.shared.open(url) }
-            }
-        }
+    /// Once a week, from Monday 9:00 through Tuesday: last week's totals, if there were any.
+    private func sendWeeklySummaryIfDue(_ report: UsageReport, now: Date = Date()) {
+        guard weeklySummary, [.authorized, .provisional].contains(notificationAuthorization) else { return }
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        let weekday = calendar.component(.weekday, from: now) // 2 = Monday
+        guard weekday == 3 || (weekday == 2 && calendar.component(.hour, from: now) >= 9),
+              let summary = report.lastWeekSummary(now: now, calendar: calendar) else { return }
+        let key = ISO8601DateFormatter().string(from: summary.weekStart)
+        guard defaults.string(forKey: "weeklySummarySent") != key else { return }
+        defaults.set(key, forKey: "weeklySummarySent")
+        let content = UNMutableNotificationContent()
+        content.title = "Your week in Barista"
+        content.body = summary.text
+        content.userInfo = ["open": "history"]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "weekly-summary", content: content, trigger: nil))
     }
     func shutdown() {
         session.stop(reason: .appQuit)
@@ -626,5 +642,22 @@ final class AppRuntime: ObservableObject {
         content.sound = .default
         let identifier = completion.reason == .batteryLow ? "battery-protection" : completion.id
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+}
+
+/// Clicking a notification: the weekly summary opens History; anything else, the panel.
+/// macOS calls these on a background queue, so nothing here is main-actor isolated (see the 0.0.6 crash).
+final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    @MainActor var onOpen: ((UsageTab?) -> Void)?
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let opensHistory = response.notification.request.content.userInfo["open"] as? String == "history"
+        Task { @MainActor in if opensHistory { self.onOpen?(.history) } }
+        completionHandler()
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
     }
 }

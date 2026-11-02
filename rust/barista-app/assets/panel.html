@@ -44,6 +44,15 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-size: 14px; -webkit-font-smoothing: antialiased; user-select: none; overflow: hidden; }
   button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  .spark { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: 0; border-radius: 10px; background: var(--card); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+  .spark:hover { background: var(--accent-soft); }
+  .spark-text { display: flex; flex-direction: column; gap: 1px; }
+  .spark-text strong { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .spark-bars { display: inline-flex; align-items: flex-end; gap: 3px; height: 26px; }
+  .spark-bars i { display: block; width: 8px; border-radius: 2px; background: var(--line, rgba(127,127,127,.25)); }
+  .spark-bars i.on { background: var(--accent); opacity: .55; }
+  .spark-bars i.today { opacity: 1; }
+  .spark .chev { color: var(--muted, inherit); opacity: .7; font-size: 16px; }
   button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
   /* Notices and errors can be selected and copied (Ctrl+C). */
   .selectable { user-select: text; -webkit-user-select: text; cursor: text; }
@@ -384,7 +393,27 @@ function renderMain(root) {
     primary,
     tasks.length ? el("div", { class: "section-title", text: manual ? "Also keeping your PC awake" : "Keeping your PC awake" }) : null,
     ...tasks.map(taskCard),
+    weekSparkline(),
     footer);
+}
+
+// The last seven days of active time across projects; opens History.
+function weekSparkline() {
+  const days = state.week || [];
+  if (!days.some((day) => day.seconds > 0)) return null;
+  const peak = Math.max(1, ...days.map((day) => day.seconds));
+  const total = days.reduce((sum, day) => sum + day.seconds, 0);
+  const bars = el("span", { class: "spark-bars", "aria-hidden": "true" }, ...days.map((day, index) => {
+    const bar = el("i", { class: day.seconds > 0 ? (index === days.length - 1 ? "on today" : "on") : "", title: `${day.label}: ${duration(day.seconds)}` });
+    bar.style.height = `${Math.max(3, Math.round(26 * day.seconds / peak))}px`;
+    return bar;
+  }));
+  return button("spark", [
+    el("span", { class: "spark-text" }, el("span", { class: "hint", text: "Last 7 days" }), el("strong", { text: duration(total) })),
+    el("span", { class: "spacer", style: "flex:1" }),
+    bars,
+    el("span", { class: "chev", "aria-hidden": "true", text: "\u203A" }),
+  ], "usage-report:history", { title: "Active time per day across your projects. Opens History.", "aria-label": `Last 7 days: ${duration(total)} active. Open History.` });
 }
 
 function limitBlock(limit) {
@@ -466,7 +495,7 @@ function renderUsage(root) {
       if (agents.length) body.push(...agents.map(agentBlock));
       else body.push(el("div", { class: "empty", text: `No agent activity ${period.id === "today" ? "today" : period.id === "week" ? "this week" : "this month"}.` }));
       body.push(...projectsBlock(period));
-      body.push(button("small-button accent", "Open report", `usage-report:${period.id}`, { title: "Every period, project, and day in your browser" }));
+      body.push(button("small-button accent", "Projects & history", `usage-report:${period.id}`, { title: "Every project and day, with charts, CSV and PDF export" }));
     }
   }
   if (state.statuslineOffer) body.push(button("small-button accent", "Add live limits to Claude Code’s status line", "statusline-install"));
@@ -498,6 +527,7 @@ function renderSettings(root) {
     el("div", { class: "group" },
       settingRow("Launch at login", null, toggle(p.launchAtLogin, "toggle:login", "Launch at login")),
       settingRow("Notify me when sessions end", null, toggle(p.notifications, "toggle:notifications", "Notify me when sessions end")),
+      settingRow("Weekly usage summary", "Mondays, with notifications on", toggle(p.weeklySummary, "toggle:weekly-summary", "Weekly usage summary on Mondays")),
       settingRow("Keep the display on", "During your own timers", toggle(p.keepDisplayAwake, "toggle:display", "Keep the display on during my timers")),
       settingRow("Battery protection", "Stop sessions on battery at", battery)),
     el("div", { class: "group-title", text: "Agents" }),
@@ -591,8 +621,9 @@ function mockState() {
     ],
     sessionCount: 4,
     history: [{ title: "Claude Code · reporting", reason: "Work finished", endedAt: now - 1800000 }, { title: "My coffee break", reason: "Timer finished", endedAt: now - 7200000 }],
-    prefs: { keepDisplayAwake: true, batteryThreshold: 20, notifications: false, checksForUpdates: true, agentAccess: true, claudeAccountLimits: true, watchCowork: true, watchChatgpt: true, launchAtLogin: true },
+    prefs: { keepDisplayAwake: true, batteryThreshold: 20, notifications: false, checksForUpdates: true, agentAccess: true, claudeAccountLimits: true, watchCowork: true, watchChatgpt: true, launchAtLogin: true, weeklySummary: true },
     agents: [{ key: "claude", name: "Claude Code", status: "connected" }, { key: "codex", name: "ChatGPT Codex", status: "disconnected" }, { key: "cursor", name: "Cursor", status: "notFound" }],
+    week: [["Wed", 3600], ["Thu", 0], ["Fri", 9000], ["Sat", 1200], ["Sun", 0], ["Mon", 14400], ["Tue", 5400]].map(([label, seconds]) => ({ label, seconds })),
     usageLoading: false, usageSummary: "Claude 24% · ChatGPT 6%", usageHasActivity: true, statuslineOffer: false,
     usage: {
       limits: [
@@ -639,7 +670,7 @@ function mockCommand(cmd) {
   else if (command === "cancel") { mock.tasks = mock.tasks.filter((t) => t.id !== argument); }
   else if (command === "stop-all") { mock.tasks = []; mock.manual = null; mock.awake = false; }
   else if (command === "toggle") {
-    const key = { display: "keepDisplayAwake", login: "launchAtLogin", notifications: "notifications", updates: "checksForUpdates", agents: "agentAccess", "claude-account": "claudeAccountLimits", "watch-cowork": "watchCowork", "watch-chatgpt": "watchChatgpt" }[argument];
+    const key = { display: "keepDisplayAwake", login: "launchAtLogin", notifications: "notifications", updates: "checksForUpdates", agents: "agentAccess", "claude-account": "claudeAccountLimits", "watch-cowork": "watchCowork", "watch-chatgpt": "watchChatgpt", "weekly-summary": "weeklySummary" }[argument];
     if (key) p[key] = !p[key];
   } else if (command === "battery") { p.batteryThreshold = Number(argument); }
   else if (command === "dismiss-update") { mock.update = null; }
