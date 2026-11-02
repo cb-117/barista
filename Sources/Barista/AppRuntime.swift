@@ -58,7 +58,13 @@ final class AppRuntime: ObservableObject {
     @Published var weeklySummary: Bool = UserDefaults.standard.object(forKey: "weeklySummary") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(weeklySummary, forKey: "weeklySummary")
-            if weeklySummary && notificationAuthorization == .notDetermined { setNotifications(true) }
+            // Ask macOS once, without turning on "Notify when a session ends".
+            if weeklySummary && notificationAuthorization == .notDetermined {
+                Task { @MainActor in
+                    _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                    refreshPermissions()
+                }
+            }
         }
     }
     private let notificationDelegate = NotificationDelegate()
@@ -197,7 +203,9 @@ final class AppRuntime: ObservableObject {
     }
 
     func start() {
-        notificationDelegate.onOpen = { [weak self] tab in self?.onShowUsage?(tab) }
+        notificationDelegate.onOpen = { [weak self] tab in
+            if let tab { self?.onShowUsage?(tab) } else { self?.onShowPanel?() }
+        }
         UNUserNotificationCenter.current().delegate = notificationDelegate
         enableLaunchAtLoginOnFirstInstall()
         configureShortcut()
@@ -645,7 +653,7 @@ final class AppRuntime: ObservableObject {
     }
 }
 
-/// Clicking a notification: the weekly summary opens History; anything else, the panel.
+/// Clicking a notification: the weekly summary opens History; any other (a session ended), the panel.
 /// macOS calls these on a background queue, so nothing here is main-actor isolated (see the 0.0.6 crash).
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     @MainActor var onOpen: ((UsageTab?) -> Void)?
@@ -653,7 +661,7 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @u
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let opensHistory = response.notification.request.content.userInfo["open"] as? String == "history"
-        Task { @MainActor in if opensHistory { self.onOpen?(.history) } }
+        Task { @MainActor in self.onOpen?(opensHistory ? .history : nil) }
         completionHandler()
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,

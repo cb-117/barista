@@ -21,7 +21,7 @@ func weeklySummaryChecks() {
     guard let summary = report.lastWeekSummary(now: monday, calendar: calendar) else { preconditionFailure("No weekly summary") }
     precondition(summary.activeSeconds == 5400 && summary.projects == 2, "Last week's time and projects")
     precondition(abs(summary.estimatedCost - 4) < 1e-9, "Last week's cost")
-    precondition(summary.text == "Last week: 1h 30m across 2 projects, about $4 at API prices.", "Summary text: \(summary.text)")
+    precondition(summary.text == "Last week: 1h 30m across 2 projects, about $4.00 at API prices.", "Summary text: \(summary.text)")
     let days = report.dailyActiveSeconds(days: 7, now: monday, calendar: calendar) ?? []
     precondition(days.map(\.seconds) == [0, 0, 0, 0, 0, 1800, 600], "Last seven days: \(days.map(\.seconds))")
     let later = calendar.date(from: DateComponents(year: 2026, month: 11, day: 20, hour: 12))!

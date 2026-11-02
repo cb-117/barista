@@ -1007,11 +1007,12 @@ public struct WeeklySummary: Sendable, Equatable {
     public let activeSeconds: Int
     public let projects: Int
     public let estimatedCost: Double
-    /// "14h 5m across 5 projects, about $38."
+    /// "Last week: 14h 5m across 5 projects, about $38 at API prices." (cents under $10).
     public var text: String {
         let time = UsageReport.formatDuration(activeSeconds)
         let where_ = projects == 1 ? "in 1 project" : "across \(projects) projects"
-        let cost = estimatedCost >= 0.01 ? String(format: ", about $%.0f at API prices", estimatedCost.rounded()) : ""
+        let cost = estimatedCost >= 10 ? String(format: ", about $%.0f at API prices", estimatedCost.rounded())
+            : estimatedCost >= 0.01 ? String(format: ", about $%.2f at API prices", estimatedCost) : ""
         return "Last week: \(time) \(where_)\(cost)."
     }
 }

@@ -60,6 +60,16 @@ pub struct ReportWindow {
     period: Cell<Period>,
     /// When the data last sent was computed, so unchanged data isn't serialized again.
     sent: Cell<Option<std::time::Instant>>,
+    /// An export waiting for its Save dialog (which runs on its own thread, so the tray keeps going).
+    pending: RefCell<Option<Pending>>,
+    /// A PDF waiting for the page to draw the export layout ("exporting-ready").
+    pdf_path: RefCell<Option<PathBuf>>,
+}
+
+enum Pending {
+    Csv(String),
+    Html(String),
+    Pdf,
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -218,6 +228,8 @@ impl ReportWindow {
                 view: RefCell::new("projects".into()),
                 period: Cell::new(Period::Week),
                 sent: Cell::new(None),
+                pending: RefCell::new(None),
+                pdf_path: RefCell::new(None),
             })
         }
     }
@@ -372,18 +384,28 @@ impl ReportWindow {
                 }
             }
             "export" => self.export(app, &message),
+            // From the Save dialog's thread (the page can't send this: see `configure`).
+            "save-chosen" => self.save_chosen(message["path"].as_str().map(PathBuf::from)),
+            "exporting-ready" => {
+                if let Some(path) = self.pdf_path.borrow_mut().take() {
+                    self.print_pdf(path);
+                }
+            }
             _ => {}
         }
     }
 
     fn export(&self, app: &AppShared, message: &serde_json::Value) {
+        if self.pending.borrow().is_some() || self.pdf_path.borrow().is_some() {
+            return; // One export at a time.
+        }
         let period = message["period"].as_str().and_then(Period::parse).unwrap_or(self.period.get());
         let stem = format!(
             "Barista usage {} {}",
             period.label().to_lowercase(),
             chrono::Local::now().format("%Y-%m-%d")
         );
-        match message["format"].as_str().unwrap_or("") {
+        let (pending, name, kind, pattern, extension) = match message["format"].as_str().unwrap_or("") {
             "csv" => {
                 let Some(text) = message["text"].as_str().filter(|text| text.len() <= 20_000_000) else {
                     return;
@@ -393,9 +415,7 @@ impl ReportWindow {
                     .filter(|name| name.ends_with(".csv") && !name.contains(['/', '\\', ':']))
                     .map(String::from)
                     .unwrap_or_else(|| format!("{stem}.csv"));
-                if let Some(path) = save_dialog(self.hwnd, &name, "CSV (comma-separated values)", "*.csv", "csv") {
-                    self.saved(std::fs::write(&path, text));
-                }
+                (Pending::Csv(text.to_string()), name, "CSV (comma-separated values)", "*.csv", "csv")
             }
             "html" => {
                 let page = lock(app)
@@ -403,17 +423,43 @@ impl ReportWindow {
                     .as_ref()
                     .map(|usage| barista_core::usage::report_page(usage, period));
                 let Some(page) = page else { return };
-                if let Some(path) = save_dialog(self.hwnd, &format!("{stem}.html"), "Web page", "*.html", "html") {
-                    self.saved(std::fs::write(&path, page));
-                }
+                (Pending::Html(page), format!("{stem}.html"), "Web page", "*.html", "html")
             }
-            "pdf" => {
-                if let Some(path) = save_dialog(self.hwnd, &format!("{stem}.pdf"), "PDF", "*.pdf", "pdf") {
-                    self.print_pdf(path);
-                }
+            "pdf" => (Pending::Pdf, format!("{stem}.pdf"), "PDF", "*.pdf", "pdf"),
+            "browser" => {
+                crate::open_usage_report(app, period);
+                return;
             }
-            "browser" => crate::open_usage_report(app, period),
-            _ => {}
+            _ => return,
+        };
+        *self.pending.borrow_mut() = Some(pending);
+        // Windows' Save dialog is modal: run it on its own thread so timers, the panel, and the tray
+        // keep working while it's open. Its answer comes back as "save-chosen".
+        let owner = self.hwnd.0 as isize;
+        let sender = self.sender.clone();
+        let (kind, pattern, extension) = (kind.to_string(), pattern.to_string(), extension.to_string());
+        std::thread::spawn(move || {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+            }
+            let path = save_dialog(HWND(owner as *mut std::ffi::c_void), &name, &kind, &pattern, &extension);
+            let path = path.map(|path| path.to_string_lossy().into_owned());
+            let _ = sender.send(UserEvent::Report(serde_json::json!({"cmd": "save-chosen", "path": path})));
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        });
+    }
+
+    fn save_chosen(&self, path: Option<PathBuf>) {
+        let Some(pending) = self.pending.borrow_mut().take() else { return };
+        let Some(path) = path else { return }; // Cancelled.
+        match pending {
+            Pending::Csv(text) => self.saved(std::fs::write(&path, text)),
+            Pending::Html(page) => self.saved(std::fs::write(&path, page)),
+            Pending::Pdf => {
+                // Print once the page has drawn every section on a solid background.
+                *self.pdf_path.borrow_mut() = Some(path);
+                self.post(&serde_json::json!({"type": "exporting", "on": true}));
+            }
         }
     }
 
@@ -433,10 +479,10 @@ impl ReportWindow {
             (view.webview.clone(), view.environment.clone())
         };
         let Ok(webview7) = webview.cast::<ICoreWebView2_7>() else {
+            self.post(&serde_json::json!({"type": "exporting", "on": false}));
             self.post(&serde_json::json!({"type": "saved", "text": "Saving a PDF needs a newer WebView2. Use Export → Open in browser and print from there."}));
             return;
         };
-        self.post(&serde_json::json!({"type": "exporting", "on": true}));
         let settings = environment.cast::<ICoreWebView2Environment6>().ok().and_then(|environment| unsafe {
             let settings = environment.CreatePrintSettings().ok()?;
             let _ = settings.SetShouldPrintBackgrounds(true);
@@ -479,6 +525,7 @@ impl ReportWindow {
         };
         CONTROLLER.with(|slot| *slot.borrow_mut() = None);
         self.sent.set(None);
+        self.pdf_path.borrow_mut().take();
         if let Some(view) = view {
             unsafe {
                 let _ = view.controller.Close();
@@ -619,7 +666,7 @@ fn configure(
                 if let Ok(message) = serde_json::from_str::<serde_json::Value>(&json) {
                     if matches!(
                         message["cmd"].as_str(),
-                        Some("ready" | "period" | "view" | "copy" | "open-folder" | "export")
+                        Some("ready" | "period" | "view" | "copy" | "open-folder" | "export" | "exporting-ready")
                     ) {
                         let _ = message_sender.send(UserEvent::Report(message));
                     }

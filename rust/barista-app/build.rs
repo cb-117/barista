@@ -6,6 +6,7 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=BARISTA_VERSION");
     let windows_target = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     let windows_host = env::var("HOST").is_ok_and(|host| host.contains("windows"));
     if !(windows_target && windows_host) {

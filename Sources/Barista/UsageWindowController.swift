@@ -376,17 +376,20 @@ final class ReportWebView: WKWebView, WKNavigationDelegate {
     }
     func requestCSV() { post(["type": "export-csv"]) }
 
-    /// The whole report (both views) as one PDF page, on a solid background.
+    /// The whole report (both views) as one PDF page, on a solid background. Captured once the page
+    /// says it has drawn that layout ("exporting-ready"), or after 2 seconds regardless.
     func capturePDF(_ completion: @escaping (Data?) -> Void) {
-        guard ready else { completion(nil); return }
+        guard ready, pendingCapture == nil else { completion(nil); return }
+        pendingCapture = completion
         post(["type": "exporting", "on": true])
-        // Let the page lay out before capturing.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self else { return }
-            self.createPDF { result in
-                self.post(["type": "exporting", "on": false])
-                completion(try? result.get())
-            }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.capture() }
+    }
+    private func capture() {
+        guard let completion = pendingCapture else { return }
+        pendingCapture = nil
+        createPDF { [weak self] result in
+            self?.post(["type": "exporting", "on": false])
+            completion(try? result.get())
         }
     }
 
@@ -398,6 +401,8 @@ final class ReportWebView: WKWebView, WKNavigationDelegate {
             lastJSON = nil
             show(view: view)
             if let usage = runtime.usage { send(report: usage) }
+        case "exporting-ready":
+            capture()
         case "period":
             if let id = message["id"] as? String, let period = UsagePeriod(rawValue: id) { onPeriod?(period) }
         case "copy":

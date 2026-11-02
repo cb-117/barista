@@ -33,6 +33,8 @@ public enum ReportTemplate {
     }
   }
   * { box-sizing: border-box; }
+  /* The hidden attribute always hides, whatever display a rule below sets. */
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
   main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 48px; }
   header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
@@ -127,7 +129,7 @@ public enum ReportTemplate {
   html.windows header .cup, html.windows header h1 { display: none; }
   html.windows main { max-width: none; padding: 16px 20px 28px; }
   /* While Barista saves an image or PDF: the whole report, on a solid background. */
-  html.exporting .only-history, html.exporting .only-projects { display: block !important; }
+  html.exporting .only-history:not([hidden]), html.exporting .only-projects:not([hidden]) { display: block !important; }
   html.exporting header, html.exporting .filter, html.exporting .iconbtn { display: none !important; }
   html.exporting body { background: var(--bg); }
   html.exporting.mac { --card: #FFFFFF; --line: #E4E4E4; }
@@ -615,7 +617,8 @@ function csvText() {
   return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 function csvName() {
-  const stamp = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const stamp = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
   return "barista-usage-" + (state.day || state.period) + "-" + stamp + ".csv";
 }
 function downloadCsv() {
@@ -672,6 +675,14 @@ function receive(message) {
   } else if (message.type === "exporting") {
     document.documentElement.classList.toggle("exporting", !!message.on);
     if (DATA) render();
+    // Barista captures (PDF, image) only after this layout has been drawn.
+    // Two frames, or half a second if frames are paused (a minimized window), whichever is first.
+    if (message.on) {
+      let sent = false;
+      const ready = () => { if (!sent) { sent = true; post({ cmd: "exporting-ready" }); } };
+      requestAnimationFrame(() => requestAnimationFrame(ready));
+      setTimeout(ready, 500);
+    }
   } else if (message.type === "export-csv") {
     if (DATA) exportAs("csv");
   } else if (message.type === "copied") {

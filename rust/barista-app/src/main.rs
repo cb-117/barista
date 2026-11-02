@@ -52,6 +52,10 @@ pub struct App {
     pub ephemeral: bool,
     /// Today, this week, and this month (see docs/USAGE.md), computed off the main thread.
     pub usage: Option<serde_json::Value>,
+    /// What the panel shows, worked out once per refresh: `usage` without the all-time period
+    /// (only the usage window needs every day), and the last 7 days for its chart.
+    pub usage_panel: Option<serde_json::Value>,
+    pub usage_week: Option<serde_json::Value>,
     pub usage_updated: Option<std::time::Instant>,
     pub usage_loading: bool,
     /// Claude account limits: when the app last asked (at most every 5 minutes), and whether it's asking now.
@@ -351,7 +355,27 @@ pub fn refresh_usage(app: &Shared, max_age: Duration) {
     std::thread::spawn(move || {
         use barista_core::usage::{report, Period};
         let value = report(&[Period::Today, Period::Week, Period::Month, Period::All]);
+        let today = chrono::Local::now().date_naive();
+        let week = barista_core::usage::daily_active_seconds(&value, 7, today).map(|days| {
+            serde_json::Value::Array(
+                days.into_iter()
+                    .map(|(date, seconds)| {
+                        serde_json::json!({
+                            "date": date.format("%Y-%m-%d").to_string(),
+                            "label": date.format("%a %b %-d").to_string(),
+                            "seconds": seconds,
+                        })
+                    })
+                    .collect(),
+            )
+        });
+        let mut panel = value.clone();
+        if let Some(periods) = panel["periods"].as_array_mut() {
+            periods.retain(|period| period["id"] != "all");
+        }
         let mut state = lock(&app);
+        state.usage_panel = Some(panel);
+        state.usage_week = week;
         send_weekly_summary_if_due(&mut state, &value, chrono::Local::now().naive_local());
         state.usage = Some(value);
         state.usage_updated = Some(std::time::Instant::now());
@@ -535,6 +559,8 @@ fn main() {
         launch_at_login: false,
         ephemeral,
         usage: None,
+        usage_panel: None,
+        usage_week: None,
         usage_updated: None,
         usage_loading: false,
         account_last_attempt: None,

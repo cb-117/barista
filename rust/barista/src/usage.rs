@@ -1423,8 +1423,10 @@ impl WeeklySummary {
         } else {
             format!("across {} projects", self.projects)
         };
-        let cost = if self.estimated_cost >= 0.01 {
+        let cost = if self.estimated_cost >= 10.0 {
             format!(", about ${:.0} at API prices", self.estimated_cost.round())
+        } else if self.estimated_cost >= 0.01 {
+            format!(", about ${:.2} at API prices", self.estimated_cost)
         } else {
             String::new()
         };
@@ -1972,7 +1974,7 @@ mod tests {
         assert_eq!(summary.week_start, NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
         assert_eq!((summary.active_seconds, summary.projects), (5400, 2));
         assert!((summary.estimated_cost - 4.0).abs() < 1e-9);
-        assert_eq!(summary.text(), "Last week: 1h 30m across 2 projects, about $4 at API prices.");
+        assert_eq!(summary.text(), "Last week: 1h 30m across 2 projects, about $4.00 at API prices.");
         let days = daily_active_seconds(&report, 7, today).unwrap();
         assert_eq!(days.len(), 7);
         assert_eq!(days[0], (NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(), 0));

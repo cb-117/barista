@@ -383,7 +383,8 @@ report; on Windows through WebView2's printing, light colors), and on a Mac also
 
 On Mondays from 9:00 local time through Tuesday, Barista sends one notification for the week before
 (Monday 00:00 to Sunday 24:00, local): `Last week: <active time> across <n> projects, about $<cost> at API
-prices.` (`in 1 project`; the cost part is left out under $0.01, and the cost is rounded to whole dollars).
+prices.` (`in 1 project`; the cost is shown to the cent under $10, rounded to whole dollars from $10, and left out
+under $0.01).
 Active time and cost are the sums of every project's `days` entries for those seven dates, from the
 `all` period; a project counts if it has active time or tokens on any of them. Nothing is sent with under a
 minute of active time. Each week is sent once (the app remembers the week's Monday). It needs

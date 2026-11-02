@@ -758,15 +758,9 @@ pub fn panel_state(app: &Shared) -> serde_json::Value {
             "launchAtLogin": state.launch_at_login,
             "weeklySummary": prefs.weekly_summary,
         },
-        "week": state.usage.as_ref().and_then(|usage| {
-            barista_core::usage::daily_active_seconds(usage, 7, chrono::Local::now().date_naive())
-        }).map(|days| days.into_iter().map(|(date, seconds)| json!({
-            "date": date.format("%Y-%m-%d").to_string(),
-            "label": date.format("%a %b %-d").to_string(),
-            "seconds": seconds,
-        })).collect::<Vec<_>>()),
+        "week": state.usage_week,
         "agents": agents,
-        "usage": state.usage,
+        "usage": state.usage_panel,
         "usageLoading": state.usage_loading,
         "usageSummary": usage_summary(state.usage.as_ref()),
         "usageHasActivity": state.usage.as_ref().map(has_activity).unwrap_or(false),
