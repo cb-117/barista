@@ -449,14 +449,42 @@ final class AppRuntime: ObservableObject {
     }
     /// Once a week, from Monday 9:00 through Tuesday: last week's totals, if there were any.
     private func sendWeeklySummaryIfDue(_ report: UsageReport, now: Date = Date()) {
-        guard weeklySummary, [.authorized, .provisional].contains(notificationAuthorization) else { return }
+        guard weeklySummary, notificationAuthorization != .denied else { return }
         var calendar = Calendar.current
         calendar.firstWeekday = 2
         let weekday = calendar.component(.weekday, from: now) // 2 = Monday
         guard weekday == 3 || (weekday == 2 && calendar.component(.hour, from: now) >= 9),
               let summary = report.lastWeekSummary(now: now, calendar: calendar) else { return }
-        let key = ISO8601DateFormatter().string(from: summary.weekStart)
-        guard defaults.string(forKey: "weeklySummarySent") != key else { return }
+        // The week's local Monday, so moving to another time zone doesn't make it look like a new week.
+        let monday = calendar.dateComponents([.year, .month, .day], from: summary.weekStart)
+        let key = String(format: "%04d-%02d-%02d", monday.year ?? 0, monday.month ?? 0, monday.day ?? 0)
+        let sent = defaults.string(forKey: "weeklySummarySent")
+        guard sent != key else { return }
+        // 0.0.14 saved the instant of Monday midnight in whatever time zone you were in. Any time zone's
+        // Monday midnight is within a day and a half of ours, and weeks are 7 days apart: same week.
+        if let sent, let legacy = ISO8601DateFormatter().date(from: sent),
+           abs(legacy.timeIntervalSince(summary.weekStart)) < 36 * 3600 {
+            defaults.set(key, forKey: "weeklySummarySent")
+            return
+        }
+        if notificationAuthorization == .notDetermined {
+            // On by default, so nobody has been asked yet. Ask quietly: provisional notifications go
+            // straight to Notification Center without a prompt, and turning on session notifications
+            // later still asks for full permission.
+            guard !requestingSummaryPermission else { return }
+            requestingSummaryPermission = true
+            Task { @MainActor in
+                let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .provisional])) ?? false
+                requestingSummaryPermission = false
+                refreshPermissions()
+                if granted, weeklySummary, defaults.string(forKey: "weeklySummarySent") != key { postWeeklySummary(summary, key: key) }
+            }
+            return
+        }
+        postWeeklySummary(summary, key: key)
+    }
+    private var requestingSummaryPermission = false
+    private func postWeeklySummary(_ summary: WeeklySummary, key: String) {
         defaults.set(key, forKey: "weeklySummarySent")
         let content = UNMutableNotificationContent()
         content.title = "Your week in Barista"

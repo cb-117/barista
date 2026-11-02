@@ -89,7 +89,7 @@ const PAGE_COMMANDS: [&str; 14] = [
     "start",
 ];
 /// Commands with an argument: `start:900`, `cancel:<id>`, `toggle:display`, and so on.
-const PAGE_COMMAND_PREFIXES: [&str; 10] = [
+const PAGE_COMMAND_PREFIXES: [&str; 11] = [
     "start:",
     "add:",
     "cancel:",
@@ -100,6 +100,7 @@ const PAGE_COMMAND_PREFIXES: [&str; 10] = [
     "copy:",
     "panel:height:",
     "usage-report:",
+    "support:",
 ];
 
 fn page_may_send(command: &str) -> bool {

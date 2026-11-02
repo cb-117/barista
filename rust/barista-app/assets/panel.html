@@ -542,6 +542,10 @@ function renderSettings(root) {
     el("div", { class: "group" },
       settingRow("Check for updates daily", null, toggle(p.checksForUpdates, "toggle:updates", "Check for updates daily")),
       settingRow(state.updateStatus || `Barista ${state.version}`, null, button("small-button", "Check now", "check-updates"))),
+    el("div", { class: "group-title", text: "Support Barista" }),
+    el("div", { class: "group" },
+      settingRow("Free and open source", "A star helps others find it; a coffee keeps it brewing", null),
+      el("div", { class: "row" }, button("small-button", "★ Star on GitHub", "support:github"), button("small-button", "☕ Buy Me a Coffee", "support:coffee"))),
     history.length ? el("div", { class: "group-title", text: "Recent sessions" }) : null,
     history.length ? el("div", { class: "group" }, ...history, el("div", { class: "row" }, el("span"), button("small-button", "Clear", "clear-history"))) : null,
     el("div", { class: "note", text: `Barista ${state.version} · prevents idle sleep only. Closing a laptop lid or choosing Sleep still sleeps your PC.` }));

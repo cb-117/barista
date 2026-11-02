@@ -9,6 +9,19 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-11-01
+
+### Added
+- **Support Barista.** Barista is free and open source. If you'd like to help, **Star on GitHub** helps other people find it, and **Buy Me a Coffee** ([buymeacoffee.com/baristatime](https://buymeacoffee.com/baristatime)) keeps it brewing. Both are in Settings → Support Barista and the right-click menu on a Mac, the panel's Settings and the tray menu on Windows, and the tray menu on Linux.
+
+### Changed
+- **The Mac app is signed and notarized by Apple.** Opening a new download no longer stops at "macOS can't verify Barista", and there's no **Open Anyway** step. Updating from 0.0.14 works as usual; macOS may ask you once to allow Barista as a login item again, since it now has a verified developer.
+
+### Fixed
+- The weekly summary never arrived unless you'd turned on another notification. It's on by default, but Barista didn't ask for notification permission. It now delivers quietly to Notification Center, without a prompt. Turning on **Notify when a session ends** still asks for alerts.
+- Moving to another time zone could send the same weekly summary twice.
+- If Barista couldn't reopen after an update, it deleted the previous version too. It now keeps it.
+
 ## [0.0.14] - 2026-11-01
 
 ### Added

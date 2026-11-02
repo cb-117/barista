@@ -6,6 +6,10 @@ use barista_core::hooks::HookAgent;
 use barista_core::*;
 use std::time::Duration;
 
+/// Where people can support Barista: a GitHub star, or a coffee.
+const REPO_URL: &str = "https://github.com/cb-117/barista";
+const COFFEE_URL: &str = "https://buymeacoffee.com/baristatime";
+
 /// One menu entry. Ids are the commands `handle` understands; labels have none.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
@@ -297,6 +301,11 @@ pub fn build(app: &Shared) -> Model {
     signature.push(session.history().first().map(|h| h.id.clone()).unwrap_or_default());
 
     menu.push(Entry::Separator);
+    menu.push(Entry::Submenu {
+        text: "Support Barista".into(),
+        enabled: true,
+        children: vec![item("support:github", "Star on GitHub"), item("support:coffee", "Buy Me a Coffee")],
+    });
     menu.push(label(&format!("Barista {VERSION}")));
     menu.push(item("quit", "Quit Barista"));
 
@@ -426,6 +435,11 @@ pub fn handle(app: &Shared, id: &str) -> bool {
         }
         "dismiss-update" => state.dismiss_update(),
         "clear-history" => state.session.clear_history(),
+        "support" => match argument {
+            "github" => platform::open_url(REPO_URL),
+            "coffee" => platform::open_url(COFFEE_URL),
+            _ => {}
+        },
         "usage-refresh" => {
             drop(state);
             refresh_usage(app, Duration::ZERO);

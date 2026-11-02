@@ -124,8 +124,45 @@ jobs:
           swift run BaristaChecks
           python3 Tests/agent_integration.py
           python3 Tests/usage_check.py --bin-dir .build/debug
+      # Mac releases are signed with Developer ID and notarized; a release without the secrets fails.
+      - name: Signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
+            [ -n "${!name}" ] || { echo "The $name secret is missing; refusing to ship an unsigned Mac build."; exit 1; }
+          done
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -n 1)"
+          [ -n "$identity" ] || { echo "MACOS_CERT_P12 has no Developer ID Application identity."; exit 1; }
+          echo "Signing as $identity"
+          echo "BARISTA_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          printf '%s' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_KEY_PATH=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
       - name: Build universal app
         run: zsh scripts/build-app.sh --universal
+      - name: Notarize app
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          zsh scripts/notarize.sh build/Barista.app
+          # Fails unless Gatekeeper accepts it as notarized Developer ID software.
+          spctl --assess --type execute --verbose=2 build/Barista.app
       - name: Windows and Linux builds
         uses: actions/download-artifact@v4
         with:
@@ -135,6 +172,8 @@ jobs:
       - name: Package, sign, and publish
         env:
           BARISTA_UPDATE_KEY: ${{ secrets.BARISTA_UPDATE_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
           set -euo pipefail
           version="${{ needs.version.outputs.version }}"
@@ -153,6 +192,7 @@ jobs:
           "$RUNNER_TEMP/dmg/bin/pip" install --quiet dmgbuild==1.6.5
           DMGBUILD_PYTHON="$RUNNER_TEMP/dmg/bin/python" zsh scripts/make-dmg.sh
           dmg="Barista-$version.dmg"
+          zsh scripts/notarize.sh "build/$dmg"
           mv "build/$dmg" "$dmg"
           cp "$dmg" Barista.dmg   # stable names, so the website and install.sh can fetch the latest
           cp "$zip" Barista.zip
@@ -169,9 +209,6 @@ jobs:
           ---
 
           **New install (Mac):** download **$dmg**, open it, and drag **Barista** into Applications.
-
-          This build isn't notarized yet. The first time you open it, macOS will block it: click **Done**,
-          then go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
           **Or from Terminal (or let your AI agent do it):** \`curl -fsSL https://baristatime.app/install.sh | sh\`
 

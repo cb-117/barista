@@ -138,6 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(action("Usage & Limits…") { [weak self] in self?.usageWindow.show(tab: .overview) })
         menu.addItem(action("Projects & History…") { [weak self] in self?.usageWindow.show(tab: .projects) })
         menu.addItem(action("Settings…", key: ",") { [weak self] in self?.settings.show() })
+        let support = NSMenuItem(title: "Support Barista", action: nil, keyEquivalent: "")
+        support.submenu = NSMenu()
+        support.submenu?.addItem(action("Star on GitHub") { NSWorkspace.shared.open(BaristaVersion.repoPage) })
+        support.submenu?.addItem(action("Buy Me a Coffee") { NSWorkspace.shared.open(BaristaVersion.supportPage) })
+        menu.addItem(support)
         menu.addItem(action("Quit Barista", key: "q") { [weak self] in
             self?.runtime.shutdown()
             NSApp.terminate(nil)

@@ -39,9 +39,14 @@ for plist in "$staging/Contents/Info.plist" "$launcher/Contents/Info.plist"; do
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" -c "Set :CFBundleVersion $version" "$plist"
 done
 cp docs/AGENTS.md "$staging/Contents/Resources/AgentGuide.md"
-codesign --force --sign - --options runtime "$staging/Contents/Helpers/barista"
-codesign --force --sign - --options runtime "$launcher"
-codesign --force --sign - --options runtime "$staging"
+# Ad-hoc by default. Set BARISTA_SIGN_IDENTITY (e.g. "Developer ID Application: …") to sign for
+# distribution; that adds a secure timestamp, which notarization requires.
+identity="${BARISTA_SIGN_IDENTITY:--}"
+sign_flags=(--force --sign "$identity" --options runtime)
+[[ "$identity" == "-" ]] || sign_flags+=(--timestamp)
+codesign "${sign_flags[@]}" "$staging/Contents/Helpers/barista"
+codesign "${sign_flags[@]}" "$launcher"
+codesign "${sign_flags[@]}" "$staging"
 
 # Swap complete bundles; never overwrite a running executable in place.
 if [[ -e "$PWD/build/Barista.app" ]]; then

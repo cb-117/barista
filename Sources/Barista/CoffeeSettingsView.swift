@@ -136,6 +136,19 @@ struct CoffeeSettingsView: View {
             }
 
             Section {
+                HStack(spacing: 10) {
+                    Button { NSWorkspace.shared.open(BaristaVersion.repoPage) } label: {
+                        Label("Star on GitHub", systemImage: "star")
+                    }
+                    Button { NSWorkspace.shared.open(BaristaVersion.supportPage) } label: {
+                        Label("Buy Me a Coffee", systemImage: "cup.and.saucer")
+                    }
+                }
+            } header: { Text("Support Barista") } footer: {
+                Text("Barista is free and open source. A star helps other people find it, and a coffee keeps it brewing.")
+            }
+
+            Section {
                 if session.history.isEmpty {
                     Text("Nothing yet").foregroundStyle(.secondary)
                 }

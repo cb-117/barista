@@ -74,8 +74,8 @@ enum Updater {
             mv "$work/previous.app" "$target" || exit 1
           fi
         fi
-        open "$target"
-        rm -rf "$work"
+        # Keep the previous version (in the work folder) unless the app at the target path opened.
+        open "$target" && rm -rf "$work"
         """
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")

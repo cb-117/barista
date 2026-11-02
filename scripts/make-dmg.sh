@@ -16,6 +16,9 @@ rm -f "$output"
 "$python" -I -m dmgbuild -s scripts/dmg-settings.py \
     -D app="$app" -D background="$PWD/Support/dmg-background.tiff" -D volume_icon="$PWD/Support/Barista.icns" \
     "Barista $version" "$output"
-codesign --force --sign - "$output"
+identity="${BARISTA_SIGN_IDENTITY:--}"
+sign_flags=(--force --sign "$identity")
+[[ "$identity" == "-" ]] || sign_flags+=(--timestamp)
+codesign "${sign_flags[@]}" "$output"
 hdiutil verify "$output" >/dev/null
 print "Built: $output"
