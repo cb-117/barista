@@ -9,7 +9,10 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-11-01
+
 ### Added
+- **Schedule** (Mac). Settings → Schedule keeps your Mac awake during hours you choose, such as Monday to Friday, 8:00 AM to 5:00 PM, by your Mac's clock and time zone. Add as many stretches as you like; hours that end at or before they start run past midnight. While scheduled hours are on, **Scheduled hours** appears in the panel with when they end. Stop it there to pause until that stretch ends, or **Resume** from the panel or right-click menu. Battery protection still applies, and the schedule starts again once you're on power.
 - **Projects and History, inside Barista.** On a Mac, Usage & Limits is now a resizable window with **Overview**, **Projects**, and **History** tabs (⌘1–⌘3), a period menu (now including **All time**), **Export**, and **Share** in its toolbar. On Windows, the panel's **Projects & history** button, its new 7-day chart, and the tray menu open a usage window. The numbers update while it's open, instead of a snapshot in your browser. Linux, and `barista report`, still open the report in your browser.
 - **Select a day** in History's chart to see only that day's time, tokens, and cost per project.
 - **Right-click** a number, project name, or folder to copy it, and click the folder icon to show a project in Finder or File Explorer.

@@ -28,7 +28,8 @@ struct TaskRow: View {
     }
 
     private var icon: String {
-        switch lease.source {
+        if lease.isScheduled { return "calendar" }
+        return switch lease.source {
         case .manual: "cup.and.saucer.fill"
         case .agent: "sparkles"
         case .command: "terminal"
@@ -36,14 +37,21 @@ struct TaskRow: View {
         }
     }
     private var detail: String {
-        let kind = switch lease.source {
+        let kind = lease.isScheduled ? scheduledUntil : sourceKind
+        let display = lease.keepDisplayAwake ? "display on" : "display may sleep"
+        return "\(kind) · \(display)"
+    }
+    private var sourceKind: String {
+        switch lease.source {
         case .manual: "Your session"
         // Watched apps (Claude, ChatGPT) renew while busy; an app picked from the panel lasts until it quits.
         case .application: lease.expiresAt == nil ? "Until the app quits" : "While it’s busy"
         case .agent: "Agent"
         case .command: "Until the command finishes"
         }
-        let display = lease.keepDisplayAwake ? "display on" : "display may sleep"
-        return "\(kind) · \(display)"
+    }
+    private var scheduledUntil: String {
+        guard let end = lease.expiresAt else { return "Scheduled" }
+        return "Scheduled until \(end.formatted(date: Calendar.current.isDateInToday(end) ? .omitted : .abbreviated, time: .shortened))"
     }
 }

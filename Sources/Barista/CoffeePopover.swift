@@ -77,6 +77,18 @@ struct CoffeePopover: View {
             }
             primaryButton
             if session.manualSession != nil && !tasks.isEmpty { taskList }
+            if let schedule = runtime.scheduleSummary {
+                HStack(spacing: 6) {
+                    Label(schedule.text, systemImage: "calendar").font(.system(size: 11)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if schedule.paused {
+                        Button("Resume") { runtime.resumeSchedule() }
+                            .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(accent)
+                            .help("Keep your Mac awake for the rest of these scheduled hours")
+                    }
+                }
+            }
             if let days = runtime.usage?.dailyActiveSeconds(days: 7), days.contains(where: { $0.seconds > 0 }) {
                 WeekSparkline(days: days, accent: accent) { runtime.onShowUsage?(.history) }
             }

@@ -105,7 +105,7 @@ public final class AwakeSession: ObservableObject {
     @discardableResult
     public func acquire(title: String, source: SessionSource, duration: TimeInterval?, display: Bool = false,
                         processID: Int32? = nil, maxDuration: TimeInterval? = nil,
-                        replacingManual: Bool = false) throws -> CoffeeLease {
+                        replacingManual: Bool = false, scheduled: Bool = false) throws -> CoffeeLease {
         refresh()
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 100,
@@ -128,7 +128,7 @@ public final class AwakeSession: ObservableObject {
         let lease = CoffeeLease(id: UUID().uuidString.lowercased(), title: title, source: source,
                                 startedAt: start, expiresAt: expiry, hardDeadline: deadline,
                                 keepDisplayAwake: display, processID: processID, processIdentity: identity,
-                                progress: nil, message: nil, lastHeartbeat: start)
+                                progress: nil, message: nil, lastHeartbeat: start, scheduled: scheduled ? true : nil)
         let existing = replacingManual ? sessions.filter { $0.source != .manual } : sessions
         let desiredDisplay = display || existing.contains(where: \.keepDisplayAwake)
         // Create the replacement assertion before changing visible ownership.
@@ -222,6 +222,12 @@ public final class AwakeSession: ObservableObject {
         sessions[index].lastHeartbeat = clock
         return true
     }
+    /// Changes whether a session keeps the display on, e.g. scheduled hours after you change the setting.
+    public func setDisplay(id: String, keepDisplayAwake: Bool) {
+        guard let index = sessions.firstIndex(where: { $0.id == id }), sessions[index].keepDisplayAwake != keepDisplayAwake else { return }
+        sessions[index].keepDisplayAwake = keepDisplayAwake
+        reconcilePower()
+    }
     public func heartbeat(id: String, seconds: TimeInterval = 300, progress: Double? = nil, message: String? = nil,
                           restartingCap: TimeInterval? = nil) throws -> CoffeeLease {
         refresh()
@@ -310,11 +316,15 @@ public final class AwakeSession: ObservableObject {
         guard !ids.isEmpty else { return }
         let finished = sessions.filter { ids.contains($0.id) }
         guard !finished.isEmpty else { return }
-        if [.stopped, .batteryLow, .appQuit, .powerError].contains(reason) { stopToken = UUID().uuidString.lowercased() }
+        // Stopping only scheduled hours (their row) leaves agent turns alone; Stop all revokes them in stop().
+        if [.stopped, .batteryLow, .appQuit, .powerError].contains(reason), finished.contains(where: { !$0.isScheduled }) {
+            stopToken = UUID().uuidString.lowercased()
+        }
         sessions.removeAll { ids.contains($0.id) }
         for lease in finished {
             let completion = SessionCompletion(id: lease.id, title: lease.title, source: lease.source,
-                                               startedAt: lease.startedAt, endedAt: clock, reason: reason)
+                                               startedAt: lease.startedAt, endedAt: clock, reason: reason,
+                                               scheduled: lease.scheduled)
             history.insert(completion, at: 0)
             onCompletion?(completion)
         }

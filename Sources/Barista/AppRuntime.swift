@@ -109,6 +109,24 @@ final class AppRuntime: ObservableObject {
         if !enabled { activityBurstStart[app.id] = nil; activityTrackers[app.id] = nil }
         objectWillChange.send()
     }
+    // MARK: Schedule state
+
+    /// Hours Barista keeps the Mac awake on its own (Settings → Schedule), by the system clock.
+    @Published var schedule: AwakeSchedule {
+        didSet {
+            guard schedule != oldValue else { return }
+            if let data = try? JSONEncoder().encode(schedule) { defaults.set(data, forKey: "schedule") }
+            // New hours (or turning it back on) start fresh; changing only the display setting doesn't resume.
+            if schedule.rules != oldValue.rules || schedule.enabled != oldValue.enabled { schedulePausedUntil = nil }
+            applySchedule()
+        }
+    }
+    /// You stopped scheduled hours: they stay off until this window ends (or you resume them).
+    @Published private(set) var schedulePausedUntil: Date? {
+        didSet { defaults.set(schedulePausedUntil, forKey: "schedulePausedUntil") }
+    }
+    private var scheduleTimer: Timer?
+    private var scheduleObservers: [NSObjectProtocol] = []
     @Published var checksForUpdates: Bool { didSet { defaults.set(checksForUpdates, forKey: "checksForUpdates"); scheduleUpdateChecks() } }
     @Published private(set) var availableUpdate: AvailableUpdate?
     @Published private(set) var updateStatus: String?
@@ -128,9 +146,14 @@ final class AppRuntime: ObservableObject {
         agentAccess = defaults.object(forKey: "agentAccess") as? Bool ?? true
         checksForUpdates = defaults.object(forKey: "checksForUpdates") as? Bool ?? true
         notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
+        schedule = defaults.data(forKey: "schedule").flatMap { try? JSONDecoder().decode(AwakeSchedule.self, from: $0) } ?? AwakeSchedule()
+        schedulePausedUntil = (defaults.object(forKey: "schedulePausedUntil") as? Date).flatMap { $0 > Date() ? $0 : nil }
         session.keepDisplayAwake = defaults.object(forKey: "keepDisplayAwake") as? Bool ?? true
         session.batteryThreshold = defaults.object(forKey: "batteryThreshold") as? Int ?? 20
-        session.onCompletion = { [weak self] completion in self?.notify(completion) }
+        session.onCompletion = { [weak self] completion in
+            self?.scheduleEnded(completion)
+            self?.notify(completion)
+        }
         launchAtLogin = loginItem.status == .enabled || SMAppService.mainApp.status == .enabled
         // Relaunched by an update: carry on with the sessions the previous version handed over.
         if let handoff = defaults.data(forKey: Self.handoffKey) {
@@ -230,6 +253,91 @@ final class AppRuntime: ObservableObject {
         activity.tolerance = 2
         RunLoop.main.add(activity, forMode: .common)
         activityTimer = activity
+        startScheduleChecks()
+    }
+
+    // MARK: Schedule
+
+    private func startScheduleChecks() {
+        applySchedule()
+        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.applySchedule() }
+        }
+        timer.tolerance = 2
+        RunLoop.main.add(timer, forMode: .common)
+        scheduleTimer = timer
+        // Waking from sleep and clock or time-zone changes can move us in or out of scheduled hours at once.
+        let workspace = NSWorkspace.shared.notificationCenter
+        let center = NotificationCenter.default
+        let apply: @Sendable (Notification) -> Void = { [weak self] _ in Task { @MainActor in self?.applySchedule() } }
+        scheduleObservers = [
+            workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: apply),
+            center.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: .main, using: apply),
+            center.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main, using: apply),
+        ]
+    }
+
+    /// Starts, extends, or ends the scheduled session to match the schedule and the system clock.
+    func applySchedule(now: Date = Date()) {
+        session.refresh()
+        let lease = session.sessions.first(where: \.isScheduled)
+        guard let end = schedule.activeUntil(now) else {
+            if let lease { session.release(id: lease.id) }
+            schedulePausedUntil = nil
+            return
+        }
+        if let paused = schedulePausedUntil {
+            if now < paused {
+                if let lease { session.release(id: lease.id) }
+                return
+            }
+            schedulePausedUntil = nil
+        }
+        let seconds = min(AwakeSchedule.maxLease, end.timeIntervalSince(now))
+        guard seconds > 0 else { return }
+        if let current = lease {
+            // The schedule changed, or a 24-hour lease needs topping up.
+            if abs((current.expiresAt ?? .distantFuture).timeIntervalSince(now.addingTimeInterval(seconds))) > 1 {
+                session.renew(id: current.id, seconds: seconds)
+            }
+            session.setDisplay(id: current.id, keepDisplayAwake: schedule.keepDisplayAwake)
+        } else {
+            // Fails only while battery protection is on (or at the session limit); the next check tries again.
+            _ = try? session.acquire(title: "Scheduled hours", source: .application, duration: seconds,
+                                     display: schedule.keepDisplayAwake, scheduled: true)
+        }
+    }
+    /// Stopped by you (its row, or Stop all): stay off for the rest of the window it was in. Saved right
+    /// away, so quitting or sleeping before the next check can't lose the pause or move it to a later window.
+    private func scheduleEnded(_ completion: SessionCompletion) {
+        guard completion.isScheduled, completion.reason == .stopped,
+              let end = schedule.activeUntil(completion.endedAt) else { return }
+        schedulePausedUntil = end
+    }
+    /// Turns scheduled hours back on after you stopped them.
+    func resumeSchedule() {
+        schedulePausedUntil = nil
+        applySchedule()
+    }
+    /// What the panel says about the schedule: nil when it's off.
+    var scheduleSummary: (text: String, paused: Bool)? {
+        guard schedule.enabled, schedule.rules.contains(where: { !$0.days.isEmpty }) else { return nil }
+        let now = Date()
+        if let paused = schedulePausedUntil, paused > now {
+            return (paused == .distantFuture ? "Schedule paused" : "Schedule paused until \(Self.when(paused, now: now))", true)
+        }
+        if session.sessions.contains(where: \.isScheduled) { return nil }
+        if schedule.activeUntil(now) != nil, session.batteryBlocked { return ("Schedule waits for power", false) }
+        guard let next = schedule.nextStart(after: now) else { return nil }
+        return ("Next scheduled hours \(Self.when(next, now: now))", false)
+    }
+    /// "5:00 PM", "tomorrow at 8:00 AM", or "Mon at 8:00 AM".
+    private static func when(_ date: Date, now: Date) -> String {
+        let calendar = Calendar.current
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDate(date, inSameDayAs: now) { return "at \(time)" }
+        if calendar.isDateInTomorrow(date) { return "tomorrow at \(time)" }
+        return "\(date.formatted(.dateTime.weekday(.abbreviated))) at \(time)"
     }
 
     /// Samples watched apps' CPU off the main thread, then starts, renews, or lets lapse their sessions.
@@ -644,6 +752,8 @@ final class AppRuntime: ObservableObject {
     }
     private func notify(_ completion: SessionCompletion) {
         guard notificationsEnabled, [.expired, .released, .processExited, .batteryLow].contains(completion.reason) else { return }
+        // Scheduled hours are released when you turn the schedule off or change it: nothing to announce.
+        if completion.isScheduled && completion.reason == .released { return }
         let content = UNMutableNotificationContent()
         content.title = completion.reason == .batteryLow ? "Time to save some battery" : "Coffee break complete"
         content.body = completion.reason == .batteryLow ? "Awake sessions stopped at \(session.batteryThreshold)% battery. Your work is still running." : "\(completion.title) · \(completion.reason.label)."

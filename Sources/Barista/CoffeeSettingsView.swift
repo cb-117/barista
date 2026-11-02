@@ -33,6 +33,32 @@ struct CoffeeSettingsView: View {
             }
 
             Section {
+                Toggle("Keep awake on a schedule", isOn: $runtime.schedule.enabled)
+                if runtime.schedule.enabled {
+                    // Bound by id, not index, so removing a row never leaves a view holding a stale index.
+                    ForEach(runtime.schedule.rules) { rule in
+                        ScheduleRuleEditor(rule: Binding {
+                            runtime.schedule.rules.first { $0.id == rule.id } ?? rule
+                        } set: { edited in
+                            if let index = runtime.schedule.rules.firstIndex(where: { $0.id == rule.id }) { runtime.schedule.rules[index] = edited }
+                        }, canDelete: runtime.schedule.rules.count > 1) {
+                            runtime.schedule.rules.removeAll { $0.id == rule.id }
+                        }
+                    }
+                    HStack {
+                        Button("Add hours") { runtime.schedule.rules.append(ScheduleRule(days: [7, 1], start: 10 * 60, end: 14 * 60)) }
+                        Spacer()
+                        if runtime.schedulePausedUntil != nil {
+                            Button("Resume now") { runtime.resumeSchedule() }
+                        }
+                    }
+                    Toggle("Keep display on during scheduled hours", isOn: $runtime.schedule.keepDisplayAwake)
+                }
+            } header: { Text("Schedule") } footer: {
+                Text("Uses this Mac’s clock and time zone. Hours that end at or before they start run past midnight. Stop them from the panel to pause until that stretch ends. A schedule doesn’t wake a sleeping Mac, and closing the lid still sleeps it.")
+            }
+
+            Section {
                 permissionRow("Start at login", status: loginText, needsAttention: runtime.loginStatus == .needsApproval, pane: .loginItems)
                 permissionRow("Notifications", status: notificationText,
                               needsAttention: runtime.notificationAuthorization == .denied, pane: .notifications)
@@ -202,6 +228,64 @@ struct CoffeeSettingsView: View {
             }
             Spacer()
             Button(pane.title) { runtime.openSystemSettings(pane) }
+        }
+    }
+}
+
+/// One stretch of scheduled hours: which days, from when, until when.
+struct ScheduleRuleEditor: View {
+    @Binding var rule: ScheduleRule
+    let canDelete: Bool
+    let delete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                ForEach(weekOrder, id: \.self) { day in
+                    let on = rule.days.contains(day)
+                    Button {
+                        if on { rule.days.remove(day) } else { rule.days.insert(day) }
+                    } label: {
+                        Text(Calendar.current.veryShortWeekdaySymbols[day - 1])
+                            .font(.system(size: 11, weight: on ? .semibold : .regular))
+                            .frame(width: 26, height: 24)
+                            .foregroundStyle(on ? Color.white : Color.primary)
+                            .background(on ? CoffeeTheme.accent : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Calendar.current.weekdaySymbols[day - 1])
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                }
+                Spacer()
+                if canDelete {
+                    Button(action: delete) { Image(systemName: "trash") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Remove these hours").accessibilityLabel("Remove these hours")
+                }
+            }
+            HStack {
+                DatePicker("From", selection: time($rule.start), displayedComponents: .hourAndMinute)
+                DatePicker("to", selection: time($rule.end), displayedComponents: .hourAndMinute)
+            }
+            .controlSize(.small)
+            Text(rule.days.isEmpty ? "Choose at least one day." : rule.description())
+                .font(.caption).foregroundStyle(rule.days.isEmpty ? CoffeeTheme.accent : .secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var weekOrder: [Int] {
+        let first = Calendar.current.firstWeekday
+        return (0..<7).map { (first - 1 + $0) % 7 + 1 }
+    }
+    /// Minutes after midnight, edited as a time of day.
+    private func time(_ minutes: Binding<Int>) -> Binding<Date> {
+        Binding {
+            Calendar.current.date(bySettingHour: minutes.wrappedValue / 60, minute: minutes.wrappedValue % 60, second: 0, of: Date()) ?? Date()
+        } set: { date in
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            minutes.wrappedValue = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
         }
     }
 }

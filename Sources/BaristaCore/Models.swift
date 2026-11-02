@@ -17,7 +17,11 @@ public struct CoffeeLease: Codable, Identifiable, Sendable, Equatable {
     public var progress: Double?
     public var message: String?
     public var lastHeartbeat: Date
+    /// Scheduled hours (Settings → Schedule). Their source stays `application` on the wire, so CLI and
+    /// MCP processes started by an older version, which don't know a newer source, still decode replies.
+    public var scheduled: Bool? = nil
     public var isTask: Bool { source == .agent || source == .command }
+    public var isScheduled: Bool { scheduled == true }
 }
 
 public enum EndReason: String, Codable, Sendable {
@@ -42,6 +46,9 @@ public struct SessionCompletion: Codable, Identifiable, Sendable {
     public let startedAt: Date
     public let endedAt: Date
     public let reason: EndReason
+    /// Scheduled hours; see `CoffeeLease.scheduled`.
+    public var scheduled: Bool? = nil
+    public var isScheduled: Bool { scheduled == true }
     public var duration: TimeInterval { max(0, endedAt.timeIntervalSince(startedAt)) }
 }
 

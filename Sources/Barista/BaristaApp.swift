@@ -128,6 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(action("Until stopped") { [weak self] in self?.runtime.startManual(seconds: nil) })
             if session.batteryBlocked { menu.items.dropFirst().forEach { $0.isEnabled = false } }
         }
+        if runtime.schedulePausedUntil != nil {
+            menu.addItem(action("Resume scheduled hours") { [weak self] in self?.runtime.resumeSchedule() })
+        }
         if session.sessions.count > 1 || (session.isActive && session.manualSession == nil) {
             menu.addItem(action("Stop all") { session.stop() })
         }

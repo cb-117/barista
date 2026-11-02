@@ -255,6 +255,36 @@ func updateCheckComparesReleases() {
     expect(UpdateCheck.newerRelease(in: Data("not json".utf8), than: "0.0.1") == nil)
 }
 
+/// Scheduled hours: stopping only them keeps agent turns; on the wire they look like an app session.
+@MainActor
+func scheduledSessionChecks() {
+    let power = FakePower()
+    let now = Date(timeIntervalSince1970: 1000)
+    let session = AwakeSession(power: power, schedulesTimer: false, now: { now }, batteryProvider: { nil })
+    var ended: [SessionCompletion] = []
+    session.onCompletion = { ended.append($0) }
+    let lease = try! session.acquire(title: "Scheduled hours", source: .application, duration: 3600, scheduled: true)
+    expect(lease.isScheduled && power.active)
+    let token = session.stopToken
+    session.cancel(id: lease.id)
+    expect(session.stopToken == token, "Stopping only scheduled hours keeps agent turns")
+    expect(ended.last?.isScheduled == true && ended.last?.reason == .stopped)
+    expect(!session.isActive && !power.active)
+    _ = try! session.acquire(title: "Scheduled hours", source: .application, duration: 3600, scheduled: true)
+    session.stop()
+    expect(session.stopToken != token, "Stop all still revokes agent turns")
+
+    // An older CLI or MCP server decodes the reply: the source is a value it knows, and it ignores `scheduled`.
+    let scheduled = try! session.acquire(title: "Scheduled hours", source: .application, duration: 60, scheduled: true)
+    let json = String(decoding: try! CoffeeJSON.encoder().encode(scheduled), as: UTF8.self)
+    expect(json.contains("\"source\":\"application\"") && json.contains("\"scheduled\":true"))
+    let plain = try! session.acquire(title: "App", source: .application, duration: 60)
+    let plainJSON = try! CoffeeJSON.encoder().encode(plain)
+    expect(!String(decoding: plainJSON, as: UTF8.self).contains("scheduled"), "Other sessions don't carry the field")
+    expect(try! CoffeeJSON.decoder().decode(CoffeeLease.self, from: plainJSON).scheduled == nil)
+    session.stop()
+}
+
 @main
 struct SessionChecks {
     @MainActor static func main() async throws {
@@ -281,6 +311,8 @@ struct SessionChecks {
         print("Passed all 11 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, custom-duration input, menu-bar text, update checks, and update handoff.")
         try await runTaskSessionChecks()
         weeklySummaryChecks()
+        scheduledSessionChecks()
+        scheduleChecks()
         if CommandLine.arguments.contains("--power") {
             try checkNativePowerAssertions()
         }
