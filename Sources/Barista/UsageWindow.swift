@@ -39,9 +39,33 @@ struct UsageView: View {
             } header: { Text("Usage") } footer: {
                 Text("From Claude Code’s and Codex’s logs on this Mac, and Cursor’s hooks once connected (Cursor reports turns, not tokens). Costs are estimates at API list prices, not what your subscription charges. Also in Terminal: barista usage.")
             }
+
+            Section {
+                if let period = runtime.usage?.periods.first(where: { $0.period.rawValue == usagePeriod }), !period.projects.isEmpty {
+                    ForEach(period.projects.prefix(6)) { project in projectRow(project) }
+                    if period.projects.count > 6 {
+                        Text("and \(period.projects.count - 6) more in the report").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(runtime.isRefreshingUsage ? "Reading agent logs…" : "No project activity yet").foregroundStyle(.secondary)
+                }
+            } header: {
+                HStack {
+                    Text("Projects")
+                    Spacer()
+                    if runtime.isWritingReport { ProgressView().controlSize(.small) }
+                    else {
+                        Button("Open report") { runtime.openUsageReport(period: UsagePeriod(rawValue: usagePeriod) ?? .week) }
+                            .buttonStyle(.link)
+                            .help("A visual report of time, tokens, models, and cost per project, opened in your browser. Nothing is uploaded.")
+                    }
+                }
+            } footer: {
+                Text("Grouped by Git repository. Active time is time an agent was working or you replied within 15 minutes, across all agents in the project. Also in Terminal: barista report.")
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 640)
+        .frame(width: 460, height: 720)
         .tint(CoffeeTheme.accent)
         .onAppear { runtime.refreshUsage(force: true) }
     }
@@ -150,6 +174,27 @@ struct UsageView: View {
             }
         }
     }
+    private func projectRow(_ project: ProjectUsage) -> some View {
+        let t = project.totals
+        var parts = ["\(t.sessions) session\(t.sessions == 1 ? "" : "s")"]
+        if t.totalTokens > 0 { parts.append("\(UsageReport.formatTokens(t.totalTokens)) tokens") }
+        if t.turns > 0 { parts.append("\(t.turns) Cursor turn\(t.turns == 1 ? "" : "s")") }
+        parts += project.agents.map(\.agent.displayName)
+        return HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(project.name).lineLimit(1).truncationMode(.middle).help(project.project ?? "Activity with no folder")
+                Text(parts.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(UsageReport.formatDuration(t.activeSeconds)).monospacedDigit()
+                if t.totalTokens > 0 {
+                    Text(UsageReport.formatCost(t.estimatedCost)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+        }
+    }
+
     private func usageDetail(_ agent: UsageAgent, _ t: UsageTotals) -> String {
         let sessions = "\(t.sessions) session\(t.sessions == 1 ? "" : "s")"
         if agent == .cursor {

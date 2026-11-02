@@ -12,6 +12,7 @@ import threading
 import time
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 import shutil
@@ -70,6 +71,40 @@ def close(a, b):
     return a is None and b is None or (a is not None and b is not None and abs(a - b) < 1e-9)
 
 
+def same_path(a, b):
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def check_projects(period, want, root):
+    assert period['activeSeconds'] == want['activeSeconds'], period['activeSeconds']
+    got = period['projects']
+    assert [p['name'] for p in got] == [p['name'] for p in want['projects']], [(p['name'], p['project']) for p in got]
+    for project, spec in zip(got, want['projects']):
+        if spec['path'] is None:
+            assert project['project'] is None, project
+        else:
+            assert same_path(project['project'], str(root / spec['path'])), (project['project'], spec['path'])
+        for key, value in spec.items():
+            if key in ('name', 'path'):
+                continue
+            if key == 'agents':
+                assert [a['agent'] for a in project['agents']] == [a['agent'] for a in value], (project['name'], project['agents'])
+                for agent, fields in zip(project['agents'], value):
+                    for field, number in fields.items():
+                        assert close(agent[field], number) if field == 'estimatedCost' else agent[field] == number, (project['name'], agent, field)
+            elif key == 'models':
+                assert [[m['agent'], m['model']] for m in project['models']] == value, (project['name'], project['models'])
+            elif key == 'days':
+                assert len(project['days']) == len(value), (project['name'], project['days'])
+                for day, fields in zip(project['days'], value):
+                    for field, number in fields.items():
+                        assert close(day[field], number) if field == 'estimatedCost' else day[field] == number, (project['name'], day, field)
+            elif key == 'estimatedCost':
+                assert close(project[key], value), (project['name'], key, project[key], value)
+            else:
+                assert project[key] == value, (project['name'], key, project[key], value)
+
+
 def check(period, want):
     assert period['totalTokens'] == want['totalTokens'], period['totalTokens']
     assert close(period['estimatedCost'], want['estimatedCost']), period['estimatedCost']
@@ -94,12 +129,52 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     home, data = temporary / 'home', temporary / 'data'
     shutil.copytree(FIXTURE / 'home', home)
     shutil.copytree(FIXTURE / 'data', data)
+    # Project folders: alpha is a Git repository, alpha-wt a linked worktree of it, beta a plain folder.
+    root = temporary / 'work'
+    (root / 'alpha' / '.git' / 'worktrees' / 'wt').mkdir(parents=True)
+    (root / 'alpha' / 'src').mkdir()
+    (root / 'alpha-wt').mkdir()
+    (root / 'alpha-wt' / '.git').write_text('gitdir: ../alpha/.git/worktrees/wt\n')  # Relative, as some tools write it.
+    (root / 'beta').mkdir()
+    for path in [*home.rglob('*.jsonl'), *data.rglob('*.jsonl')]:
+        path.write_text(path.read_text().replace('__ROOT__', json.dumps(str(root))[1:-1]))
 
     check(usage(home, data), expected)
     check(usage(home, data), expected)  # Second run reads the cache.
     caches = [p.name for p in data.iterdir() if p.name.startswith('usage-cache')]
     assert caches, 'usage keeps a cache in the data folder'
     print('PASS fixture totals: dedupe, cache writes by TTL, subagents, Codex deltas, unpriced models, Cursor turns', flush=True)
+
+    utc = usage(home, data, 'all', tz='UTC')
+    check(utc, expected)
+    check_projects(utc, expected, root)
+    text = run(home, data, 'usage', '--period', 'all', tz='UTC').stdout
+    projects_block = text[text.index('Projects'):]
+    assert 'alpha' in projects_block and 'gamma' in projects_block and 'Unknown' in projects_block, text
+    assert '19m active' in projects_block, projects_block
+    # Days follow local midnight. At UTC+14, alpha's 09:59-10:10 UTC run crosses midnight: 60 seconds
+    # on Oct 30, the rest on Oct 31, where every token is (its first bucket starts at 00:00 local).
+    # (Windows ignores TZ and uses the system time zone, so this runs on macOS and Linux.)
+    if os.name != 'nt':
+        kiritimati = usage(home, data, 'all', tz='Pacific/Kiritimati')
+        alpha = next(p for p in kiritimati['projects'] if p['name'] == 'alpha')
+        assert [(d['date'], d['activeSeconds'], d['totalTokens']) for d in alpha['days']] == [
+            ('2026-10-30', 60, 0), ('2026-10-31', 1085, 6745)], alpha['days']
+    print('PASS projects: Git roots, worktrees, active time joined across files and agents, sessions, models, days', flush=True)
+
+    out = temporary / 'report.html'
+    reply = json.loads(run(home, data, 'report', '--no-open', '--output', str(out), '--period', 'month', '--json').stdout)
+    assert reply == {'opened': False, 'path': str(out)} or (reply['opened'] is False and same_path(reply['path'], str(out))), reply
+    page = out.read_text()
+    assert page.count('/*BARISTA_REPORT_DATA*/') == 0 and '<html' in page.lower(), 'the template was filled in'
+    start = page.index('const DATA = ') + len('const DATA = ')
+    embedded = json.JSONDecoder().raw_decode(page[start:])[0]
+    assert embedded['initialPeriod'] == 'month', embedded.get('initialPeriod')
+    assert [p['id'] for p in embedded['periods']] == ['today', 'week', 'month', 'all'], [p['id'] for p in embedded['periods']]
+    assert not re.search(r'(src|href|action)\s*=\s*["\']?\s*(https?:)?//', page, re.I) and '@import' not in page \
+        and 'url(' not in page and 'fetch(' not in page, 'the report loads nothing from the network'
+    assert 'Wrote ' in run(home, data, 'report', '--no-open', '--output', str(out)).stdout
+    print('PASS report: self-contained HTML with every period, initial period, JSON reply', flush=True)
 
     limits = report(home, data)['limits']
     claude, codex, cursor = limits
@@ -243,7 +318,7 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     claude = usage(home, data)['agents'][0]
     assert claude['requests'] == 4 and claude['outputTokens'] == 351 - 200 + 999999, claude
     # A rewritten (shorter) log is re-read from the start, replacing what it contributed.
-    # Here it keeps only its copy of a message the other session already counted.
+    # Here it keeps only its first line, a prompt with no tokens.
     claude_log.write_text(claude_log.read_text().splitlines()[0] + '\n')
     claude = usage(home, data)['agents'][0]
     assert claude['requests'] == 2 and claude['unpricedTokens'] == 0 and claude['sessions'] == 1, claude
@@ -264,10 +339,13 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
         stamp = when.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
         return json.dumps({'type': 'assistant', 'timestamp': stamp, 'sessionId': 'z', 'requestId': message,
                            'message': {'id': message, 'model': 'claude-opus-5-5', 'usage': {'input_tokens': 100, 'output_tokens': 0}}}) + '\n'
-    lines = (entry(early, 'm1') if early <= now else '') + entry(future, 'm2')
+    # Windows ignores TZ (it uses the system time zone), so there only "nothing after now" is checked;
+    # otherwise the result would depend on whether it's the same date in Kolkata and on the runner.
+    counts_early = os.name != 'nt' and early <= now
+    lines = (entry(early, 'm1') if counts_early else '') + entry(future, 'm2')
     (project / 's.jsonl').write_text(lines)
     today = usage(zone_home, zone_data, 'today', tz='Asia/Kolkata')['agents'][0]
-    assert today['inputTokens'] == (100 if early <= now else 0), ('a request at 00:15 local time is today; future ones are not', today)
+    assert today['inputTokens'] == (100 if counts_early else 0), ('a request at 00:15 local time is today; future ones are not', today)
     print('PASS periods: exact boundaries in half-hour time zones, nothing after now', flush=True)
 
     # Periods: requests from the fixture's past dates are outside today; a fresh one is inside.
@@ -282,6 +360,7 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert json.loads(stop.stdout) == {}, stop.stdout
     records = [json.loads(line) for line in (fresh / 'cursor-usage.jsonl').read_text().splitlines()]
     assert [r['event'] for r in records] == ['prompt', 'stop'] and records[0]['model'] == 'gpt-6.1-sol', records
+    assert records[0]['project'] == '/tmp/proj' and 'project' not in records[1], records
     assert records[1]['status'] == 'completed' and records[1]['generation'] == 'gen-1'
     today = usage(empty, fresh, 'today')
     assert today['agents'][2]['turns'] == 1 and today['agents'][2]['sessions'] == 1, today
@@ -299,7 +378,17 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert [p['id'] for p in default['periods']] == ['today', 'week', 'month'], default
     text = run(empty, fresh, 'usage').stdout
     assert 'Cursor' in text and 'estimate' in text.lower(), text
-    print('PASS Cursor hooks: prompt/stop records, JSON replies, periods; default and text output', flush=True)
+    # Project names are data: the report page must never let one close its script.
+    run(empty, fresh, 'hook', '--agent', 'cursor', '--socket', str(temporary / 'none' / 'control.sock'), '--no-launch',
+        stdin=json.dumps({'hook_event_name': 'beforeSubmitPrompt', 'conversation_id': 'conv-x', 'generation_id': 'gen-x',
+                          'workspace_roots': ['/nowhere/x</script><img src=x onerror=alert(1)>&b']}))
+    hostile = temporary / 'hostile.html'
+    run(empty, fresh, 'report', '--no-open', '--output', str(hostile))
+    page = hostile.read_text()
+    assert '</script><img' not in page and '<img src=x' not in page, 'project names are escaped in the report'
+    names = [p['name'] for p in usage(empty, fresh, 'today')['projects']]
+    assert 'script><img src=x onerror=alert(1)>&b' in names, names
+    print('PASS Cursor hooks: prompt/stop records with project, JSON replies, periods; default and text output; report escaping', flush=True)
 
     settings = temporary / 'cursor' / 'hooks.json'
     settings.parent.mkdir()

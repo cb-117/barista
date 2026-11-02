@@ -1,7 +1,8 @@
 # Usage tracking
 
 Barista reports how much Claude Code, Codex, and Cursor have been used: sessions, requests, and tokens
-per agent and model for today, this week, and this month, with an estimated API-price cost. Everything
+per agent and model for today, this week, and this month, with an estimated API-price cost, plus active
+time, tokens, models, and cost **per project**, and a visual report (`barista report`). Everything
 is computed on this computer from files the agents already write; nothing is sent anywhere.
 
 This page is the specification both implementations follow (Swift for macOS, Rust for Windows and
@@ -44,11 +45,12 @@ defaults to `~/.codex`), read top to bottom with per-file state:
 `barista hook --agent cursor` with a single append:
 
 ```json
-{"conversation":"…","event":"prompt","generation":"…","model":"…","ts":"2026-11-01T16:20:04Z"}
-{"conversation":"…","event":"stop","generation":"…","model":"…","status":"completed","ts":"2026-11-01T16:25:04Z"}
+{"conversation":"…","event":"prompt","generation":"…","model":"…","project":"/Users/me/code/app","ts":"2026-11-01T16:20:04Z"}
+{"conversation":"…","event":"stop","generation":"…","model":"…","project":"/Users/me/code/app","status":"completed","ts":"2026-11-01T16:25:04Z"}
 ```
 
-`model` and `status` are omitted when Cursor doesn't send them. Cursor reports a **turn** for each
+`model`, `project` (the first of Cursor's `workspace_roots`), and `status` are omitted when Cursor
+doesn't send them; records written before 0.0.12 have no `project`. Cursor reports a **turn** for each
 `stop` (by distinct `generation`), its **active time** as `stop.ts - prompt.ts` for the same generation
 (clamped to 0…4 hours; no prompt means 0), and **sessions** as distinct `conversation` values. A turn's
 model is its stop's `model`, else its prompt's, else `unknown`, normalized like every model (below). Cursor has no token or cost figures.
@@ -64,6 +66,56 @@ without a trailing newline is still being written: it is read on a later run, no
 Local time, ending now: **today** (from midnight), **week** (from Monday 00:00), **month** (from the 1st,
 00:00), and **all**. A Claude or Codex request belongs to the period containing its timestamp; a Cursor
 turn to the period containing its `stop`, and a Cursor session to every period with any of its events.
+
+## Projects and active time
+
+Every request, turn, and moment of activity belongs to a **project**: the folder the agent was working
+in, grouped by Git repository.
+
+**Folder.** Claude Code: the first top-level `cwd` string in the log file (any line type). Codex:
+`payload.cwd` of the file's first `session_meta` that has one, else of its first `turn_context` that has
+one. Cursor: a conversation's folder is the `project` of its first record (in file order) that has one.
+A file or conversation without one has no folder. The folder is fixed per file (per conversation for
+Cursor), so later `cd`s inside a session don't move it. Empty strings count as missing.
+
+**Project.** At report time, drop trailing path separators from the folder, then walk up from it (the
+folder itself first, then each parent, purely by path, without resolving symlinks) to the first
+directory `D` holding a `.git` entry:
+
+- `.git` is a directory: the project is `D`.
+- `.git` is a file whose first line is `gitdir: G` (`G` relative to `D` if not absolute, with `.` and
+  `..` resolved by path alone): if `G`'s path components contain `.git` followed by `worktrees` (a
+  linked worktree), the project is the directory holding that `.git`, i.e. the main checkout;
+  otherwise (a submodule) the project is `D`.
+- Nothing found (or the folder no longer exists): the project is the folder itself.
+
+The project's `name` is its last path component. Activity with no folder goes to one project with
+`project: null`, named `Unknown`.
+
+**Activity events** (whole seconds since 1970, rounded down):
+
+- Claude Code: every line that parses as a JSON object with top-level `type` `user` or `assistant` and a
+  parseable `timestamp` (whether or not it counts for tokens: duplicates and `<synthetic>` lines too).
+- Codex: every `event_msg` line whose `payload.type` is `user_message` or `token_count` (including
+  repeated totals and `info: null`), at its `timestamp`.
+- Cursor: each record's `ts`, and each turn (a `stop` with its `prompt`, as above) as a span from the
+  prompt to the stop, at most 4 hours.
+
+**Active time** for a set of events and spans: sort them by start and join any two whose gap is at most
+**15 minutes** (900 seconds; overlapping ones always join). Each joined run covers its first to its last
+second; active time is the total length of the runs, each clipped to the period (`start` … now). A lone
+event adds nothing. It is computed per project (all its agents together), per agent within a project,
+and for the whole period (all projects together, so two projects worked on at once count once). It
+measures wall-clock time with an agent busy or you replying within 15 minutes; a tool that runs more
+than 15 minutes without a log line leaves a gap.
+
+**Per project**, a period reports tokens, requests, and cost from its files' buckets (as for agents),
+Cursor turns by their conversation, and **sessions**: distinct agent + session (Claude and Codex sessions
+with a bucket in the period, Cursor conversations with a record in the period). A project is listed when
+it has a session, request, turn, or active second in the period.
+
+**Days.** Each project also lists the local calendar days in the period with active time or tokens:
+active time with runs split at local midnight; tokens and cost by the local date of each bucket's start.
 
 ## Plan limits
 
@@ -168,8 +220,10 @@ Re-reading every log each time would be slow (Claude Code keeps tens of MB), so 
 keeps a private cache in the data folder (`usage-cache.json` for Swift, `usage-cache-portable.json` for
 Rust). Per log file it stores the byte offset read so far (always just after a newline, so a line being
 written is re-read later), the per-file parser state (Codex `prev`, model, session), the dedupe keys the
-file contributed, and the file's hourly buckets: `(model, session, hour start)` → input, output, cache
-read, 5-minute writes, 1-hour writes, requests. A file that shrinks is re-read from the start (its own
+file contributed, the file's hourly buckets: `(model, session, hour start)` → input, output, cache
+read, 5-minute writes, 1-hour writes, requests, its folder (see Projects), and its activity as runs
+(`[first, last]` seconds, joined by the 15-minute rule as lines arrive; runs may overlap or be out of
+order, since the report joins them again). Project roots are resolved at report time, never cached. A file that shrinks is re-read from the start (its own
 keys and buckets dropped first). Buckets of files that disappear are kept, so totals outlive the agents'
 own log cleanup. Deleting the cache rebuilds it from whatever logs remain.
 
@@ -235,7 +289,52 @@ JSON (keys sorted, like every Barista reply):
 - Human output shows tokens as `950`, `12.4K`, `3.1M`, `1.2B`, and cost as `~$9.87` (`<$0.01` when
   positive but under a cent, `no price` when nothing is priced).
 
+Each period also has `activeSeconds` (all projects together) and `projects`:
+
+```json
+"projects": [{
+  "project": "/Users/me/code/app", "name": "app",
+  "activeSeconds": 1145, "sessions": 2, "requests": 6, "turns": 0,
+  "inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0,
+  "totalTokens": 6745, "unpricedTokens": 110, "estimatedCost": 0.024278,
+  "agents": [{"agent": "claude", "name": "Claude Code", "activeSeconds": 665, "sessions": 1, "requests": 3, "turns": 0, "…": "token fields and estimatedCost"}],
+  "models": [{"agent": "codex", "model": "gpt-6.1-sol", "sessions": 1, "requests": 2, "turns": 0, "activeSeconds": 0, "…": "token fields and estimatedCost"}],
+  "days": [{"date": "2026-10-30", "activeSeconds": 1145, "totalTokens": 6745, "estimatedCost": 0.024278}]
+}]
+```
+
+- `projects` is sorted by `activeSeconds` descending, then `totalTokens` descending, then `turns`
+  descending, then `name`, then `project`; the `Unknown` project is always last.
+- A project's (and a project agent's) `estimatedCost` is `null` when none of its tokens are priced
+  (including when it has no tokens); otherwise the priced part's cost rounded to 6 decimals. A day's
+  `estimatedCost` is always a number (0 when nothing is priced), rounded to 6 decimals.
+- A project's `agents` lists only agents with a session, request, turn, or active second there, in the
+  order `claude`, `codex`, `cursor`; Cursor's has `estimatedCost: null`. A project's `models` has the
+  same fields as an agent's models plus `agent` (`activeSeconds` is the sum of Cursor turn times, 0 for
+  the others), sorted like agent models, then by `agent`.
+- `days` is in ascending date order (`YYYY-MM-DD`, local).
+
+The text output of `barista usage --period P` ends with a **Projects** block, one line per project (at
+most 10, then `  … and N more`): `  app           19m active · 2 sessions · 6.7K tokens · ~$0.02` (name
+padded to the longest shown, at most 24 characters; token and cost parts left out when it has no tokens;
+`Cursor` turns as `2 turns` before the tokens when it has any).
+
 The MCP tool `barista_usage` (optional `period`, default `week`) returns the same JSON, limits included.
+
+## Visual report
+
+`barista report [--period today|week|month|all] [--output PATH] [--no-open] [--json]` writes a
+self-contained HTML page (nothing loaded from the network) with every period's usage and projects, then
+opens it in the default browser (macOS `open`, Linux `xdg-open`, Windows `explorer.exe`) unless
+`--no-open`. `--period` picks the period shown first (default `week`); the page always holds `today`,
+`week`, `month`, and `all`. The file goes to PATH, else `usage-report.html` in the data folder, written
+atomically. It prints `Wrote <path>`; with `--json`, `{"opened": <bool>, "path": "<path>"}`.
+
+The page is the template in `Sources/BaristaCore/ReportTemplate.swift` (the Rust build extracts the text
+between its `#"""` markers) with the one occurrence of `/*BARISTA_REPORT_DATA*/null` replaced by the
+report JSON (the `barista usage --json` shape with all four periods, plus `"initialPeriod": "<period>"`),
+in which every `<`, `>`, and `&` is written as `\u003c`, `\u003e`, and `\u0026`. The page renders all text
+with `textContent`, never as HTML. The Barista app opens the same report from Usage & Limits.
 
 ## Cursor hooks
 

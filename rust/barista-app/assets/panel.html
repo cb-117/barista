@@ -131,6 +131,9 @@
   .agent .cost { font-variant-numeric: tabular-nums; }
   .model { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; padding-left: 10px; }
   .model span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model.project { padding-left: 0; font-size: 12.5px; }
+  .model.project span:first-child { color: var(--text); }
+  .model.project span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .group { display: flex; flex-direction: column; gap: 6px; background: var(--card); border-radius: var(--radius); padding: 10px 12px; }
   .group-title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; margin: 4px 2px 0; }
   .group .row + .row { border-top: 1px solid var(--line); padding-top: 6px; }
@@ -417,6 +420,22 @@ function agentBlock(agent) {
 
 function active(agent) { return ["totalTokens", "turns", "sessions", "requests"].some((key) => (agent[key] || 0) > 0); }
 
+// The period's top projects (by active time): name, active time, and estimated cost.
+function projectsBlock(period) {
+  const projects = period.projects || [];
+  if (!projects.length) return [];
+  const rows = projects.slice(0, 5).map((project) => {
+    const detail = [`${duration(project.activeSeconds || 0)} active`];
+    if ((project.totalTokens || 0) > 0) detail.push(cost(project.estimatedCost));
+    else if ((project.turns || 0) > 0) detail.push(plural(project.turns, "turn"));
+    return el("div", { class: "model project" },
+      el("span", { text: project.name, title: project.project || "Activity with no folder" }),
+      el("span", { text: detail.join(" · ") }));
+  });
+  const more = projects.length > 5 ? el("div", { class: "note", text: `and ${projects.length - 5} more in the report` }) : null;
+  return [el("div", { class: "group-title", text: "Projects" }), el("div", { class: "group agent" }, ...rows, more)];
+}
+
 function renderUsage(root) {
   const report = state.usage;
   const head = el("header", null,
@@ -446,6 +465,8 @@ function renderUsage(root) {
       const agents = (period.agents || []).filter(active);
       if (agents.length) body.push(...agents.map(agentBlock));
       else body.push(el("div", { class: "empty", text: `No agent activity ${period.id === "today" ? "today" : period.id === "week" ? "this week" : "this month"}.` }));
+      body.push(...projectsBlock(period));
+      body.push(button("small-button accent", "Open report", `usage-report:${period.id}`, { title: "Every period, project, and day in your browser" }));
     }
   }
   if (state.statuslineOffer) body.push(button("small-button accent", "Add live limits to Claude Code’s status line", "statusline-install"));
@@ -591,6 +612,15 @@ function mockState() {
           { agent: "codex", name: "Codex", sessions: 9, requests: 300, turns: 0, activeSeconds: 0, totalTokens: 25000000, estimatedCost: 6,
             models: [{ model: "gpt-6.1-sol", totalTokens: 15700000, estimatedCost: 3.32 }, { model: "codex-auto-review", totalTokens: 505900, estimatedCost: null }] },
           { agent: "cursor", name: "Cursor", sessions: 0, requests: 0, turns: 0, activeSeconds: 0, totalTokens: 0, estimatedCost: null, models: [] },
+        ],
+        activeSeconds: 15240 * (index + 1),
+        projects: [
+          { project: "C:\\Users\\me\\code\\Caffienate", name: "Caffienate", activeSeconds: 9300 * (index + 1), sessions: 5, turns: 0, totalTokens: 120400000 * (index + 1), estimatedCost: 44.8 * (index + 1) },
+          { project: "C:\\Users\\me\\code\\billing-api", name: "billing-api", activeSeconds: 3720 * (index + 1), sessions: 3, turns: 0, totalTokens: 41200000, estimatedCost: 12.9 },
+          { project: "C:\\Users\\me\\code\\site", name: "site", activeSeconds: 1500, sessions: 2, turns: 4, totalTokens: 0, estimatedCost: null },
+          { project: "C:\\Users\\me\\notes", name: "notes", activeSeconds: 420, sessions: 1, turns: 0, totalTokens: 2100000, estimatedCost: 0.84 },
+          { project: "C:\\Users\\me\\scratch", name: "scratch", activeSeconds: 300, sessions: 1, turns: 0, totalTokens: 15000, estimatedCost: null },
+          { project: null, name: "Unknown", activeSeconds: 0, sessions: 1, turns: 0, totalTokens: 0, estimatedCost: null },
         ],
       })),
     },

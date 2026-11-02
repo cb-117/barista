@@ -1,6 +1,6 @@
 //! What the tray menu shows and what its commands do, independent of how each platform draws it
 //! (muda on Windows, ksni over D-Bus on Linux).
-use crate::{check_for_updates, cli_path, lock, platform, refresh_usage, AgentStatus, Shared};
+use crate::{check_for_updates, cli_path, lock, open_usage_report, platform, refresh_usage, AgentStatus, Shared};
 use barista_core::activity::WatchedApp;
 use barista_core::hooks::HookAgent;
 use barista_core::*;
@@ -267,6 +267,7 @@ pub fn build(app: &Shared) -> Model {
         enabled: true,
         children: usage,
     });
+    menu.push(item("usage-report", "Open usage report…"));
 
     let mut history = Vec::new();
     for event in session.history().iter().take(10) {
@@ -412,6 +413,13 @@ pub fn handle(app: &Shared, id: &str) -> bool {
         "usage-refresh" => {
             drop(state);
             refresh_usage(app, Duration::ZERO);
+            return false;
+        }
+        "usage-report" => {
+            // `usage-report:month` opens the report on that period; the tray's item opens this week.
+            drop(state);
+            let period = barista_core::usage::Period::parse(argument).unwrap_or(barista_core::usage::Period::Week);
+            open_usage_report(app, period);
             return false;
         }
         _ => {}
@@ -561,6 +569,7 @@ pub fn build_short(app: &Shared) -> Model {
         menu.push(item("stop-all", "Stop all"));
     }
     menu.push(Entry::Separator);
+    menu.push(item("usage-report", "Open usage report…"));
     menu.push(item("panel:open", "Open Barista"));
     menu.push(item("quit", "Quit Barista"));
     signature.push(session.is_active().to_string());

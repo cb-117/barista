@@ -1,5 +1,5 @@
 {
-  "comment": "barista usage --period all --json, with HOME=Tests/fixtures/usage/home and BARISTA_DATA_DIR holding Tests/fixtures/usage/data. See docs/USAGE.md.",
+  "comment": "barista usage --period all --json, with HOME=Tests/fixtures/usage/home and BARISTA_DATA_DIR holding Tests/fixtures/usage/data. See docs/USAGE.md. __ROOT__ in the fixture becomes a temporary folder holding alpha/ (a Git repository), alpha-wt/ (a linked worktree of alpha), and beta/ (not a repository); gamma/ does not exist. Project checks run with TZ=UTC.",
   "totalTokens": 6747,
   "estimatedCost": 0.024278,
   "agents": {
@@ -20,5 +20,28 @@
                "models": [
                  {"model": "claude-4.5-sonnet", "sessions": 1, "turns": 1, "totalTokens": 0, "estimatedCost": null},
                  {"model": "unknown", "sessions": 1, "turns": 1, "totalTokens": 0, "estimatedCost": null}]}
-  }
+  },
+  "activeSeconds": 2075,
+  "projects": [
+    {"name": "alpha", "path": "alpha", "activeSeconds": 1145, "sessions": 2, "requests": 6, "turns": 0,
+     "totalTokens": 6745, "unpricedTokens": 110, "estimatedCost": 0.024278,
+     "agents": [{"agent": "claude", "activeSeconds": 665, "sessions": 1, "requests": 3, "totalTokens": 3485, "estimatedCost": 0.021338},
+                {"agent": "codex", "activeSeconds": 480, "sessions": 1, "requests": 3, "totalTokens": 3260, "estimatedCost": 0.00294}],
+     "models": [["codex", "gpt-6.1-sol"], ["claude", "claude-opus-5-5"], ["claude", "claude-sonnet-4-5-20250929"], ["claude", "claude-haiku-5-5"], ["codex", "codex-auto-review"]],
+     "days": [{"date": "2026-10-30", "activeSeconds": 1145, "totalTokens": 6745, "estimatedCost": 0.024278}]},
+    {"name": "gamma", "path": "gamma", "activeSeconds": 630, "sessions": 1, "requests": 0, "turns": 2,
+     "totalTokens": 0, "unpricedTokens": 0, "estimatedCost": null,
+     "agents": [{"agent": "cursor", "activeSeconds": 630, "sessions": 1, "turns": 2, "estimatedCost": null}],
+     "models": [["cursor", "claude-4.5-sonnet"], ["cursor", "unknown"]],
+     "days": [{"date": "2026-10-30", "activeSeconds": 630, "totalTokens": 0, "estimatedCost": 0}]},
+    {"name": "beta", "path": "beta", "activeSeconds": 300, "sessions": 1, "requests": 1, "turns": 0,
+     "totalTokens": 2, "unpricedTokens": 2, "estimatedCost": null,
+     "agents": [{"agent": "claude", "activeSeconds": 300, "sessions": 1, "requests": 1, "totalTokens": 2, "estimatedCost": null}],
+     "models": [["claude", "claude-test-unpriced"]],
+     "days": [{"date": "2026-10-30", "activeSeconds": 300, "totalTokens": 2, "estimatedCost": 0}]},
+    {"name": "Unknown", "path": null, "activeSeconds": 0, "sessions": 1, "requests": 0, "turns": 0,
+     "totalTokens": 0, "unpricedTokens": 0, "estimatedCost": null,
+     "agents": [{"agent": "cursor", "activeSeconds": 0, "sessions": 1, "turns": 0}],
+     "models": [], "days": []}
+  ]
 }

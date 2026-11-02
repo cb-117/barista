@@ -60,10 +60,48 @@ public struct AgentUsage: Sendable, Equatable {
     public var models: [UsageTotals]
 }
 
+/// One project's usage within a period (docs/USAGE.md, "Projects and active time").
+public struct ProjectUsage: Sendable, Equatable, Identifiable {
+    public var id: String { project ?? "\u{0}unknown" }
+    /// The Git repository (or folder); nil for activity with no folder.
+    public let project: String?
+    public let name: String
+    /// activeSeconds is the project's active time; estimatedCost is nil when nothing is priced.
+    public var totals: UsageTotals
+    /// Agents with activity here; their activeSeconds is their own active time in this project.
+    public var agents: [AgentUsage]
+    public var days: [ProjectDay]
+    /// Every agent's models together, in report order: (agent, model).
+    public var modelOrder: [(UsageAgent, String)]
+
+    public var models: [(agent: UsageAgent, totals: UsageTotals)] {
+        modelOrder.compactMap { agent, model in
+            agents.first { $0.agent == agent }?.models.first { $0.model == model }.map { (agent, $0) }
+        }
+    }
+
+    public static func == (a: ProjectUsage, b: ProjectUsage) -> Bool {
+        guard a.project == b.project, a.name == b.name, a.totals == b.totals else { return false }
+        guard a.agents == b.agents, a.days == b.days, a.modelOrder.count == b.modelOrder.count else { return false }
+        return zip(a.modelOrder, b.modelOrder).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 }
+    }
+}
+
+public struct ProjectDay: Sendable, Equatable {
+    /// Local date, YYYY-MM-DD.
+    public let date: String
+    public var activeSeconds = 0
+    public var totalTokens = 0
+    public var estimatedCost: Double = 0
+}
+
 public struct PeriodUsage: Sendable, Equatable {
     public let period: UsagePeriod
     public let start: Date?
     public var agents: [AgentUsage]
+    /// Active time with any agent, all projects together.
+    public var activeSeconds = 0
+    public var projects: [ProjectUsage] = []
     public var totalTokens: Int { agents.reduce(0) { $0 + $1.totals.totalTokens } }
     public var estimatedCost: Double { agents.reduce(0) { $0 + ($1.totals.estimatedCost ?? 0) } }
 }
@@ -139,15 +177,54 @@ private struct FileState: Codable {
     var buckets: [String: Bucket] = [:]
     /// Codex: the newest plan limits this file reported.
     var limits: CodexLimitState?
+    /// The folder the agent worked in (see Projects in docs/USAGE.md); nil until a line names one.
+    var folder: String?
+    /// Activity runs, [first, last] whole seconds, joined by the 15-minute rule as lines arrive.
+    var runs: [[Int]] = []
+    /// Codex: the folder came from a session_meta line.
+    var sawSessionFolder = false
+
+    init(agent: String) { self.agent = agent }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        offset = try c.decode(Int.self, forKey: .offset)
+        agent = try c.decode(String.self, forKey: .agent)
+        previous = try c.decodeIfPresent([Int].self, forKey: .previous)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
+        keys = try c.decodeIfPresent([String].self, forKey: .keys) ?? []
+        buckets = try c.decodeIfPresent([String: Bucket].self, forKey: .buckets) ?? [:]
+        limits = try c.decodeIfPresent(CodexLimitState.self, forKey: .limits)
+        folder = try c.decodeIfPresent(String.self, forKey: .folder)
+        runs = try c.decodeIfPresent([[Int]].self, forKey: .runs) ?? []
+        sawSessionFolder = try c.decodeIfPresent(Bool.self, forKey: .sawSessionFolder) ?? false
+    }
+
+    mutating func setFolder(_ value: Any?) {
+        if folder == nil, let value = value as? String, !value.isEmpty { folder = value }
+    }
+
+    /// Extends the last run when `time` follows it within 15 minutes; otherwise starts a new one.
+    /// Runs may overlap or arrive out of order; the report joins them again.
+    mutating func addActivity(_ time: Date) {
+        let second = Int(floor(time.timeIntervalSince1970))
+        if let last = runs.last, last.count == 2 {
+            if second >= last[1] && second - last[1] <= UsageStore.idleGap { runs[runs.count - 1][1] = second; return }
+            if second >= last[0] && second <= last[1] { return }
+        }
+        runs.append([second, second])
+    }
 }
 
 private struct CacheFile: Codable {
-    var version = 3
+    var version = 4
     var files: [String: FileState] = [:]
 }
 
 public enum UsageStore {
     static let separator: Character = "\u{1f}"
+    /// Activity this close together (seconds) counts as one stretch of work.
+    static let idleGap = 900
 
     /// Reads new log lines into the cache, then reports the requested periods.
     public static func report(periods: [UsagePeriod], now: Date = Date(), calendar: Calendar = .current) -> UsageReport {
@@ -235,9 +312,14 @@ public enum UsageStore {
     private static func contains(_ line: Data, _ needle: String) -> Bool { line.range(of: Data(needle.utf8)) != nil }
 
     private static func readClaude(_ line: Data, session fallback: String, state: inout FileState, seen: inout Set<String>) {
-        guard contains(line, "\"usage\""),
-              let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
-              object["type"] as? String == "assistant",
+        guard contains(line, "\"timestamp\"") || contains(line, "\"cwd\""),
+              let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
+        state.setFolder(object["cwd"])
+        let type = object["type"] as? String
+        if type == "user" || type == "assistant", let time = (object["timestamp"] as? String).flatMap(parseDate) {
+            state.addActivity(time)
+        }
+        guard type == "assistant",
               let message = object["message"] as? [String: Any],
               let usage = message["usage"] as? [String: Any],
               let model = message["model"] as? String, model != "<synthetic>",
@@ -258,17 +340,26 @@ public enum UsageStore {
     }
 
     private static func readCodex(_ line: Data, session fallback: String, state: inout FileState) {
-        guard contains(line, "token_count") || contains(line, "turn_context") || contains(line, "session_meta"),
+        guard contains(line, "token_count") || contains(line, "turn_context") || contains(line, "session_meta") || contains(line, "user_message"),
               let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
               let payload = object["payload"] as? [String: Any] else { return }
         switch object["type"] as? String {
         case "session_meta":
             state.session = payload["id"] as? String ?? payload["session_id"] as? String
+            if !state.sawSessionFolder, let cwd = payload["cwd"] as? String, !cwd.isEmpty {
+                // A session_meta folder wins over one taken from an earlier turn_context.
+                state.folder = cwd
+                state.sawSessionFolder = true
+            }
         case "turn_context":
             if let model = payload["model"] as? String { state.model = model }
+            state.setFolder(payload["cwd"])
         case "event_msg":
-            guard payload["type"] as? String == "token_count",
+            let kind = payload["type"] as? String
+            guard kind == "token_count" || kind == "user_message",
                   let time = (object["timestamp"] as? String).flatMap(parseDate) else { return }
+            state.addActivity(time)
+            guard kind == "token_count" else { return }
             // Limits count even when the token totals repeat.
             if let limits = CodexLimitState(payload["rate_limits"], at: time), limits.observedAt >= (state.limits?.observedAt ?? 0) {
                 state.limits = limits
@@ -301,13 +392,16 @@ public enum UsageStore {
     struct CursorRecord {
         let conversation, generation, event: String
         let model: String?
+        let project: String?
         let time: Date
     }
 
     /// Appends one line for a Cursor hook event. Never throws: tracking must not disturb Cursor.
-    public static func recordCursor(event: String, conversation: String, generation: String, model: String?, status: String?) {
+    /// `project` is the first of Cursor's workspace roots.
+    public static func recordCursor(event: String, conversation: String, generation: String, model: String?, status: String?, project: String? = nil) {
         var record: [String: Any] = ["conversation": conversation, "event": event, "generation": generation, "ts": formatDate(Date())]
         if let model, !model.isEmpty { record["model"] = model }
+        if let project, !project.isEmpty { record["project"] = project }
         if let status, !status.isEmpty { record["status"] = status }
         guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys, .withoutEscapingSlashes]) else { return }
         data.append(10)
@@ -325,7 +419,8 @@ public enum UsageStore {
             guard let object = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
                   let conversation = object["conversation"] as? String, let generation = object["generation"] as? String,
                   let event = object["event"] as? String, let time = (object["ts"] as? String).flatMap(parseDate) else { return nil }
-            return CursorRecord(conversation: conversation, generation: generation, event: event, model: object["model"] as? String, time: time)
+            return CursorRecord(conversation: conversation, generation: generation, event: event, model: object["model"] as? String,
+                                project: (object["project"] as? String).flatMap { $0.isEmpty ? nil : $0 }, time: time)
         }
     }
 
@@ -361,6 +456,7 @@ public enum UsageStore {
             turns[record.generation] = (record.conversation, UsagePricing.normalized(model), record.time, active)
         }
 
+        var roots: [String: String] = [:]
         let result = periods.map { period -> PeriodUsage in
             let start = period.start(now: now, calendar: calendar)
             let inPeriod = { (date: Date) in (start.map { date >= $0 } ?? true) && date <= now }
@@ -408,13 +504,268 @@ public enum UsageStore {
                 }
                 agents.append(AgentUsage(agent: agent, totals: total, models: modelTotals))
             }
-            return PeriodUsage(period: period, start: start, agents: agents)
+            var usage = PeriodUsage(period: period, start: start, agents: agents)
+            (usage.projects, usage.activeSeconds) = projects(files: cache.files.values, cursor: cursor, turns: turns, prompts: prompts,
+                                                             start: start, now: now, calendar: calendar, roots: &roots)
+            return usage
         }
         let codex = cache.files.values.compactMap(\.limits).max { $0.observedAt < $1.observedAt }
         let limits = [ClaudeLimits.current(now: now),
                       codex?.limits(now: now) ?? .unavailable(.codex, name: "ChatGPT plan"),
                       .unavailable(.cursor, name: "Cursor")]
         return UsageReport(generatedAt: now, periods: result, limits: limits)
+    }
+
+    // MARK: Projects
+
+    /// The Git repository holding `folder` (a linked worktree counts as its main checkout), else the folder.
+    static func projectRoot(_ folder: String) -> String {
+        var path = folder
+        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+        let files = FileManager.default
+        // A folder that's gone is its own project (it may have been a repository once).
+        guard files.fileExists(atPath: path) else { return path }
+        var directory = path
+        while !directory.isEmpty {
+            let git = (directory as NSString).appendingPathComponent(".git")
+            var isDirectory: ObjCBool = false
+            if files.fileExists(atPath: git, isDirectory: &isDirectory) {
+                if isDirectory.boolValue { return directory }
+                let first = (try? String(contentsOfFile: git, encoding: .utf8))?.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+                guard first.hasPrefix("gitdir:") else { return directory }
+                var target = first.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+                if !target.hasPrefix("/") { target = (directory as NSString).appendingPathComponent(target) }
+                // Resolve "." and ".." by path alone, so ../main/.git/worktrees/x finds the main checkout.
+                var parts: [String] = []
+                for (index, part) in target.split(separator: "/", omittingEmptySubsequences: false).map(String.init).enumerated() {
+                    if part == "." || (part.isEmpty && index > 0) { continue }
+                    if part == "..", parts.count > 1 { parts.removeLast(); continue }
+                    parts.append(part)
+                }
+                if let index = parts.indices.dropLast().first(where: { parts[$0] == ".git" && parts[$0 + 1] == "worktrees" }) {
+                    let main = parts[..<index].joined(separator: "/")
+                    return main.isEmpty ? "/" : main
+                }
+                return directory
+            }
+            let parent = (directory as NSString).deletingLastPathComponent
+            if parent == directory { break }
+            directory = parent
+        }
+        return path
+    }
+
+    /// Joins spans whose gap is at most `idleGap`; the result is sorted and disjoint.
+    static func joined(_ spans: [(Int, Int)]) -> [(Int, Int)] {
+        var result: [(Int, Int)] = []
+        for span in spans.sorted(by: { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }) {
+            if let last = result.last, span.0 - last.1 <= idleGap {
+                result[result.count - 1].1 = max(last.1, span.1)
+            } else {
+                result.append(span)
+            }
+        }
+        return result
+    }
+
+    private static func clippedSeconds(_ runs: [(Int, Int)], from start: Int?, to end: Int) -> Int {
+        let from = start ?? Int.min
+        var total = 0
+        for run in runs {
+            let first = max(run.0, from), last = min(run.1, end)
+            if last > first { total += last - first }
+        }
+        return total
+    }
+
+    private struct ProjectAccumulator {
+        var spans: [UsageAgent: [(Int, Int)]] = [:]
+        var agents: [UsageAgent: Accumulator] = [:]
+        var models: [String: Accumulator] = [:]
+        var sessions = Set<String>()
+        var dayTokens: [String: (tokens: Int, cost: Double)] = [:]
+    }
+
+    private static func projects(files: Dictionary<String, FileState>.Values, cursor: [CursorRecord],
+                                 turns: [String: (conversation: String, model: String, stop: Date, active: Int)], prompts: [String: Date],
+                                 start: Date?, now: Date, calendar: Calendar, roots: inout [String: String]) -> ([ProjectUsage], Int) {
+        let inPeriod = { (date: Date) in (start.map { date >= $0 } ?? true) && date <= now }
+        let unknown = "\u{0}"
+        func key(_ folder: String?) -> String {
+            guard let folder, !folder.isEmpty else { return unknown }
+            if let root = roots[folder] { return root }
+            let root = projectRoot(folder)
+            roots[folder] = root
+            return root
+        }
+        let dayFormat = DateFormatter()
+        dayFormat.calendar = calendar
+        dayFormat.timeZone = calendar.timeZone
+        dayFormat.locale = Locale(identifier: "en_US_POSIX")
+        dayFormat.dateFormat = "yyyy-MM-dd"
+
+        var all: [String: ProjectAccumulator] = [:]
+        for state in files {
+            guard let agent = UsageAgent(rawValue: state.agent) else { continue }
+            let project = key(state.folder)
+            var entry = all[project] ?? ProjectAccumulator()
+            entry.spans[agent, default: []] += state.runs.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+            for (bucketKey, counts) in state.buckets {
+                let parts = bucketKey.split(separator: separator, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count == 3, let seconds = Double(parts[2]) else { continue }
+                let hour = Date(timeIntervalSince1970: seconds)
+                guard inPeriod(hour) else { continue }
+                let model = parts[0], session = parts[1]
+                let modelKey = agent.rawValue + "\u{1f}" + model
+                entry.models[modelKey, default: Accumulator()].counts = zip(entry.models[modelKey, default: Accumulator()].counts, counts).map { $0 + $1 }
+                entry.models[modelKey, default: Accumulator()].sessions.insert(session)
+                entry.agents[agent, default: Accumulator()].counts = zip(entry.agents[agent, default: Accumulator()].counts, counts).map { $0 + $1 }
+                entry.agents[agent, default: Accumulator()].sessions.insert(session)
+                entry.sessions.insert(agent.rawValue + ":" + session)
+                let day = dayFormat.string(from: hour)
+                let tokens = counts[0] + counts[1] + counts[2] + counts[3] + counts[4]
+                let cost = UsagePricing.price(for: model).map { listCost(counts, $0) / 1_000_000 } ?? 0
+                entry.dayTokens[day, default: (0, 0)].tokens += tokens
+                entry.dayTokens[day, default: (0, 0)].cost += cost
+            }
+            all[project] = entry
+        }
+
+        // Cursor: a conversation's folder is the first one any of its records names.
+        var conversationFolder: [String: String] = [:]
+        for record in cursor { if conversationFolder[record.conversation] == nil, let folder = record.project { conversationFolder[record.conversation] = folder } }
+        for record in cursor {
+            let project = key(conversationFolder[record.conversation])
+            let second = Int(floor(record.time.timeIntervalSince1970))
+            all[project, default: ProjectAccumulator()].spans[.cursor, default: []].append((second, second))
+            if inPeriod(record.time) {
+                all[project, default: ProjectAccumulator()].sessions.insert("cursor:" + record.conversation)
+                all[project, default: ProjectAccumulator()].agents[.cursor, default: Accumulator()].sessions.insert(record.conversation)
+            }
+        }
+        for (generation, turn) in turns {
+            let project = key(conversationFolder[turn.conversation])
+            if let prompt = prompts[generation] {
+                let from = Int(floor(prompt.timeIntervalSince1970))
+                all[project, default: ProjectAccumulator()].spans[.cursor, default: []].append((from, from + turn.active))
+            }
+            guard inPeriod(turn.stop) else { continue }
+            let modelKey = UsageAgent.cursor.rawValue + "\u{1f}" + turn.model
+            all[project, default: ProjectAccumulator()].models[modelKey, default: Accumulator()].turns += 1
+            all[project, default: ProjectAccumulator()].models[modelKey, default: Accumulator()].activeSeconds += turn.active
+            all[project, default: ProjectAccumulator()].models[modelKey, default: Accumulator()].sessions.insert(turn.conversation)
+            all[project, default: ProjectAccumulator()].agents[.cursor, default: Accumulator()].turns += 1
+            all[project, default: ProjectAccumulator()].agents[.cursor, default: Accumulator()].activeSeconds += turn.active
+        }
+
+        let from = start.map { Int(floor($0.timeIntervalSince1970)) }
+        let to = Int(floor(now.timeIntervalSince1970))
+        var result: [ProjectUsage] = []
+        var everything: [(Int, Int)] = []
+        for (project, entry) in all {
+            let spans = entry.spans.values.flatMap { $0 }
+            everything += spans
+            let runs = joined(spans)
+            var agents: [AgentUsage] = []
+            for agent in UsageAgent.allCases {
+                let accumulator = entry.agents[agent] ?? Accumulator()
+                var total = totals("", accumulator, agent: agent)
+                total.model = ""
+                total.activeSeconds = clippedSeconds(joined(entry.spans[agent] ?? []), from: from, to: to)
+                total.unpricedTokens = agent == .cursor ? 0 : agentUnpriced(entry, agent: agent)
+                total.estimatedCost = agent == .cursor ? nil : agentCost(entry, agent: agent)
+                guard total.sessions > 0 || total.requests > 0 || total.turns > 0 || total.activeSeconds > 0 else { continue }
+                agents.append(AgentUsage(agent: agent, totals: total, models: []))
+            }
+            var models = entry.models.map { modelKey, accumulator -> (UsageAgent, UsageTotals) in
+                let parts = modelKey.split(separator: "\u{1f}", maxSplits: 1).map(String.init)
+                let agent = UsageAgent(rawValue: parts[0]) ?? .claude
+                return (agent, totals(parts[1], accumulator, agent: agent))
+            }
+            models.sort { a, b in
+                if a.1.totalTokens != b.1.totalTokens { return a.1.totalTokens > b.1.totalTokens }
+                if a.1.turns != b.1.turns { return a.1.turns > b.1.turns }
+                if a.1.model != b.1.model { return a.1.model < b.1.model }
+                return a.0.rawValue < b.0.rawValue
+            }
+            var total = UsageTotals()
+            total.sessions = entry.sessions.count
+            total.activeSeconds = clippedSeconds(runs, from: from, to: to)
+            var cost = 0.0
+            for agent in agents {
+                total.requests += agent.totals.requests
+                total.turns += agent.totals.turns
+                total.inputTokens += agent.totals.inputTokens
+                total.outputTokens += agent.totals.outputTokens
+                total.cacheReadTokens += agent.totals.cacheReadTokens
+                total.cacheWriteTokens += agent.totals.cacheWriteTokens
+                total.unpricedTokens += agent.totals.unpricedTokens
+                cost += agent.totals.estimatedCost ?? 0
+            }
+            total.estimatedCost = total.totalTokens - total.unpricedTokens > 0 ? rounded(cost) : nil
+            guard total.sessions > 0 || total.requests > 0 || total.turns > 0 || total.activeSeconds > 0 else { continue }
+
+            // Days: active time split at local midnight, tokens by each bucket's local date.
+            var days: [String: ProjectDay] = [:]
+            for run in runs {
+                var cursor = max(run.0, from ?? Int.min)
+                let end = min(run.1, to)
+                while cursor < end {
+                    let date = Date(timeIntervalSince1970: TimeInterval(cursor))
+                    let next = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date)).map { Int($0.timeIntervalSince1970) } ?? end
+                    let stop = min(end, max(next, cursor + 1))
+                    let day = dayFormat.string(from: date)
+                    days[day, default: ProjectDay(date: day)].activeSeconds += stop - cursor
+                    cursor = stop
+                }
+            }
+            for (day, value) in entry.dayTokens {
+                days[day, default: ProjectDay(date: day)].totalTokens += value.tokens
+                days[day, default: ProjectDay(date: day)].estimatedCost += value.cost
+            }
+            let dayList = days.values
+                .filter { $0.activeSeconds > 0 || $0.totalTokens > 0 }
+                .map { day -> ProjectDay in var day = day; day.estimatedCost = rounded(day.estimatedCost); return day }
+                .sorted { $0.date < $1.date }
+
+            let path = project == unknown ? nil : project
+            let name = path.map { ($0 as NSString).lastPathComponent } ?? "Unknown"
+            // Each agent carries its own models; the JSON lists them together, sorted as above.
+            let withModels = agents.map { agent in
+                AgentUsage(agent: agent.agent, totals: agent.totals, models: models.filter { $0.0 == agent.agent }.map(\.1))
+            }
+            result.append(ProjectUsage(project: path, name: name, totals: total, agents: withModels, days: dayList,
+                                       modelOrder: models.map { ($0.0, $0.1.model) }))
+        }
+        result.sort { a, b in
+            if (a.project == nil) != (b.project == nil) { return b.project == nil }
+            if a.totals.activeSeconds != b.totals.activeSeconds { return a.totals.activeSeconds > b.totals.activeSeconds }
+            if a.totals.totalTokens != b.totals.totalTokens { return a.totals.totalTokens > b.totals.totalTokens }
+            if a.totals.turns != b.totals.turns { return a.totals.turns > b.totals.turns }
+            if a.name != b.name { return a.name < b.name }
+            return (a.project ?? "") < (b.project ?? "")
+        }
+        return (result, clippedSeconds(joined(everything), from: from, to: to))
+    }
+
+    private static func agentUnpriced(_ entry: ProjectAccumulator, agent: UsageAgent) -> Int {
+        entry.models.filter { $0.key.hasPrefix(agent.rawValue + "\u{1f}") }.reduce(0) { sum, item in
+            let model = String(item.key.split(separator: "\u{1f}", maxSplits: 1)[1])
+            return sum + (UsagePricing.price(for: model) == nil ? item.value.counts[0...4].reduce(0, +) : 0)
+        }
+    }
+
+    /// The priced part's cost, or nil when none of this agent's tokens in the project are priced.
+    private static func agentCost(_ entry: ProjectAccumulator, agent: UsageAgent) -> Double? {
+        var cost = 0.0, priced = 0
+        for (modelKey, accumulator) in entry.models where modelKey.hasPrefix(agent.rawValue + "\u{1f}") {
+            let model = String(modelKey.split(separator: "\u{1f}", maxSplits: 1)[1])
+            if let estimate = totals(model, accumulator, agent: agent).estimatedCost, UsagePricing.price(for: model) != nil {
+                cost += estimate
+                priced += accumulator.counts[0...4].reduce(0, +)
+            }
+        }
+        return priced > 0 ? rounded(cost) : nil
     }
 
     private static func totals(_ model: String, _ accumulator: Accumulator, agent: UsageAgent) -> UsageTotals {
@@ -425,14 +776,23 @@ public enum UsageStore {
         if agent == .cursor {
             totals.estimatedCost = nil
         } else if let price = UsagePricing.price(for: model) {
-            let cost = Double(c[0]) * price.input + Double(c[1]) * price.output + Double(c[2]) * price.cacheRead
-                + Double(c[3]) * price.cacheWrite5m + Double(c[4]) * price.cacheWrite1h
-            totals.estimatedCost = rounded(cost / 1_000_000)
+            totals.estimatedCost = rounded(listCost(c, price) / 1_000_000)
         } else {
             totals.unpricedTokens = totals.totalTokens
             totals.estimatedCost = totals.totalTokens > 0 ? nil : 0
         }
         return totals
+    }
+
+    /// Input, output, cache read, and both cache writes at `price` (per million tokens), summed in steps
+    /// so every Swift compiler can type-check it quickly.
+    private static func listCost(_ c: Bucket, _ price: ModelPrice) -> Double {
+        var cost = Double(c[0]) * price.input
+        cost += Double(c[1]) * price.output
+        cost += Double(c[2]) * price.cacheRead
+        cost += Double(c[3]) * price.cacheWrite5m
+        cost += Double(c[4]) * price.cacheWrite1h
+        return cost
     }
 
     private static func rounded(_ value: Double) -> Double { (value * 1_000_000).rounded() / 1_000_000 }
@@ -484,6 +844,28 @@ public extension UsageReport {
                     "id": period.period.rawValue, "label": period.period.label,
                     "start": period.start.map { UsageStore.formatDate($0) as Any } ?? NSNull(),
                     "totalTokens": period.totalTokens, "estimatedCost": (period.estimatedCost * 1_000_000).rounded() / 1_000_000,
+                    "activeSeconds": period.activeSeconds,
+                    "projects": period.projects.map { project -> [String: Any] in
+                        var object = totals(project.totals)
+                        object["project"] = project.project.map { $0 as Any } ?? NSNull()
+                        object["name"] = project.name
+                        object["agents"] = project.agents.map { agent -> [String: Any] in
+                            var entry = totals(agent.totals)
+                            entry["agent"] = agent.agent.rawValue
+                            entry["name"] = agent.agent.displayName
+                            return entry
+                        }
+                        object["models"] = project.models.map { model -> [String: Any] in
+                            var entry = totals(model.totals)
+                            entry["agent"] = model.agent.rawValue
+                            entry["model"] = model.totals.model
+                            return entry
+                        }
+                        object["days"] = project.days.map { day -> [String: Any] in
+                            ["date": day.date, "activeSeconds": day.activeSeconds, "totalTokens": day.totalTokens, "estimatedCost": day.estimatedCost]
+                        }
+                        return object
+                    },
                     "agents": period.agents.map { agent -> [String: Any] in
                         var object = totals(agent.totals)
                         object["agent"] = agent.agent.rawValue
@@ -529,8 +911,28 @@ public extension UsageReport {
                     }
                 }
             }
+            if detailed { lines += Self.projectLines(period.projects) }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// The Projects block: "  app           19m active · 2 sessions · 6.7K tokens · ~$0.02".
+    static func projectLines(_ projects: [ProjectUsage]) -> [String] {
+        var lines = ["", "Projects"]
+        guard !projects.isEmpty else { return lines + ["  —"] }
+        let shown = projects.prefix(10)
+        let width = min(24, shown.map(\.name.count).max() ?? 0)
+        let count = { (n: Int, word: String) in "\(n) \(word)\(n == 1 ? "" : "s")" }
+        for project in shown {
+            let t = project.totals
+            let name = project.name.count > width ? String(project.name.prefix(width - 1)) + "…" : project.name.padding(toLength: width, withPad: " ", startingAt: 0)
+            var parts = ["\(formatDuration(t.activeSeconds)) active", count(t.sessions, "session")]
+            if t.turns > 0 { parts.append(count(t.turns, "turn")) }
+            if t.totalTokens > 0 { parts += ["\(formatTokens(t.totalTokens)) tokens", formatCost(t.estimatedCost)] }
+            lines.append("  \(name)  " + parts.joined(separator: " · "))
+        }
+        if projects.count > shown.count { lines.append("  … and \(projects.count - shown.count) more") }
+        return lines
     }
 
     static func summary(_ name: String, _ t: UsageTotals, agent: UsageAgent, sessions: Bool = true) -> String {

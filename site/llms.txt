@@ -29,7 +29,7 @@ Codex asks users to approve new hooks once. After installing, tell the user to o
 - The CLI lives at `/Applications/Barista.app/Contents/Helpers/barista` on macOS; on Windows and Linux it's `barista` on the PATH.
 - MCP: run `barista mcp` as a stdio MCP server; tools acquire, heartbeat, and release awake sessions.
 - Cursor: `barista hooks install --agent cursor` (or `barista setup`) keeps the computer awake while Cursor's agent works.
-- Usage: `barista usage` (or the `barista_usage` MCP tool) reports tokens per agent and model for today, this week, and this month, with API-price cost estimates, from local logs.
+- Usage: `barista usage` (or the `barista_usage` MCP tool) reports tokens per agent and model for today, this week, and this month, with API-price cost estimates, from local logs, plus active time, tokens, models, and cost per project. `barista report` writes a visual HTML report and opens it.
 
 Barista prevents idle sleep only. Closing the lid or choosing Sleep still sleeps the Mac.
 

@@ -356,6 +356,20 @@ pub fn refresh_usage(app: &Shared, max_age: Duration) {
     });
 }
 
+/// Writes the visual usage report (`barista report`) and opens it in the browser, off the main thread.
+/// Only a failure shows up, as a notice.
+pub fn open_usage_report(app: &Shared, period: barista_core::usage::Period) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let notice = match barista_core::usage::write_report(period, None, true) {
+            Ok((_, true)) => return,
+            Ok((path, false)) => format!("Couldn’t open a browser. The report is at {}", path.display()),
+            Err(error) => format!("Couldn’t write the usage report: {error}"),
+        };
+        lock(&app).notice = Some(notice);
+    });
+}
+
 /// Asks your Claude account for its limits on a background thread: at most once every 5 minutes
 /// from the last attempt (unless `now`, for turning the setting on), never two at once.
 pub fn fetch_claude_account(app: &Shared, now: bool) {

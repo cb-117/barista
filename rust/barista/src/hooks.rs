@@ -760,22 +760,22 @@ impl AgentHook {
         };
         let text = |key: &str| event.get(key).and_then(Value::as_str).filter(|v| !v.is_empty());
         let generation = text("generation_id").unwrap_or("");
+        let root = event
+            .get("workspace_roots")
+            .and_then(Value::as_array)
+            .and_then(|roots| roots.first())
+            .and_then(Value::as_str)
+            .filter(|root| !root.is_empty());
         match name {
-            "beforeSubmitPrompt" => crate::usage::record_cursor("prompt", conversation, generation, text("model"), None),
-            "stop" => crate::usage::record_cursor("stop", conversation, generation, text("model"), text("status")),
+            "beforeSubmitPrompt" => crate::usage::record_cursor("prompt", conversation, generation, text("model"), root, None),
+            "stop" => crate::usage::record_cursor("stop", conversation, generation, text("model"), root, text("status")),
             _ => {}
         }
         let Some(key) = HookLeaseStore::key(&format!("cursor-{conversation}")) else {
             return;
         };
         let store = HookLeaseStore::new(&self.socket_path);
-        let folder = event
-            .get("workspace_roots")
-            .and_then(Value::as_array)
-            .and_then(|roots| roots.first())
-            .and_then(Value::as_str)
-            .map(folder_name)
-            .unwrap_or_default();
+        let folder = root.map(folder_name).unwrap_or_default();
         let title = if folder.is_empty() {
             "Cursor".to_string()
         } else {

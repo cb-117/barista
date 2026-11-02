@@ -16,8 +16,8 @@ struct Options {
             child = Array(arguments[(separator + 1)...])
             arguments = Array(arguments[..<separator])
         }
-        let booleanFlags: Set<String> = ["--json", "--display", "--all", "--no-launch"]
-        let valueFlags: Set<String> = ["--socket", "--name", "--minutes", "--seconds", "--ttl", "--max-awake", "--pid", "--progress", "--message", "--settings", "--agent", "--period", "--chain"]
+        let booleanFlags: Set<String> = ["--json", "--display", "--all", "--no-launch", "--no-open"]
+        let valueFlags: Set<String> = ["--socket", "--name", "--minutes", "--seconds", "--ttl", "--max-awake", "--pid", "--progress", "--message", "--settings", "--agent", "--period", "--chain", "--output"]
         var index = 0
         while index < arguments.count {
             let token = arguments[index]
@@ -149,6 +149,33 @@ struct CoffeeCLI {
                 }
                 let report = UsageStore.report(periods: periods)
                 print(options.flags.contains("--json") ? report.json() : report.text(detailed: options.values["--period"] != nil))
+                return
+            }
+            if options.command == "report" {
+                try options.validate(values: ["--period", "--output"], flags: ["--no-open"])
+                var initial = UsagePeriod.week
+                if let name = options.values["--period"] {
+                    guard let period = UsagePeriod(rawValue: name) else { throw CoffeeError.message("--period must be today, week, month, or all.") }
+                    initial = period
+                }
+                let target = options.values["--output"].map { URL(fileURLWithPath: $0) } ?? ReportTemplate.defaultURL
+                let url: URL
+                do { url = try ReportTemplate.write(initialPeriod: initial, to: target) } catch {
+                    throw CoffeeError.message("Couldn't write the report to \(target.path): \(error.localizedDescription)")
+                }
+                var opened = false
+                if !options.flags.contains("--no-open") {
+                    let open = Process()
+                    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                    open.arguments = [url.path]
+                    if (try? open.run()) != nil { open.waitUntilExit(); opened = open.terminationStatus == 0 }
+                }
+                if options.flags.contains("--json") {
+                    let data = try JSONSerialization.data(withJSONObject: ["path": url.path, "opened": opened], options: [.sortedKeys, .withoutEscapingSlashes])
+                    print(String(decoding: data, as: UTF8.self))
+                } else {
+                    print("Wrote \(url.path)")
+                }
                 return
             }
             if options.command == "statusline" {
@@ -421,6 +448,7 @@ struct CoffeeCLI {
     barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]
     barista setup [--agent claude|codex|cursor]
     barista usage [--period today|week|month|all] [--json]
+    barista report [--period today|week|month|all] [--output PATH] [--no-open] [--json]
     barista limits refresh [--json]
     barista statusline install|uninstall|status [--settings PATH]
     barista version
@@ -435,7 +463,9 @@ struct CoffeeCLI {
     limits refresh fetches your Claude plan limits from your Claude account now, using
     Claude Code's saved login read-only (the app does this every few minutes).
     usage reports plan limits, then sessions and tokens per agent and model from local logs,
-    with costs estimated at API list prices (not what a subscription charges).
+    with costs estimated at API list prices (not what a subscription charges); with --period,
+    also active time, sessions, tokens, and cost per project (Git repository).
+    report writes a visual usage report (an HTML page, nothing uploaded) and opens it.
     statusline install makes Claude Code's status line show (and Barista record) your Claude
     plan limits; an existing status line keeps working.
     hooks install connects Claude Code (or Codex with --agent codex, which then asks you to
@@ -489,12 +519,13 @@ struct AgentHook {
         guard let conversation = event["conversation_id"] as? String else { return }
         let generation = event["generation_id"] as? String ?? ""
         let model = event["model"] as? String
+        let root = (event["workspace_roots"] as? [Any])?.first as? String
         // Recorded first, so usage is tracked even when Barista isn't running.
         switch name {
         case "beforeSubmitPrompt":
-            UsageStore.recordCursor(event: "prompt", conversation: conversation, generation: generation, model: model, status: nil)
+            UsageStore.recordCursor(event: "prompt", conversation: conversation, generation: generation, model: model, status: nil, project: root)
         case "stop":
-            UsageStore.recordCursor(event: "stop", conversation: conversation, generation: generation, model: model, status: event["status"] as? String)
+            UsageStore.recordCursor(event: "stop", conversation: conversation, generation: generation, model: model, status: event["status"] as? String, project: root)
         default: break
         }
         guard let key = HookLeaseStore.key("cursor-\(conversation)") else { return }
