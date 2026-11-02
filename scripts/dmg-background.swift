@@ -59,13 +59,13 @@ func render(scale: CGFloat) -> NSBitmapImageRep {
     head.lineJoinStyle = .round
     head.stroke()
 
-    // First-launch help until the app is notarized.
+    // What happens after the drag.
     let box = NSRect(x: 40, y: 316, width: 580, height: 74)
     let panel = NSBezierPath(roundedRect: box, xRadius: 14, yRadius: 14)
     card.setFill(); panel.fill()
     latte.setStroke(); panel.lineWidth = 1.5; panel.stroke()
-    draw("First time opening it?", font: rounded(13, .bold), color: ink, in: box.insetBy(dx: 18, dy: 12).offsetBy(dx: 0, dy: 0), alignment: .left)
-    draw("If macOS says it can’t verify Barista, click Done. Then open System Settings → Privacy & Security, scroll down, and click Open Anyway.",
+    draw("Then open Barista from Applications", font: rounded(13, .bold), color: ink, in: box.insetBy(dx: 18, dy: 12).offsetBy(dx: 0, dy: 0), alignment: .left)
+    draw("It lives in your menu bar as a coffee cup. Click it to keep your Mac awake, or connect your AI agents in Settings.",
          font: rounded(12, .regular), color: muted,
          in: NSRect(x: box.minX + 18, y: box.minY + 31, width: box.width - 36, height: 40), alignment: .left)
 

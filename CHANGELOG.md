@@ -9,6 +9,9 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Changed
+- The Mac disk image no longer explains the **Open Anyway** step, since Barista is notarized now. It says where to find Barista after you drag it into Applications instead.
+
 ## [0.0.15] - 2026-11-01
 
 ### Added

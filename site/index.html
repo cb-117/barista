@@ -157,7 +157,7 @@
             <a class="btn primary" href="https://github.com/cb-117/barista/releases/latest/download/Barista.dmg">☕ Download for Mac</a>
             <a class="btn ghost" href="https://github.com/cb-117/barista">★ Star on GitHub</a>
           </div>
-          <p class="small">macOS 13 or later. Open the download and drag Barista into Applications. The first time, macOS says it can’t verify Barista: click <b>Done</b>, then System Settings → Privacy &amp; Security → <b>Open Anyway</b>. No account. No cloud. No tracking. Just coffee.</p>
+          <p class="small">macOS 13 or later. Open the download and drag Barista into Applications. Signed and notarized by Apple. No account. No cloud. No tracking. Just coffee.</p>
           <p class="small">Or in Terminal, or ask your AI agent to run it: <code>curl -fsSL https://baristatime.app/install.sh | sh</code></p>
         </div>
         <div class="platform" data-os="windows">
@@ -328,7 +328,7 @@ Awake · 3 session(s) · display allowed to sleep
     <details><summary>How do I get updates?</summary><p>Barista checks for a new version once a day. When one is out, click <b>Update</b> in its panel: it downloads the update, checks its signature, installs it, and relaunches, and anything that was keeping your Mac awake keeps going. You can also check right away in Settings → Updates.</p></details>
     <details><summary>Is there a Windows or Linux version?</summary><p>Yes. Barista runs on Windows 10 and 11 and on Linux (x86_64 and arm64) as a coffee cup in the notification area or system tray, with quick timers, your tasks, battery protection, and the same <code>barista</code> CLI, MCP server, and one-click Claude Code and Codex hooks. On Windows, <a href="https://github.com/cb-117/barista/releases/latest/download/Barista-Setup.exe">download Barista Setup</a> and run it, or run <code>irm https://baristatime.app/install.ps1 | iex</code> in PowerShell (no administrator rights needed). On Linux, run <code>curl -fsSL https://baristatime.app/install.sh | sh</code>. Linux needs a desktop whose tray supports StatusNotifierItem (KDE, Ubuntu, Xfce, and most others); stock GNOME needs the AppIndicator extension. Without a desktop it runs in the background, and the CLI and hooks still work.</p></details>
     <details><summary>Barista 0.0.6 closes right after opening?</summary><p>That version had a launch bug, fixed in 0.0.7. Because it can’t open, it can’t update itself: <a href="https://github.com/cb-117/barista/releases/latest/download/Barista.dmg">download Barista again</a> and replace the copy in Applications (or delete it and run the Terminal command above).</p></details>
-    <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet, so macOS says it can’t verify Barista the first time. Click <b>Done</b>, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. You only do this once: in-app updates don’t ask again. Installing with the Terminal command (<code>curl -fsSL https://baristatime.app/install.sh | sh</code>) skips this step.</p></details>
+    <details><summary>macOS says it can’t verify Barista?</summary><p>Barista is signed and notarized by Apple from version 0.0.15, so a fresh download opens normally. If you see this with an older download, <a href="https://github.com/cb-117/barista/releases/latest/download/Barista.dmg">download Barista again</a>. Already running an older version? Click <b>Update</b> in its panel.</p></details>
   </div>
 </section>
 

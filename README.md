@@ -43,9 +43,9 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 
 ## Install
 
-[Download Barista.dmg](https://github.com/cb-117/barista/releases/latest/download/Barista.dmg), open it, and drag **Barista** into Applications. Builds aren’t notarized yet, so the first time you open it macOS says it can’t verify Barista: click **Done**, then go to System Settings → Privacy & Security and click **Open Anyway**. You only do this once.
+[Download Barista.dmg](https://github.com/cb-117/barista/releases/latest/download/Barista.dmg), open it, and drag **Barista** into Applications. Barista is signed and notarized by Apple, so it opens like any other app.
 
-Or install from Terminal, which also connects Claude Code and Codex for you. AI agents can run it too (see [llms.txt](https://baristatime.app/llms.txt)); it skips the “Open Anyway” step because the download isn’t marked as coming from a browser:
+Or install from Terminal, which also connects Claude Code and Codex for you. AI agents can run it too (see [llms.txt](https://baristatime.app/llms.txt)):
 
 ```sh
 curl -fsSL https://baristatime.app/install.sh | sh
@@ -168,7 +168,7 @@ Sessions are visible and controllable in the app. The local control socket is re
 
 To show your Claude plan’s limits, the Barista app asks Anthropic for them at most every 5 minutes, using Claude Code’s saved login (read-only: Barista never refreshes, stores, or logs it). On macOS, Barista reads the login with Apple’s `security` tool, the way Claude Code does, so macOS doesn’t ask for Keychain access. Turn this off in Settings → Agents. Apart from that, the only network requests Barista makes are for updates: an anonymous HTTPS request to GitHub’s public releases API at most once a day, and downloading an update when you click **Update**. They send no identifiers, usage, or session data. Turn automatic checks off in Settings → Updates.
 
-The build is ad-hoc signed for local use, and release builds aren’t notarized yet. After the first launch, allow the app in System Settings → Privacy & Security → **Open Anyway**, or install with `install.sh`, which skips that step. Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.
+Local builds are ad-hoc signed. Release builds are signed with Developer ID and notarized by the Release workflow (`BARISTA_SIGN_IDENTITY` and `scripts/notarize.sh`). Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.
 
 ## Verify
 
