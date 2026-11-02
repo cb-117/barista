@@ -51,6 +51,7 @@
   .btn.primary { background: var(--crema); color: #fff; box-shadow: 0 8px 24px rgba(199,90,43,.3); }
   .btn.ghost { background: transparent; color: var(--ink); border: 2px solid var(--latte); }
   .small { font-size: 14px; color: var(--muted); margin-top: 14px; }
+  .other-platforms a:not([hidden]) ~ a:not([hidden])::before { content: "·"; display: inline-block; margin: 0 7px; color: var(--muted); }
   .hero-art { width: 100%; height: auto; }
   .steam { animation: float 4s ease-in-out infinite; }
   @keyframes float { 50% { transform: translateY(-8px); } }
@@ -140,13 +141,50 @@
       <div class="kicker">Free &amp; open source · macOS 13+ · Windows · Linux</div>
       <h1>Keeps your computer awake while the <em>work brews.</em></h1>
       <p class="lede">A tiny menu-bar barista that takes orders from you, your terminal, and your AI agents. It keeps your Mac or PC awake exactly as long as each one needs, then lets it sleep.</p>
-      <div class="cta">
-        <a class="btn primary" href="https://github.com/cb-117/barista/releases/latest/download/Barista.dmg">☕ Download for Mac</a>
-        <a class="btn ghost" href="https://github.com/cb-117/barista">View on GitHub</a>
+      <div id="get">
+        <!-- One block per platform. Without JavaScript all three show; with it, the visitor's platform shows and the others are a click away. -->
+        <div class="platform" data-os="mac">
+          <div class="cta">
+            <a class="btn primary" href="https://github.com/cb-117/barista/releases/latest/download/Barista.dmg">☕ Download for Mac</a>
+            <a class="btn ghost" href="https://github.com/cb-117/barista">View on GitHub</a>
+          </div>
+          <p class="small">macOS 13 or later. Open the download and drag Barista into Applications. The first time, macOS says it can’t verify Barista: click <b>Done</b>, then System Settings → Privacy &amp; Security → <b>Open Anyway</b>. No account. No cloud. No tracking. Just coffee.</p>
+          <p class="small">Or in Terminal, or ask your AI agent to run it: <code>curl -fsSL https://baristatime.app/install.sh | sh</code></p>
+        </div>
+        <div class="platform" data-os="windows">
+          <div class="cta">
+            <a class="btn primary" href="https://github.com/cb-117/barista/releases/latest/download/Barista-Setup.exe">☕ Download for Windows</a>
+            <a class="btn ghost" href="https://github.com/cb-117/barista">View on GitHub</a>
+          </div>
+          <p class="small">Windows 10 or 11. Run <b>Barista-Setup.exe</b>: it installs Barista for you (or for everyone on the PC), starts it when you sign in, and puts the coffee cup in your notification area (click <b>^</b> if it’s hidden). If SmartScreen says it protected your PC, click <b>More info</b> → <b>Run anyway</b>.</p>
+          <p class="small">Or in PowerShell, or ask your AI agent to run it: <code>irm https://baristatime.app/install.ps1 | iex</code></p>
+        </div>
+        <div class="platform" data-os="linux">
+          <div class="cta">
+            <a class="btn primary" href="https://github.com/cb-117/barista/releases/latest/download/barista-linux-x86_64.tar.gz">☕ Download for Linux (x86_64)</a>
+            <a class="btn ghost" href="https://github.com/cb-117/barista/releases/latest/download/barista-linux-arm64.tar.gz">arm64</a>
+          </div>
+          <p class="small">The easiest way: run this in a terminal, or ask your AI agent to. It installs to <code>~/.local/bin</code>, adds an app-menu entry, and connects your agents: <code>curl -fsSL https://baristatime.app/install.sh | sh</code></p>
+          <p class="small">The cup shows in KDE, Ubuntu, Xfce, and most trays; stock GNOME needs the AppIndicator extension.</p>
+        </div>
+        <p class="small other-platforms">Other platforms: <a href="#get" data-pick="mac">Mac</a><a href="#get" data-pick="windows">Windows</a><a href="#get" data-pick="linux">Linux</a><a href="https://github.com/cb-117/barista/releases/latest">all downloads</a></p>
       </div>
-      <p class="small">Open the download and drag Barista into Applications. No account. No cloud. No tracking. Just coffee.</p>
-      <p class="small">Or in Terminal, or ask your AI agent to run it: <code>curl -fsSL https://baristatime.app/install.sh | sh</code></p>
-      <p class="small"><b>On Windows or Linux?</b> Barista lives in your notification area or system tray, with the same CLI and agent hooks. Windows (PowerShell): <code>irm https://baristatime.app/install.ps1 | iex</code>. Linux: the same <code>install.sh</code> command. Or grab a download from the <a href="https://github.com/cb-117/barista/releases/latest">latest release</a>.</p>
+      <script>
+        (function () {
+          var get = document.getElementById('get');
+          var ua = navigator.userAgent, platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+          var detected = /Win/.test(platform) || /Windows/.test(ua) ? 'windows'
+            : /Linux/.test(platform + ua) && !/Android/.test(ua) ? 'linux' : 'mac';
+          function pick(os) {
+            get.querySelectorAll('.platform').forEach(function (block) { block.hidden = block.dataset.os !== os; });
+            get.querySelectorAll('[data-pick]').forEach(function (link) { link.hidden = link.dataset.pick === os; });
+          }
+          get.querySelectorAll('[data-pick]').forEach(function (link) {
+            link.addEventListener('click', function (event) { event.preventDefault(); pick(link.dataset.pick); });
+          });
+          pick(detected);
+        })();
+      </script>
     </div>
     <img class="hero-art steam" src="assets/hero.svg" alt="An espresso machine serving several cups, each with an order ticket: you for one hour, make test, and Claude Code.">
   </header>
@@ -279,7 +317,7 @@ Awake · 3 session(s) · display allowed to sleep
     <details><summary>Does anything leave my Mac?</summary><p>No personal data, ever. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions). The one network request is an optional once-a-day check with GitHub for a newer version. It sends nothing about you, and you can turn it off in Settings. (This website, not the app, counts visits with PostHog.)</p></details>
     <details><summary>Can my AI agent set it up for me?</summary><p>Yes. Ask Claude Code or Codex to install Barista. It reads <a href="llms.txt">llms.txt</a>, asks you first, then runs the one-line installer, which installs Barista and connects Claude Code and Codex. Codex then asks you to approve the new hooks once: type <code>/hooks</code> in Codex and trust Barista’s. Already installed? Run <code>barista setup</code> to connect agents you’ve added since.</p></details>
     <details><summary>How do I get updates?</summary><p>Barista checks for a new version once a day. When one is out, click <b>Update</b> in its panel: it downloads the update, checks its signature, installs it, and relaunches, and anything that was keeping your Mac awake keeps going. You can also check right away in Settings → Updates.</p></details>
-    <details><summary>Is there a Windows or Linux version?</summary><p>Yes. Barista runs on Windows 10 and 11 and on Linux (x86_64 and arm64) as a coffee cup in the notification area or system tray, with quick timers, your tasks, battery protection, and the same <code>barista</code> CLI, MCP server, and one-click Claude Code and Codex hooks. On Windows, run <code>irm https://baristatime.app/install.ps1 | iex</code> in PowerShell (no administrator rights needed). On Linux, run <code>curl -fsSL https://baristatime.app/install.sh | sh</code>. Linux needs a desktop whose tray supports StatusNotifierItem (KDE, Ubuntu, Xfce, and most others); stock GNOME needs the AppIndicator extension. Without a desktop it runs in the background, and the CLI and hooks still work.</p></details>
+    <details><summary>Is there a Windows or Linux version?</summary><p>Yes. Barista runs on Windows 10 and 11 and on Linux (x86_64 and arm64) as a coffee cup in the notification area or system tray, with quick timers, your tasks, battery protection, and the same <code>barista</code> CLI, MCP server, and one-click Claude Code and Codex hooks. On Windows, <a href="https://github.com/cb-117/barista/releases/latest/download/Barista-Setup.exe">download Barista Setup</a> and run it, or run <code>irm https://baristatime.app/install.ps1 | iex</code> in PowerShell (no administrator rights needed). On Linux, run <code>curl -fsSL https://baristatime.app/install.sh | sh</code>. Linux needs a desktop whose tray supports StatusNotifierItem (KDE, Ubuntu, Xfce, and most others); stock GNOME needs the AppIndicator extension. Without a desktop it runs in the background, and the CLI and hooks still work.</p></details>
     <details><summary>Barista 0.0.6 closes right after opening?</summary><p>That version had a launch bug, fixed in 0.0.7. Because it can’t open, it can’t update itself: <a href="https://github.com/cb-117/barista/releases/latest/download/Barista.dmg">download Barista again</a> and replace the copy in Applications (or delete it and run the Terminal command above).</p></details>
     <details><summary>The app won’t open: “unidentified developer”?</summary><p>Early builds aren’t notarized yet, so macOS says it can’t verify Barista the first time. Click <b>Done</b>, then go to System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. You only do this once: in-app updates don’t ask again. Installing with the Terminal command (<code>curl -fsSL https://baristatime.app/install.sh | sh</code>) skips this step.</p></details>
   </div>
