@@ -55,7 +55,7 @@ struct CoffeeSettingsView: View {
                 Toggle(isOn: $runtime.claudeAccountLimits) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Show Claude plan limits from your Claude account")
-                        Text("Uses Claude Code’s saved login, read-only, to ask Anthropic for your limits every few minutes. Barista never changes, stores, or shares the login. Barista asks macOS for Keychain access only when you click Allow access in Usage & Limits or turn this on.")
+                        Text("Uses Claude Code’s saved login, read-only, to ask Anthropic for your limits every few minutes. Barista never changes, stores, or shares the login.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }

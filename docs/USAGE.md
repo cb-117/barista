@@ -134,8 +134,11 @@ recently wins:
      `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (Unix ms). Use the token only while it
      expires more than 60 seconds from now. **Never refresh it** (that would rotate Claude Code's login),
      never write it anywhere, never log it, and never pass it on a command line.
-   - macOS Keychain access: background reads never show a prompt (no user interaction allowed). If the
-     read needs your permission, the app shows **Allow access** in Usage & Limits; clicking it, or turning
+   - macOS Keychain access: read the item with `/usr/bin/security find-generic-password -s "Claude Code-credentials" -w`,
+     the tool Claude Code uses to save and read it, so the item's access list already allows it and macOS
+     doesn't ask. (Reading it directly made macOS ask for Barista, and ask again after every update, since
+     each build has a new ad-hoc signature.) A background read gives up after 10 seconds rather than wait
+     on a prompt. If the read still fails, the app shows **Allow access** in Usage & Limits; clicking it, or turning
      the setting on, does one read that may show macOS's prompt. If you deny it (or cancel), Barista
      remembers and stops trying until you click Allow access or turn the setting off and on. The token is
      kept in memory until it expires, so the Keychain is read rarely.

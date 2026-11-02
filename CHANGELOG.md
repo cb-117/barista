@@ -19,6 +19,9 @@ new version and date, and start a fresh **Unreleased** section above it.
 ### Changed
 - Barista reads your agent logs once more from the start after updating, to find each session's project. This takes a few seconds the first time Usage & Limits opens.
 
+### Fixed
+- macOS no longer keeps asking to let Barista use “Claude Code-credentials” in your Keychain. Barista now reads Claude Code’s login with Apple’s `security` tool, as Claude Code does, and the Keychain already allows that. Before, every Barista update had a new signature, so **Always Allow** didn’t last.
+
 ## [0.0.11] - 2026-11-01
 
 ### Added

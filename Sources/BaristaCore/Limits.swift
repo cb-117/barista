@@ -1,6 +1,4 @@
 import Foundation
-import LocalAuthentication
-import Security
 
 /// Plan limits for each agent's subscription, as the agents themselves report them.
 /// docs/USAGE.md ("Plan limits") is the specification; the Rust build implements the same rules.
@@ -239,27 +237,9 @@ public enum ClaudeAccount {
             guard let file = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return .noLogin }
             data = file
         } else {
-            var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                        kSecAttrService as String: "Claude Code-credentials",
-                                        kSecReturnData as String: true,
-                                        kSecMatchLimit as String: kSecMatchLimitOne]
-            if !interactive {
-                let context = LAContext()
-                context.interactionNotAllowed = true
-                query[kSecUseAuthenticationContext as String] = context
-                // kSecUseAuthenticationUI = kSecUseAuthenticationUIFail, by value: it also covers the login
-                // keychain's "allow access" dialog, and the named constants are deprecated (warnings).
-                query["u_AuthUI"] = "u_AuthUIF"
-            }
-            var item: CFTypeRef?
-            switch SecItemCopyMatching(query as CFDictionary, &item) {
-            case errSecSuccess:
-                guard let found = item as? Data else { return .noLogin }
-                data = found
-            case errSecItemNotFound: return .noLogin
-            case errSecInteractionNotAllowed: return .needsPermission
-            case errSecAuthFailed, errSecUserCanceled: return interactive ? .denied : .needsPermission
-            default: return interactive ? .denied : .needsPermission
+            switch readKeychain(interactive: interactive) {
+            case .success(let found): data = found
+            case .failure(let failure): return failure.credential
             }
         }
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -270,6 +250,36 @@ public enum ClaudeAccount {
         guard expires.timeIntervalSince(now) > 60 else { return .expired }
         if testCredentials == nil { cache.set(token, expires: expires) }
         return .token(token, expires: expires)
+    }
+
+    /// Reads the item with /usr/bin/security, the tool Claude Code itself uses to save and read it. The item's
+    /// access list trusts that tool, so macOS never asks. Reading it directly (SecItemCopyMatching) made macOS
+    /// ask for Barista, again after every update, since each build has a new ad-hoc signature.
+    private static func readKeychain(interactive: Bool) -> Result<Data, CredentialFailure> {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { return .failure(CredentialFailure(.denied)) }
+        // If macOS ever does ask (an item Claude Code didn't save), a background read gives up rather than wait.
+        let timeout = DispatchWorkItem { process.terminate() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + (interactive ? 120 : 10), execute: timeout)
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        timeout.cancel()
+        switch process.terminationStatus {
+        case 0: return .success(data)
+        case 44: return .failure(CredentialFailure(.noLogin)) // errSecItemNotFound
+        default: return .failure(CredentialFailure(interactive ? .denied : .needsPermission))
+        }
+    }
+
+    private struct CredentialFailure: Error {
+        let credential: Credential
+        init(_ credential: Credential) { self.credential = credential }
     }
 
     /// Refuses every redirect, so a redirect is a failure and never replaces the saved result.
