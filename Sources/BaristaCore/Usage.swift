@@ -81,8 +81,9 @@ public struct ProjectUsage: Sendable, Equatable, Identifiable {
     }
 
     public static func == (a: ProjectUsage, b: ProjectUsage) -> Bool {
-        a.project == b.project && a.name == b.name && a.totals == b.totals && a.agents == b.agents && a.days == b.days
-            && a.modelOrder.map { "\($0.0.rawValue)/\($0.1)" } == b.modelOrder.map { "\($0.0.rawValue)/\($0.1)" }
+        guard a.project == b.project, a.name == b.name, a.totals == b.totals else { return false }
+        guard a.agents == b.agents, a.days == b.days, a.modelOrder.count == b.modelOrder.count else { return false }
+        return zip(a.modelOrder, b.modelOrder).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 }
     }
 }
 
@@ -568,7 +569,13 @@ public enum UsageStore {
     }
 
     private static func clippedSeconds(_ runs: [(Int, Int)], from start: Int?, to end: Int) -> Int {
-        runs.reduce(0) { $0 + max(0, min($1.1, end) - max($1.0, start ?? Int.min)) }
+        let from = start ?? Int.min
+        var total = 0
+        for run in runs {
+            let first = max(run.0, from), last = min(run.1, end)
+            if last > first { total += last - first }
+        }
+        return total
     }
 
     private struct ProjectAccumulator {
@@ -617,9 +624,7 @@ public enum UsageStore {
                 entry.sessions.insert(agent.rawValue + ":" + session)
                 let day = dayFormat.string(from: hour)
                 let tokens = counts[0] + counts[1] + counts[2] + counts[3] + counts[4]
-                let price = UsagePricing.price(for: model)
-                let cost = price.map { (Double(counts[0]) * $0.input + Double(counts[1]) * $0.output + Double(counts[2]) * $0.cacheRead
-                    + Double(counts[3]) * $0.cacheWrite5m + Double(counts[4]) * $0.cacheWrite1h) / 1_000_000 } ?? 0
+                let cost = UsagePricing.price(for: model).map { listCost(counts, $0) / 1_000_000 } ?? 0
                 entry.dayTokens[day, default: (0, 0)].tokens += tokens
                 entry.dayTokens[day, default: (0, 0)].cost += cost
             }
@@ -771,14 +776,23 @@ public enum UsageStore {
         if agent == .cursor {
             totals.estimatedCost = nil
         } else if let price = UsagePricing.price(for: model) {
-            let cost = Double(c[0]) * price.input + Double(c[1]) * price.output + Double(c[2]) * price.cacheRead
-                + Double(c[3]) * price.cacheWrite5m + Double(c[4]) * price.cacheWrite1h
-            totals.estimatedCost = rounded(cost / 1_000_000)
+            totals.estimatedCost = rounded(listCost(c, price) / 1_000_000)
         } else {
             totals.unpricedTokens = totals.totalTokens
             totals.estimatedCost = totals.totalTokens > 0 ? nil : 0
         }
         return totals
+    }
+
+    /// Input, output, cache read, and both cache writes at `price` (per million tokens), summed in steps
+    /// so every Swift compiler can type-check it quickly.
+    private static func listCost(_ c: Bucket, _ price: ModelPrice) -> Double {
+        var cost = Double(c[0]) * price.input
+        cost += Double(c[1]) * price.output
+        cost += Double(c[2]) * price.cacheRead
+        cost += Double(c[3]) * price.cacheWrite5m
+        cost += Double(c[4]) * price.cacheWrite1h
+        return cost
     }
 
     private static func rounded(_ value: Double) -> Double { (value * 1_000_000).rounded() / 1_000_000 }

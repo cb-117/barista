@@ -1854,7 +1854,8 @@ mod tests {
             "a submodule is its own project"
         );
         assert_eq!(project_root(&text(root.join("plain"))), text(root.join("plain")));
-        let gone = text(root.join("main/gone"));
+        // Joined part by part, so the expected path uses the platform's separator throughout.
+        let gone = text(root.join("main").join("gone"));
         assert_eq!(project_root(&gone), gone, "a folder that no longer exists is its own project");
         assert_eq!(project_name(&main), "main");
         assert_eq!(project_name("/a/b/"), "b");
