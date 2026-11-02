@@ -9,6 +9,11 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-11-01
+
+### Fixed
+- Windows: the panel opened blank. Barista ignored the panel’s messages, including its request for the current state, because a page loaded from memory reports its address as `about:blank`. The panel now fills in and sizes itself to fit.
+
 ## [0.0.12] - 2026-11-01
 
 ### Added
@@ -20,7 +25,6 @@ new version and date, and start a fresh **Unreleased** section above it.
 - Barista reads your agent logs once more from the start after updating, to find each session's project. This takes a few seconds the first time Usage & Limits opens.
 
 ### Fixed
-- Windows: the panel opened blank. Barista ignored the panel’s messages, including its request for the current state, because a page loaded from memory reports its address as `about:blank`. The panel now fills in and sizes itself to fit.
 - macOS no longer keeps asking to let Barista use “Claude Code-credentials” in your Keychain. Barista now reads Claude Code’s login with Apple’s `security` tool, as Claude Code does, and the Keychain already allows that. Before, every Barista update had a new signature, so **Always Allow** didn’t last.
 
 ## [0.0.11] - 2026-11-01
