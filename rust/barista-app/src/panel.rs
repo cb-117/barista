@@ -545,6 +545,14 @@ fn position(anchor: Option<Anchor>, point: POINT, work: RECT, screen: RECT, widt
     )
 }
 
+/// Whether a message came from the panel page. The page is loaded with NavigateToString:
+/// NavigationStarting reports it as a `data:` URI, but its messages report `about:blank` as their
+/// source, so the two never match. Every other navigation is cancelled, so the only page that can be
+/// showing is the panel; this still refuses messages before it loaded and from any web or file page.
+fn from_panel_page(loaded: bool, source: &str) -> bool {
+    loaded && (source == "about:blank" || source.starts_with("data:"))
+}
+
 /// WebView2 is unavailable: say so once, hide, and let the tray fall back to its full menu.
 fn fail(shared: &Rc<RefCell<Shared>>, sender: &Sender<UserEvent>, reason: &str) -> windows::core::Result<()> {
     let mut state = shared.borrow_mut();
@@ -616,7 +624,7 @@ fn configure(
                 let mut source = PWSTR::null();
                 args.Source(&mut source)?;
                 let source = take_string(source);
-                if message_shared.borrow().page_source.as_deref() != Some(source.as_str()) {
+                if !from_panel_page(message_shared.borrow().page_source.is_some(), &source) {
                     return Ok(());
                 }
                 let mut json = PWSTR::null();
@@ -709,6 +717,15 @@ mod tests {
         let work = RECT { bottom: 1032, ..SCREEN };
         let (x, y) = position(icon(0, 1044), POINT { x: 12, y: 1056 }, work, SCREEN, 340, 1008, 12);
         assert_eq!((x, y), (12, 12));
+    }
+
+    #[test]
+    fn messages_count_only_from_the_loaded_panel_page() {
+        assert!(from_panel_page(true, "about:blank"));
+        assert!(from_panel_page(true, "data:text/html;charset=utf-8;base64,PCFET0NUWVBF"));
+        assert!(!from_panel_page(false, "about:blank"));
+        assert!(!from_panel_page(true, "https://example.com/"));
+        assert!(!from_panel_page(true, "file:///C:/page.html"));
     }
 
     #[test]
