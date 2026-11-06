@@ -9,6 +9,9 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Added
+- **One-click mode** (Mac). Turn it on in Settings → General, and a click on the menu-bar cup keeps your Mac awake until you click it again. The cup fills while it's on and empties when it's off. Option-click opens the panel, and right-click still shows quick timers.
+
 ### Changed
 - The Mac disk image no longer explains the **Open Anyway** step, since Barista is notarized now. It says where to find Barista after you drag it into Applications instead.
 

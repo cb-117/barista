@@ -26,7 +26,7 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 ## What’s included
 
 - A coffee-cup menu-bar control with one simple panel: pick 15m, 1h, 4h, or ∞ and press **Keep awake**. **More** has custom minutes, an end time, and “while an app runs.”
-- **Right-click** the cup for one-click timers. **Option-click** toggles your last session.
+- **Right-click** the cup for one-click timers. **Option-click** toggles your last session. Or turn on **One-click mode** in Settings, and a plain click turns keeping awake on and off.
 - **One-click Claude Code, ChatGPT Codex, and Cursor support:** Settings → Agents → **Connect**. Your Mac stays awake while the agent works and can sleep once it finishes. No MCP setup needed. (Codex asks you to trust the hooks once with `/hooks`.)
 - **Cowork and the ChatGPT app:** these apps have no hooks, so Barista keeps your computer awake while they’re busy (judged by their CPU use, including Cowork’s VM) and lets it sleep once they’ve been quiet for 5 minutes. Switch each off in Settings → Agents.
 - **Usage & Limits:** one window (panel, right-click menu, or Settings) with your Claude plan’s 5-hour and weekly limits, your ChatGPT plan’s limits and credits, and token usage per agent. Claude’s limits come from a small status line Barista adds to Claude Code (it keeps your own if you have one); ChatGPT’s from Codex’s logs. Cursor doesn’t share its limits with other apps.

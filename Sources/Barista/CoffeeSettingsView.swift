@@ -15,6 +15,13 @@ struct CoffeeSettingsView: View {
                 }
             }
             Section {
+                Toggle(isOn: $runtime.clickToToggle) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("One-click mode")
+                        Text("Click the menu-bar cup to keep your Mac awake, and click again to stop. The cup fills while it’s on.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 Toggle("Launch at login", isOn: Binding(get: { runtime.launchAtLogin }, set: { runtime.setLaunchAtLogin($0) }))
                 Toggle("Notify when a session ends", isOn: Binding(get: { runtime.notificationsEnabled }, set: { runtime.setNotifications($0) }))
                 Toggle("Weekly usage summary on Mondays", isOn: $runtime.weeklySummary)
@@ -29,7 +36,9 @@ struct CoffeeSettingsView: View {
                     }
                 }
             } header: { Text("General") } footer: {
-                Text("Option-click the menu-bar cup to toggle. Right-click it for quick timers.")
+                Text(runtime.clickToToggle
+                     ? "Option-click the menu-bar cup for the panel. Right-click it for quick timers."
+                     : "Option-click the menu-bar cup to toggle. Right-click it for quick timers.")
             }
 
             Section {
