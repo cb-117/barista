@@ -9,6 +9,8 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-11-05
+
 ### Added
 - **One-click mode** (Mac). Turn it on in Settings → General, and a click on the menu-bar cup keeps your Mac awake until you click it again. The cup fills while it's on and empties when it's off. Option-click opens the panel, and right-click still shows quick timers.
 
