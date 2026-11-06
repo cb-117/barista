@@ -34,4 +34,13 @@ if [[ "$state" != "Accepted" ]]; then
     exit 1
 fi
 xcrun stapler staple "$staple"
-xcrun stapler validate "$staple"
+# validate looks the ticket up on Apple's CloudKit server, and GitHub's Mac runners sometimes
+# lose that connection (NSURLError -1005, stapler error 68). Retry before failing the release.
+for attempt in 1 2 3 4 5; do
+    xcrun stapler validate "$staple" && exit 0
+    (( attempt < 5 )) || break
+    print -u2 "stapler validate failed (attempt $attempt of 5); retrying in $(( attempt * 15 ))s…"
+    sleep $(( attempt * 15 ))
+done
+print -u2 "stapler validate kept failing."
+exit 1
