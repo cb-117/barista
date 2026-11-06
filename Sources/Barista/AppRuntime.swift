@@ -32,11 +32,15 @@ final class AppRuntime: ObservableObject {
     @Published private(set) var launchAtLogin = false
     @Published private(set) var notificationsEnabled = false
     @Published var showCountdown: Bool { didSet { defaults.set(showCountdown, forKey: "showCountdown"); onAppearanceChange?() } }
+    /// Left-clicking the menu-bar cup turns keeping awake on and off instead of opening the panel.
+    @Published var clickToToggle: Bool { didSet { defaults.set(clickToToggle, forKey: "clickToToggle"); onAppearanceChange?() } }
     @Published var shortcutEnabled: Bool { didSet { defaults.set(shortcutEnabled, forKey: "shortcutEnabled"); configureShortcut() } }
     @Published var shortcutChoice: String { didSet { defaults.set(shortcutChoice, forKey: "shortcutChoice"); configureShortcut() } }
     @Published var agentAccess: Bool { didSet { defaults.set(agentAccess, forKey: "agentAccess"); configureAgentAccess() } }
     var onAppearanceChange: (() -> Void)?
     var onShowPanel: (() -> Void)?
+    /// Fires each time the panel is about to open. The popover's view is reused, so SwiftUI's onAppear runs only once.
+    let panelWillShow = PassthroughSubject<Void, Never>()
     var onShowSettings: (() -> Void)?
     var onShowUsage: ((UsageTab?) -> Void)?
     /// "Claude 24% · ChatGPT 6%": each plan's most-used current window, for the panel.
@@ -141,6 +145,7 @@ final class AppRuntime: ObservableObject {
         let defaults = UserDefaults.standard
         session = AwakeSession(defaults: defaults)
         showCountdown = defaults.object(forKey: "showCountdown") as? Bool ?? true
+        clickToToggle = defaults.bool(forKey: "clickToToggle")
         shortcutEnabled = defaults.object(forKey: "shortcutEnabled") as? Bool ?? true
         shortcutChoice = defaults.string(forKey: "shortcutChoice") ?? "controlOptionCommand"
         agentAccess = defaults.object(forKey: "agentAccess") as? Bool ?? true
@@ -503,6 +508,12 @@ final class AppRuntime: ObservableObject {
             let saved = defaults.object(forKey: "lastSessionSeconds") as? Double ?? 1800
             session.start(duration: saved == -1 ? nil : min(86400, max(1, saved)))
         }
+    }
+    /// One-click mode: a click starts keeping awake until the next click. Returns false when it couldn't start.
+    func quickToggle() -> Bool {
+        if session.manualSession != nil { session.stopManual(); return true }
+        session.start(duration: nil)
+        return session.manualSession != nil
     }
     func startManual(seconds: TimeInterval?) {
         defaults.set(seconds ?? -1, forKey: "lastSessionSeconds")

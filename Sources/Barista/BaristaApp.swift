@@ -78,7 +78,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = item?.button else { return }
         let active = runtime.session.isActive
         let title = active && runtime.showCountdown ? " \(runtime.session.menuBarCountdown)" : ""
-        let tip = active ? runtime.session.sessions.map(\.title).joined(separator: " · ") : "Barista · Right-click for quick timers"
+        let tip: String
+        if runtime.clickToToggle {
+            let state = runtime.session.manualSession != nil ? "Awake · Click to let your Mac sleep" : "Click to keep your Mac awake"
+            let others = runtime.session.sessions.filter { $0.source != .manual }.map(\.title)
+            tip = ([state] + others).joined(separator: " · ") + "\nOption-click for the panel. Right-click for timers."
+        } else {
+            tip = active ? runtime.session.sessions.map(\.title).joined(separator: " · ") : "Barista · Right-click for quick timers"
+        }
         let status = [active ? "1" : "0", title, tip, "\(runtime.session.sessions.count)"]
         guard status != shownStatus else { return }
         shownStatus = status
@@ -94,7 +101,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func statusItemClicked() {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true { showQuickMenu(); return }
-        if event?.modifierFlags.contains(.option) == true { runtime.toggleManual(); return }
+        let option = event?.modifierFlags.contains(.option) == true
+        // In one-click mode a plain click toggles and Option-click opens the panel; otherwise the reverse.
+        if option != runtime.clickToToggle {
+            if runtime.clickToToggle {
+                popover.performClose(nil)
+                // Couldn't start (battery protection, say): open the panel so the reason shows.
+                if !runtime.quickToggle() { showPanel() }
+            } else { runtime.toggleManual() }
+            return
+        }
         if popover.isShown { popover.performClose(nil) }
         else { showPanel() }
     }
@@ -156,6 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showPanel() {
         guard let button = item?.button else { return }
         runtime.session.refresh()
+        runtime.panelWillShow.send()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()

@@ -97,6 +97,8 @@ struct CoffeePopover: View {
         .padding(18)
         .frame(width: 320)
         .tint(accent)
+        // A typing mistake from the last time the panel was open shouldn't hide a newer start failure.
+        .onReceive(runtime.panelWillShow) { inputError = nil }
         .onAppear {
             session.refresh()
             runtime.refreshAgentStatus()
