@@ -86,17 +86,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             tip = active ? runtime.session.sessions.map(\.title).joined(separator: " · ") : "Barista · Right-click for quick timers"
         }
+        // Turning one-click mode off mid-pour settles the cup right away.
+        if cupTimer != nil, !runtime.clickToToggle { setCupLevel(active ? 1 : 0) }
         let status = [active ? "1" : "0", title, tip, "\(runtime.session.sessions.count)"]
         guard status != shownStatus else { return }
+        let wasActive = shownStatus.map { $0[0] == "1" }
         shownStatus = status
-        let image = NSImage(systemSymbolName: active ? "cup.and.saucer.fill" : "cup.and.saucer", accessibilityDescription: "Barista")
-        image?.isTemplate = true
-        button.image = image
+        // One-click mode pours the coffee in (or drains it) instead of swapping the cup.
+        // Other updates (title, tooltip, session count) leave a pour in progress alone.
+        if wasActive != active {
+            if wasActive != nil, runtime.clickToToggle, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                animateCup(to: active ? 1 : 0)
+            } else {
+                setCupLevel(active ? 1 : 0)
+            }
+        } else if cupTimer == nil, cupLevel != (active ? 1 : 0) {
+            setCupLevel(active ? 1 : 0)
+        }
         button.imagePosition = .imageLeading
         button.title = title
         button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         button.toolTip = tip
         button.setAccessibilityLabel(active ? "Barista, \(runtime.session.sessions.count) awake sessions" : "Barista, resting")
+    }
+
+    // MARK: Cup fill animation
+
+    /// How full the menu-bar cup is drawn, from 0 (empty) to 1 (full).
+    private var cupLevel: CGFloat = 0
+    private var cupTimer: Timer?
+
+    private func setCupLevel(_ level: CGFloat) {
+        cupTimer?.invalidate()
+        cupTimer = nil
+        drawCup(level)
+    }
+    private func drawCup(_ level: CGFloat) {
+        cupLevel = level
+        item?.button?.image = CupIcon.image(level: level)
+    }
+    /// Raises or lowers the coffee from wherever it is now: 0.6 s to fill, a little less to drain.
+    private func animateCup(to target: CGFloat) {
+        cupTimer?.invalidate()
+        let start = cupLevel, began = CACurrentMediaTime()
+        let duration = (target > start ? 0.6 : 0.45) * abs(target - start)
+        guard duration > 0 else { return setCupLevel(target) }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let t = min(1, (CACurrentMediaTime() - began) / duration)
+                let eased = t * t * (3 - 2 * t) // ease in and out
+                // Reduce Motion turned on mid-pour finishes it at once.
+                if t >= 1 || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { self.setCupLevel(target) }
+                else { self.drawCup(start + (target - start) * eased) }
+            }
+        }
+        // .common keeps it running while a menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        cupTimer = timer
     }
     @objc private func statusItemClicked() {
         let event = NSApp.currentEvent
@@ -176,6 +223,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+    }
+}
+
+/// The menu-bar cup at any fill level. Deliberately not on the main actor: AppKit may run an image's
+/// drawing handler on whatever thread renders it, and a main-actor closure there would trap.
+enum CupIcon {
+    /// Where the saucer stops and where the cup's rim is, as fractions of the symbol's height from the bottom.
+    private static let saucerTop: CGFloat = 0.48, rimTop: CGFloat = 0.95
+    /// The first part of the fill fades in the saucer and the bottom of the cup; the rest raises the coffee to the rim.
+    private static let pourPhase: CGFloat = 0.25
+    /// The full cup below a rising line and the empty one above it. Draining runs the same frames backwards.
+    static func image(level: CGFloat) -> NSImage? {
+        guard let empty = NSImage(systemSymbolName: "cup.and.saucer", accessibilityDescription: "Barista"),
+              let full = NSImage(systemSymbolName: "cup.and.saucer.fill", accessibilityDescription: "Barista") else { return nil }
+        if level <= 0 || level >= 1 {
+            let image = level >= 1 ? full : empty
+            image.isTemplate = true
+            return image
+        }
+        let image = NSImage(size: empty.size, flipped: false) { rect in
+            func draw(_ symbol: NSImage, from bottom: CGFloat, to top: CGFloat, alpha: CGFloat = 1) {
+                guard top > bottom, alpha > 0 else { return }
+                NSGraphicsContext.saveGraphicsState()
+                NSRect(x: rect.minX, y: bottom, width: rect.width, height: top - bottom).clip()
+                symbol.draw(in: rect, from: .zero, operation: .sourceOver, fraction: alpha)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            let saucer = rect.minY + rect.height * saucerTop
+            if level < pourPhase {
+                let pour = level / pourPhase
+                draw(full, from: rect.minY, to: saucer, alpha: pour)
+                draw(empty, from: rect.minY, to: saucer, alpha: 1 - pour)
+                draw(empty, from: saucer, to: rect.maxY)
+            } else {
+                let rise = (level - pourPhase) / (1 - pourPhase)
+                let line = saucer + (rect.minY + rect.height * rimTop - saucer) * rise
+                draw(full, from: rect.minY, to: line)
+                draw(empty, from: line, to: rect.maxY)
+            }
+            return true
+        }
+        image.alignmentRect = empty.alignmentRect
+        image.isTemplate = true
+        image.accessibilityDescription = "Barista"
+        return image
     }
 }
 

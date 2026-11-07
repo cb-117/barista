@@ -9,6 +9,11 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-06
+
+### Changed
+- In one-click mode, the menu-bar cup fills with coffee when you click it on and drains when you click it off, instead of switching straight between empty and full. If **Reduce motion** is on in macOS, the cup switches without the animation.
+
 ## [0.0.16] - 2026-11-05
 
 ### Added
