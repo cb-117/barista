@@ -9,8 +9,10 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-09
+
 ### Added
-- **Pace on every limit.** Usage & Limits now shows whether each Claude and ChatGPT limit will last until it resets. A mark on each bar shows where even use would be by now, and beside it **On pace for 48%** or, when a limit is on course to run out first, **Runs out at 1:40 PM**. Bars turn orange when a limit is running out early and red from 95%. Also in `barista usage`, the tray menu and panel on Windows and Linux, and for agents in the `barista_usage` MCP tool (`elapsedPercent`, `projectedPercent`, `limitAt`, and `pace` on each limit), so an agent can check how much of your plan is left before a big job.
+- **Pace on session and weekly limits.** Usage & Limits now shows whether each Claude and ChatGPT limit will last until it resets. A mark on the bar shows where even use would be by now, and beside it **On pace for 48%** or, when a limit is on course to run out first, **Runs out at 1:40 PM**. Bars turn orange when a limit is running out early and red from 95%. Also in `barista usage`, the tray menu and panel on Windows and Linux, and for agents in the `barista_usage` MCP tool (`elapsedPercent`, `projectedPercent`, `limitAt`, and `pace` on each limit), so an agent can check how much of your plan is left before a big job.
 - **Limit alerts.** A notification when a limit is on pace to run out before it resets, at 80% and 95%, when it’s used up (with when it resets), and when a nearly used-up limit starts again. Each comes once per window, and clicking one opens Usage & Limits (Mac and Windows). On by default; turn off **Limit alerts** in Settings.
 - **Live ChatGPT limits.** Barista now asks your ChatGPT account for your plan’s limits every few minutes, using Codex’s saved login read-only, the way it already does for Claude. Before, they were only as fresh as your last Codex turn. Barista never changes, stores, or shares the login, and it saves only the limits, not your email or account ID. Turn it off with **Show ChatGPT plan limits from your ChatGPT account** in Settings → Agents. `barista limits refresh --agent codex` fetches once.
 - **Your Claude plan’s name** (Max 5x, Team, Pro) in Usage & Limits, read from Claude Code’s profile on your computer.

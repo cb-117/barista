@@ -83,6 +83,9 @@ In PostHog, on the `app_ping` event:
 
 Break any of them down by `os` or `version`; the version breakdown shows how fast updates reach people.
 
+For the charts' days, weeks, and months to line up with the app's, the PostHog project's time zone must
+be UTC and its week must start on Monday.
+
 ## What the numbers mean
 
 - They count copies of the app (one per user account on a computer), not people.

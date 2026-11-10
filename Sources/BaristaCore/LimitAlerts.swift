@@ -51,7 +51,10 @@ public enum LimitAlerts {
             for window in plan.windows {
                 // `reset` was worked out when the report was built; the reset may have passed since.
                 guard let minutes = window.windowMinutes, minutes > 0, let resets = window.resetsAt, !window.reset, resets > now else { continue }
-                running.append(Running(key: "\(plan.agent.rawValue)|\(window.id)", name: "\(who) \(window.label)", window: window, resets: resets, minutes: minutes))
+                let key = "\(plan.agent.rawValue)|\(window.id)"
+                // One window per slot: a second with the same agent and id would fight the first over what is remembered.
+                if running.contains(where: { $0.key == key }) { continue }
+                running.append(Running(key: key, name: "\(who) \(window.label)", window: window, resets: resets, minutes: minutes))
             }
         }
         /// A reset time later by half a window or more is the next window. Smaller moves are the same

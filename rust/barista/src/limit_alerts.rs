@@ -122,8 +122,14 @@ where
             if window["reset"].as_bool() == Some(true) || resets_at <= now {
                 continue;
             }
+            let key = format!("{agent}|{id}");
+            // One window per slot: a second with the same agent and id would fight the first over
+            // what is remembered.
+            if running.iter().any(|item: &Running| item.key == key) {
+                continue;
+            }
             running.push(Running {
-                key: format!("{agent}|{id}"),
+                key,
                 who,
                 window,
                 minutes,
@@ -406,6 +412,23 @@ mod tests {
         let (alerts, state) = check(&limits, &state, later);
         assert_eq!(alerts.iter().map(|alert| alert.notice).collect::<Vec<_>>(), vec![Notice::Reset]);
         assert_eq!((state["claude|five_hour"].level, state["claude|five_hour"].hot), (0, false));
+    }
+
+    #[test]
+    fn only_the_first_window_of_a_slot_counts() {
+        let resets = NOW + 600.0;
+        let (_, state) = check(&session(96.0, resets), &State::new(), NOW);
+        // Two plans report the same agent and window id: the first is used, so the 95% notice
+        // neither repeats nor is forgotten.
+        let limits = json!([
+            plan("claude", resets, vec![window("five_hour", "5-hour", 300, 96.0, resets + 1.0)]),
+            plan("claude", resets, vec![window("five_hour", "5-hour", 300, 2.0, resets + 18000.0)]),
+        ]);
+        let (alerts, state) = check(&limits, &state, resets);
+        assert!(alerts.is_empty(), "{alerts:?}");
+        let (alerts, state) = check(&limits, &state, resets);
+        assert!(alerts.is_empty(), "{alerts:?}");
+        assert_eq!((state["claude|five_hour"].level, state["claude|five_hour"].hot), (95, true));
     }
 
     #[test]

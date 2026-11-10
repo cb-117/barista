@@ -96,6 +96,13 @@ func limitAlertChecks() {
     let passing = now.addingTimeInterval(600)
     alerts = edgeCheck(window(used: 96, resetsIn: 1, at: passing), at: passing)
     precondition(alerts.isEmpty && edgeState.slots["claude|five_hour"]?.level == 95, "Jitter across the reset says nothing: \(alerts)")
+    // Two plans reporting the same agent and window id: the first is used, so nothing repeats.
+    var shared = edgeState
+    let pair = [plan(.claude, at: passing, [window(used: 96, resetsIn: 1, at: passing)]), plan(.claude, at: passing, [window(used: 2, resetsIn: 18000, at: passing)])]
+    for _ in 0..<2 {
+        precondition(LimitAlerts.evaluate(pair, state: &shared, now: passing, time: time).isEmpty, "A shared slot uses its first window")
+    }
+    precondition(shared.slots["claude|five_hour"]?.level == 95 && shared.slots["claude|five_hour"]?.hot == true, "A shared slot keeps its level: \(shared)")
     let fresh = passing.addingTimeInterval(300)
     alerts = edgeCheck(window(used: 2, resetsIn: 17700, at: fresh), at: fresh)
     precondition(alerts.map(\.kind) == [.reset] && edgeState.slots["claude|five_hour"]?.level == 0, "The real reset is announced once: \(alerts)")

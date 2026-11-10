@@ -276,7 +276,8 @@ the window's reset time, the highest **level** already notified (0 to start), wh
 **hot**, and its `<Who> <label>` (for the reset notice).
 
 The **running windows** are those of each available plan observed within the last hour that have a
-`windowMinutes`, a `resetsAt` after now, and are not `reset`. A running window is the **same window**
+`windowMinutes`, a `resetsAt` after now, and are not `reset`; if two share a slot, only the first counts.
+A running window is the **same window**
 as the one remembered for its slot unless its `resetsAt` is later than the remembered one by at least
 half the window (`windowMinutes` × 30 seconds): reset times can jitter by a second between reports.
 
