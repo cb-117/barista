@@ -30,8 +30,11 @@ Codex asks users to approve new hooks once. After installing, tell the user to o
 - MCP: run `barista mcp` as a stdio MCP server; tools acquire, heartbeat, and release awake sessions.
 - Cursor: `barista hooks install --agent cursor` (or `barista setup`) keeps the computer awake while Cursor's agent works.
 - Usage: `barista usage` (or the `barista_usage` MCP tool) reports tokens per agent and model for today, this week, and this month, with API-price cost estimates, from local logs, plus active time, tokens, models, and cost per project. `barista report` writes a visual HTML report and opens it.
+- Plan limits: the same report includes each Claude and ChatGPT plan limit (`limits`): percent used, when it resets, and its pace (`projectedPercent` at the reset, and `limitAt` when it is on course to run out first). Check it before starting a large job. The app can also notify the user as a limit fills.
 
 Barista prevents idle sleep only. Closing the lid or choosing Sleep still sleeps the Mac.
+
+Privacy: Barista opens no network port and uploads no usage or session data. The app makes four kinds of network request, each of which the user can turn off in Settings: a daily update check with GitHub, reading the user's own Claude and ChatGPT plan limits with the logins Claude Code and Codex already saved (read-only), and an anonymous once-a-day ping to baristatime.app that counts running copies (its version, its operating system, and whether it is the first ping today, this week, this month, or ever; no ID). The `barista` command, hooks, and MCP server make none of them, except `barista limits refresh`, which reads plan limits when asked.
 
 ## Docs
 

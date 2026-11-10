@@ -25,6 +25,8 @@
     --track: #DDDDDD;
     --ok: #2EA043;
     --warn: #C2410C;
+    /* Limit bars from 95%: 4.0:1 on --track (dark: 3.8:1); a bar is not text, so 3:1 is the mark. */
+    --danger: #C42B1C;
     --radius: 10px;
     font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   }
@@ -39,6 +41,7 @@
       --track: #3D3D3D;
       --accent-soft: rgba(199, 90, 43, 0.22);
       --accent-text: #F0956A;
+      --danger: #FF6B6B;
     }
   }
   * { box-sizing: border-box; }
@@ -104,6 +107,7 @@
   .bar > div { height: 100%; background: var(--muted); border-radius: 3px; }
   .bar.accent > div { background: var(--accent); }
   .bar.warn > div { background: var(--warn); }
+  .bar.danger > div { background: var(--danger); }
   .timer .meta { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 13px; }
   .link { color: var(--accent-text); font-weight: 600; }
 
@@ -135,6 +139,10 @@
   .limit .head .source { color: var(--muted); font-size: 12px; }
   .window { display: flex; flex-direction: column; gap: 4px; }
   .window .line { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .window .line.over { color: var(--text); font-weight: 600; }
+  /* Pace: a tick on the bar where even use would be by now. */
+  .paced { position: relative; }
+  .paced .mark { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); pointer-events: none; }
   .agent { display: flex; flex-direction: column; gap: 4px; }
   .agent .top { display: flex; justify-content: space-between; gap: 8px; }
   .agent .cost { font-variant-numeric: tabular-nums; }
@@ -165,7 +173,8 @@
     .chip[aria-pressed="true"], .segmented button[aria-pressed="true"] { background: Highlight; color: HighlightText; border-color: Highlight; }
     .chip:disabled, .primary:disabled { color: GrayText; border-color: GrayText; opacity: 1; }
     .bar { border: 1px solid CanvasText; }
-    .bar > div, .bar.accent > div, .bar.warn > div { background: Highlight; forced-color-adjust: none; }
+    .bar > div, .bar.accent > div, .bar.warn > div, .bar.danger > div { background: Highlight; forced-color-adjust: none; }
+    .paced .mark { background: CanvasText; forced-color-adjust: none; }
     .dot { border: 1px solid CanvasText; }
     .dot.on { background: Highlight; forced-color-adjust: none; }
   }
@@ -262,6 +271,17 @@ function resetText(window) {
   const at = new Date(window.resetsAt);
   const soon = at - Date.now() < 86400000;
   return "Resets " + (soon ? at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : at.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }));
+}
+// A window's pace: when it runs out at the rate so far, else where it is heading by its reset.
+function paceText(window) {
+  if (window.reset) return "";
+  if (window.limitAt) {
+    const at = new Date(window.limitAt);
+    const soon = at - Date.now() < 86400000;
+    return soon ? `Runs out at ${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : `Runs out ${at.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}`;
+  }
+  return typeof window.projectedPercent === "number" ? `On pace for ${Math.round(window.projectedPercent)}%` : "";
 }
 function tokens(n) {
   if (n < 1000) return String(n);
@@ -421,9 +441,16 @@ function limitBlock(limit) {
   const windows = (limit.windows || []).map((window) => {
     const used = window.reset ? 0 : window.usedPercent;
     const dollars = typeof window.usedUSD === "number" && typeof window.limitUSD === "number" ? ` ($${window.usedUSD.toFixed(2)} of $${window.limitUSD.toFixed(2)})` : "";
+    // As on the Mac: red from 95%, orange from 80% or when on pace to run out early.
+    const meter = bar(used / 100, used >= 95 ? "danger" : used >= 80 || (!window.reset && window.pace === "over") ? "warn" : "accent");
+    const elapsed = !window.reset && typeof window.elapsedPercent === "number" ? Math.max(0, Math.min(100, window.elapsedPercent)) : null;
+    const mark = elapsed === null ? null : el("i", { class: "mark", "aria-hidden": "true" });
+    if (mark) mark.style.left = `${elapsed}%`;
+    const pace = paceText(window);
     return el("div", { class: "window" },
-      bar(used / 100, used >= 80 ? "warn" : "accent"),
-      el("div", { class: "line" }, el("span", { text: `${window.label} · ${Math.round(used)}% used${dollars}` }), el("span", { text: resetText(window) })));
+      mark ? el("div", { class: "paced", title: `${Math.round(elapsed)}% of this window has passed` }, meter, mark) : meter,
+      el("div", { class: "line" }, el("span", { text: `${window.label} · ${Math.round(used)}% used${dollars}` }), el("span", { text: resetText(window) })),
+      pace ? el("div", { class: `line${window.pace === "over" ? " over" : ""}` }, el("span", { text: pace })) : null);
   });
   const details = [];
   if (limit.plan) details.push(`Plan: ${limit.plan}`);
@@ -528,6 +555,7 @@ function renderSettings(root) {
       settingRow("Launch at login", null, toggle(p.launchAtLogin, "toggle:login", "Launch at login")),
       settingRow("Notify me when sessions end", null, toggle(p.notifications, "toggle:notifications", "Notify me when sessions end")),
       settingRow("Weekly usage summary", "Mondays, with notifications on", toggle(p.weeklySummary, "toggle:weekly-summary", "Weekly usage summary on Mondays")),
+      settingRow("Limit alerts", "As a plan limit fills, with notifications on", toggle(p.limitAlerts, "toggle:limit-alerts", "Limit alerts")),
       settingRow("Keep the display on", "During your own timers", toggle(p.keepDisplayAwake, "toggle:display", "Keep the display on during my timers")),
       settingRow("Battery protection", "Stop sessions on battery at", battery)),
     el("div", { class: "group-title", text: "Agents" }),
@@ -536,12 +564,14 @@ function renderSettings(root) {
       settingRow("Claude app (Cowork)", "Awake while it’s working", toggle(p.watchCowork, "toggle:watch-cowork", "Keep awake while the Claude app works")),
       settingRow("ChatGPT app", "Awake while it’s working", toggle(p.watchChatgpt, "toggle:watch-chatgpt", "Keep awake while the ChatGPT app works")),
       settingRow("Claude plan limits", "From your Claude account, read-only", toggle(p.claudeAccountLimits, "toggle:claude-account", "Show Claude plan limits from your Claude account")),
+      settingRow("ChatGPT plan limits", "From your ChatGPT account, read-only", toggle(p.codexAccountLimits, "toggle:codex-account", "Show ChatGPT plan limits from your ChatGPT account")),
       settingRow("Local agent access", "CLI, MCP, and hooks", toggle(p.agentAccess, "toggle:agents", "Local agent access")),
       el("div", { class: "row" }, button("small-button", "Copy CLI path", "copy:cli"), button("small-button", "Copy MCP setup", "copy:mcp"))),
     el("div", { class: "group-title", text: "Updates" }),
     el("div", { class: "group" },
       settingRow("Check for updates daily", null, toggle(p.checksForUpdates, "toggle:updates", "Check for updates daily")),
-      settingRow(state.updateStatus || `Barista ${state.version}`, null, button("small-button", "Check now", "check-updates"))),
+      settingRow(state.updateStatus || `Barista ${state.version}`, null, button("small-button", "Check now", "check-updates")),
+      settingRow("Help count active users", "Once a day, tells baristatime.app that a copy of Barista is running: its version, Windows or Linux, and whether it’s the first time today, this week, and this month. No ID, and nothing about you or your usage.", toggle(p.shareActiveCount, "toggle:active-count", "Help count active users"))),
     el("div", { class: "group-title", text: "Support Barista" }),
     el("div", { class: "group" },
       settingRow("Free and open source", "A star helps others find it; a coffee keeps it brewing", null),
@@ -625,18 +655,18 @@ function mockState() {
     ],
     sessionCount: 4,
     history: [{ title: "Claude Code · reporting", reason: "Work finished", endedAt: now - 1800000 }, { title: "My coffee break", reason: "Timer finished", endedAt: now - 7200000 }],
-    prefs: { keepDisplayAwake: true, batteryThreshold: 20, notifications: false, checksForUpdates: true, agentAccess: true, claudeAccountLimits: true, watchCowork: true, watchChatgpt: true, launchAtLogin: true, weeklySummary: true },
+    prefs: { keepDisplayAwake: true, batteryThreshold: 20, notifications: false, checksForUpdates: true, shareActiveCount: true, agentAccess: true, claudeAccountLimits: true, codexAccountLimits: true, watchCowork: true, watchChatgpt: true, launchAtLogin: true, weeklySummary: true, limitAlerts: true },
     agents: [{ key: "claude", name: "Claude Code", status: "connected" }, { key: "codex", name: "ChatGPT Codex", status: "disconnected" }, { key: "cursor", name: "Cursor", status: "notFound" }],
     week: [["Wed", 3600], ["Thu", 0], ["Fri", 9000], ["Sat", 1200], ["Sun", 0], ["Mon", 14400], ["Tue", 5400]].map(([label, seconds]) => ({ label, seconds })),
     usageLoading: false, usageSummary: "Claude 24% · ChatGPT 6%", usageHasActivity: true, statuslineOffer: false,
     usage: {
       limits: [
-        { agent: "claude", name: "Claude plan", available: true, source: "Claude account", observedAt: new Date(now - 120000).toISOString(), plan: null, credits: null,
-          windows: [{ id: "five_hour", label: "Session", usedPercent: 24, resetsAt: new Date(now + 9000000).toISOString(), reset: false },
-                    { id: "seven_day", label: "Weekly", usedPercent: 8, resetsAt: new Date(now + 6 * 86400000).toISOString(), reset: false },
-                    { id: "extra_usage", label: "Extra usage", usedPercent: 5, usedUSD: 12.5, limitUSD: 250, resetsAt: null, reset: false }] },
-        { agent: "codex", name: "ChatGPT plan", available: true, source: "Codex", observedAt: new Date(now - 1500000).toISOString(), plan: "prolite", credits: { balance: "75000.0000000000", unlimited: false },
-          windows: [{ id: "primary", label: "Weekly", usedPercent: 86, resetsAt: new Date(now + 3 * 86400000).toISOString(), reset: false }] },
+        { agent: "claude", name: "Claude plan", available: true, source: "Claude account", observedAt: new Date(now - 120000).toISOString(), plan: "Max 5x", credits: null,
+          windows: [{ id: "five_hour", label: "Session", usedPercent: 62, resetsAt: new Date(now + 9000000).toISOString(), reset: false, elapsedPercent: 50, projectedPercent: 124, limitAt: new Date(now + 5516000).toISOString(), pace: "over" },
+                    { id: "seven_day", label: "Weekly", usedPercent: 8, resetsAt: new Date(now + 6 * 86400000).toISOString(), reset: false, elapsedPercent: 14.3, projectedPercent: 56, limitAt: null, pace: "ok" },
+                    { id: "extra_usage", label: "Extra usage", usedPercent: 5, usedUSD: 12.5, limitUSD: 250, resetsAt: null, reset: false, elapsedPercent: null, projectedPercent: null, limitAt: null, pace: null }] },
+        { agent: "codex", name: "ChatGPT plan", available: true, source: "ChatGPT account", observedAt: new Date(now - 1500000).toISOString(), plan: "prolite", credits: { balance: "75000.0000000000", unlimited: false },
+          windows: [{ id: "primary", label: "Weekly", usedPercent: 86, resetsAt: new Date(now + 3 * 86400000).toISOString(), reset: false, elapsedPercent: 57.1, projectedPercent: 150.5, limitAt: new Date(now + 56270000).toISOString(), pace: "over" }] },
         { agent: "cursor", name: "Cursor", available: false, windows: [] },
       ],
       periods: ["today", "week", "month"].map((id, index) => ({
@@ -674,7 +704,7 @@ function mockCommand(cmd) {
   else if (command === "cancel") { mock.tasks = mock.tasks.filter((t) => t.id !== argument); }
   else if (command === "stop-all") { mock.tasks = []; mock.manual = null; mock.awake = false; }
   else if (command === "toggle") {
-    const key = { display: "keepDisplayAwake", login: "launchAtLogin", notifications: "notifications", updates: "checksForUpdates", agents: "agentAccess", "claude-account": "claudeAccountLimits", "watch-cowork": "watchCowork", "watch-chatgpt": "watchChatgpt", "weekly-summary": "weeklySummary" }[argument];
+    const key = { display: "keepDisplayAwake", login: "launchAtLogin", notifications: "notifications", updates: "checksForUpdates", "active-count": "shareActiveCount", agents: "agentAccess", "claude-account": "claudeAccountLimits", "codex-account": "codexAccountLimits", "watch-cowork": "watchCowork", "watch-chatgpt": "watchChatgpt", "weekly-summary": "weeklySummary", "limit-alerts": "limitAlerts" }[argument];
     if (key) p[key] = !p[key];
   } else if (command === "battery") { p.batteryThreshold = Number(argument); }
   else if (command === "dismiss-update") { mock.update = null; }
@@ -708,6 +738,11 @@ if (host) {
   // Barista posts only when its state changed; skip a repeat anyway (no redraw, focus and scroll stay).
   let lastJson = null;
   host.addEventListener("message", (event) => {
+    // Barista asks for a view: a click on a limit alert opens Usage & limits.
+    if (event.data && typeof event.data.go === "string") {
+      if (["main", "usage", "settings"].includes(event.data.go)) go(event.data.go);
+      return;
+    }
     const json = JSON.stringify(event.data);
     if (json === lastJson) return;
     lastJson = json;

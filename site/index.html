@@ -104,6 +104,19 @@
   ul.ticks li { padding: 6px 0 6px 32px; position: relative; }
   ul.ticks li::before { content: "☕"; position: absolute; left: 0; }
 
+  .limits-card { background: var(--card); border: 2px solid var(--latte); border-radius: 22px; padding: 26px 26px 12px; box-shadow: 0 18px 40px rgba(43,26,18,.1); }
+  .limits-card h3 { display: flex; justify-content: space-between; margin: 0 0 12px; font-size: 17px; }
+  .limits-card .limit + h3 { margin-top: 22px; }
+  .limits-card h3 span { color: var(--muted); font-weight: 600; }
+  .limit { margin-bottom: 14px; }
+  .limit .row { display: flex; justify-content: space-between; font-weight: 700; font-size: 15px; }
+  .limit .bar { position: relative; height: 10px; border-radius: 5px; background: var(--latte); margin: 6px 0; }
+  .limit .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; background: #8a6a55; }
+  .limit.hot .bar i { background: var(--crema); }
+  .limit .bar b { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--ink); }
+  .limit small { color: var(--muted); font-size: 14px; }
+  .limit.hot small strong { color: var(--crema); }
+
   .faq details { background: var(--card); border: 2px solid var(--latte); border-radius: 16px; padding: 16px 20px; margin-bottom: 12px; }
   .faq summary { font-weight: 700; cursor: pointer; font-size: 18px; }
   .faq p { color: var(--muted); margin: 10px 0 0; }
@@ -118,6 +131,7 @@
 
   @media (max-width: 820px) {
     .hero, .split { grid-template-columns: 1fr; }
+    #limits .limits-card { order: 2; }
     .features, .shots { grid-template-columns: 1fr; }
     .perks { grid-template-columns: 1fr 1fr; }
     .menu { grid-template-columns: 1fr; }
@@ -139,6 +153,7 @@
       <a href="#menu">Menu</a>
       <a href="#everyday">Features</a>
       <a href="#agents">Agents</a>
+      <a href="#limits">Limits</a>
       <a href="#faq">FAQ</a>
       <a class="gh" href="https://github.com/cb-117/barista">★ GitHub</a>
       <a class="gh" href="https://buymeacoffee.com/baristatime">☕ <span class="full">Buy me a coffee</span><span class="short">Coffee</span></a>
@@ -316,14 +331,50 @@ Awake · 3 session(s) · display allowed to sleep
   </div>
 </section>
 
+<section id="limits">
+  <div class="wrap split">
+    <div class="limits-card" role="img" aria-label="Example of Barista's Usage and Limits window. Claude session limit: 62% used, running out at 1:38 PM, before it resets at 3:00 PM. Claude weekly limit: 48% used, on pace for 80%. ChatGPT weekly limit: 21% used, on pace for 26%.">
+      <h3>Claude plan <span>Max 5x</span></h3>
+      <div class="limit hot">
+        <div class="row"><span>Session</span><span>62%</span></div>
+        <div class="bar"><i style="width:62%"></i><b style="left:45%"></b></div>
+        <small><strong>Runs out at 1:38 PM</strong> · resets 3:00 PM</small>
+      </div>
+      <div class="limit">
+        <div class="row"><span>Weekly</span><span>48%</span></div>
+        <div class="bar"><i style="width:48%"></i><b style="left:60%"></b></div>
+        <small>On pace for 80% · resets Fri</small>
+      </div>
+      <h3>ChatGPT plan <span>Plus</span></h3>
+      <div class="limit">
+        <div class="row"><span>Weekly</span><span>21%</span></div>
+        <div class="bar"><i style="width:21%"></i><b style="left:80%"></b></div>
+        <small>On pace for 26% · resets Wed</small>
+      </div>
+    </div>
+    <div>
+      <div class="kicker">Usage &amp; limits</div>
+      <h2>Know before the cup runs dry.</h2>
+      <p class="sub">Barista shows how much of your Claude and ChatGPT plans you’ve used, and whether what’s left will last until it resets.</p>
+      <ul class="ticks">
+        <li><b>Pace on session and weekly limits.</b> A mark on the bar shows where even use would be by now, next to “On pace for 80%” or “Runs out at 1:38 PM”</li>
+        <li><b>Limit alerts</b> when a limit is running out early, at 80% and 95%, when it’s used up, and when it starts again</li>
+        <li>Fresh every few minutes, read from your own accounts with the sign-ins Claude Code and Codex already saved. Barista only reads them, and you can switch this off</li>
+        <li>Tokens, estimated cost, and active time per agent, model, and project, from the logs on your computer</li>
+        <li>Agents can check too: <code>barista usage</code> and the <code>barista_usage</code> MCP tool report the same limits and pace</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
 <section id="faq" class="faq">
   <div class="wrap">
     <div class="kicker">FAQ</div>
     <h2>Questions at the counter</h2>
-    <details><summary>Is it really free?</summary><p>Yes. It’s MIT-licensed and open source, with no in-app purchases, accounts, or telemetry.</p></details>
+    <details><summary>Is it really free?</summary><p>Yes. It’s MIT-licensed and open source, with no in-app purchases, accounts, or ads. The only thing the app reports is an anonymous once-a-day count of running copies, which you can turn off.</p></details>
     <details><summary>Does it keep my Mac awake with the lid closed?</summary><p>No. Barista prevents <em>idle</em> sleep. Closing the lid, choosing Sleep, or a dead battery still put the Mac to sleep. For lid-closed work, connect power and an external display.</p></details>
     <details><summary>How is this different from <code>caffeinate</code> or Amphetamine?</summary><p>Those have one switch for the whole Mac. Barista tracks who needs the Mac awake and for how long, and ends each one on its own when that job finishes or stops checking in. It also connects to Claude Code and ChatGPT Codex in one click.</p></details>
-    <details><summary>Does anything leave my Mac?</summary><p>No personal data, ever. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions). The one network request is an optional once-a-day check with GitHub for a newer version. It sends nothing about you, and you can turn it off in Settings. (This website, not the app, counts visits with PostHog.)</p></details>
+    <details><summary>Does anything leave my Mac?</summary><p>No personal data, ever. Agents talk to the app over a private local socket that only your user account can reach. It opens no network port, and history stays on your Mac (the last 20 sessions). The app makes a few network requests, and you can turn each off in Settings: a once-a-day check with GitHub for a newer version; asking Anthropic and ChatGPT for your own plan limits, using the sign-ins Claude Code and Codex already saved (read-only); and a once-a-day anonymous ping that counts how many copies of Barista are in use. The ping carries the app’s version, your operating system, and whether it’s the first one today, this week, this month, or ever. It has no ID and nothing about you or your usage. <a href="https://github.com/cb-117/barista/blob/main/docs/ACTIVE-USERS.md">Exactly what is sent</a>. (This website counts visits with PostHog.)</p></details>
     <details><summary>Can my AI agent set it up for me?</summary><p>Yes. Ask Claude Code or Codex to install Barista. It reads <a href="llms.txt">llms.txt</a>, asks you first, then runs the one-line installer, which installs Barista and connects Claude Code and Codex. Codex then asks you to approve the new hooks once: type <code>/hooks</code> in Codex and trust Barista’s. Already installed? Run <code>barista setup</code> to connect agents you’ve added since.</p></details>
     <details><summary>How do I get updates?</summary><p>Barista checks for a new version once a day. When one is out, click <b>Update</b> in its panel: it downloads the update, checks its signature, installs it, and relaunches, and anything that was keeping your Mac awake keeps going. You can also check right away in Settings → Updates.</p></details>
     <details><summary>Is there a Windows or Linux version?</summary><p>Yes. Barista runs on Windows 10 and 11 and on Linux (x86_64 and arm64) as a coffee cup in the notification area or system tray, with quick timers, your tasks, battery protection, and the same <code>barista</code> CLI, MCP server, and one-click Claude Code and Codex hooks. On Windows, <a href="https://github.com/cb-117/barista/releases/latest/download/Barista-Setup.exe">download Barista Setup</a> and run it, or run <code>irm https://baristatime.app/install.ps1 | iex</code> in PowerShell (no administrator rights needed). On Linux, run <code>curl -fsSL https://baristatime.app/install.sh | sh</code>. Linux needs a desktop whose tray supports StatusNotifierItem (KDE, Ubuntu, Xfce, and most others); stock GNOME needs the AppIndicator extension. Without a desktop it runs in the background, and the CLI and hooks still work.</p></details>

@@ -509,9 +509,12 @@ public enum UsageStore {
                                                              start: start, now: now, calendar: calendar, roots: &roots)
             return usage
         }
-        let codex = cache.files.values.compactMap(\.limits).max { $0.observedAt < $1.observedAt }
+        // Your ChatGPT account, or Codex's logs: whichever was observed last (the account on a tie).
+        let codexLogs = cache.files.values.compactMap(\.limits).max { $0.observedAt < $1.observedAt }?.limits(now: now)
+        let codex = [CodexAccount.current(now: now), codexLogs].compactMap { $0 }
+            .max { ($0.observedAt ?? .distantPast) < ($1.observedAt ?? .distantPast) }
         let limits = [ClaudeLimits.current(now: now),
-                      codex?.limits(now: now) ?? .unavailable(.codex, name: "ChatGPT plan"),
+                      codex ?? .unavailable(.codex, name: "ChatGPT plan"),
                       .unavailable(.cursor, name: "Cursor")]
         return UsageReport(generatedAt: now, periods: result, limits: limits)
     }
@@ -822,7 +825,11 @@ public extension UsageReport {
         func window(_ w: LimitWindow) -> [String: Any] {
             var object: [String: Any] = ["id": w.id, "label": w.label, "windowMinutes": w.windowMinutes.map { $0 as Any } ?? NSNull(),
                                          "usedPercent": w.usedPercent, "resetsAt": w.resetsAt.map { UsageStore.formatDate($0) as Any } ?? NSNull(),
-                                         "reset": w.reset]
+                                         "reset": w.reset,
+                                         "elapsedPercent": w.elapsedPercent.map { $0 as Any } ?? NSNull(),
+                                         "projectedPercent": w.projectedPercent.map { $0 as Any } ?? NSNull(),
+                                         "limitAt": w.limitAt.map { UsageStore.formatDate($0) as Any } ?? NSNull(),
+                                         "pace": w.pace.map { $0 as Any } ?? NSNull()]
             if let usd = w.usedUSD { object["usedUSD"] = usd }
             if let usd = w.limitUSD { object["limitUSD"] = usd }
             if let period = w.period { object["period"] = period }
@@ -947,7 +954,7 @@ public extension UsageReport {
         return "\(name)  " + parts.joined(separator: " · ")
     }
 
-    /// "5-hour 24% (resets 3:10 PM) · Weekly 0% (reset) · plan prolite · as of 2 hr ago".
+    /// "5-hour 24% (resets 3:10 PM · on pace for 48%) · Weekly 0% (reset) · plan prolite · as of 2 hr ago".
     static func limitSummary(_ plan: PlanLimits, now: Date) -> String {
         guard plan.available else {
             switch plan.agent {
@@ -963,7 +970,13 @@ public extension UsageReport {
             }
             if window.reset { return percent + " (reset)" }
             guard let resets = window.resetsAt else { return percent }
-            return percent + " (resets \(formatReset(resets, now: now)))"
+            var detail = "resets \(formatReset(resets, now: now))"
+            if let limitAt = window.limitAt {
+                detail += " · runs out \(formatReset(limitAt, now: now))"
+            } else if let projected = window.projectedPercent {
+                detail += " · on pace for \(Int(projected.rounded()))%"
+            }
+            return percent + " (\(detail))"
         }
         if let plan = plan.plan { parts.append("plan \(plan)") }
         if let credits = plan.credits, !credits.unlimited, let balance = credits.balance, let value = Double(balance) {

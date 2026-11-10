@@ -50,6 +50,9 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
     }
     let build = |short: bool| if short { menu::build_short(&app) } else { menu::build(&app) };
     let model = build(short_menu);
+    // Windows: lets one command stand in for another (the usage window when the panel can't run).
+    #[cfg(windows)]
+    let resend = sender.clone();
     let tray = backend::Tray::create(&model, &icons, sender);
     if tray.is_none() {
         eprintln!("barista-app: couldn't show the tray icon. Barista keeps running.");
@@ -86,6 +89,21 @@ fn event_loop(app: Shared, server: ControlServer, background: bool, mut wait: im
                         shown = model.signature;
                         tray.show_menu();
                     }
+                }
+            },
+            // Windows: a click on a limit alert opens the panel on Usage & limits (the usage
+            // window, or the browser, when the panel can't run).
+            #[cfg(windows)]
+            Some(UserEvent::Menu(id)) if id == "panel:usage" => match &panel {
+                Some(panel) if !panel.failed() => {
+                    let anchor = tray.as_ref().and_then(|tray| tray.anchor());
+                    panel.open_view("usage");
+                    panel.show(anchor.map(|(x, y, width, height)| crate::panel::Anchor { x, y, width, height }));
+                    refresh_usage(&app, Duration::from_secs(60));
+                    panel.post(&menu::panel_state(&app));
+                }
+                _ => {
+                    let _ = resend.send(UserEvent::Menu("usage-report".into()));
                 }
             },
             #[cfg(windows)]

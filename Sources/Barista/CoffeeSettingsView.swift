@@ -26,6 +26,8 @@ struct CoffeeSettingsView: View {
                 Toggle("Notify when a session ends", isOn: Binding(get: { runtime.notificationsEnabled }, set: { runtime.setNotifications($0) }))
                 Toggle("Weekly usage summary on Mondays", isOn: $runtime.weeklySummary)
                     .help("Last week’s active time, projects, and estimated cost. Click it to open History.")
+                Toggle("Limit alerts", isOn: $runtime.limitAlerts)
+                    .help("A notification when a Claude or ChatGPT plan limit is on pace to run out early, at 80% and 95%, when it’s used up, and when it resets. Click it to open Usage & Limits.")
                 Toggle("Show time remaining in the menu bar", isOn: $runtime.showCountdown)
                 Toggle("Global shortcut", isOn: $runtime.shortcutEnabled)
                 if runtime.shortcutEnabled {
@@ -96,6 +98,13 @@ struct CoffeeSettingsView: View {
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                Toggle(isOn: $runtime.codexAccountLimits) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show ChatGPT plan limits from your ChatGPT account")
+                        Text("Uses Codex’s saved login, read-only, to ask ChatGPT for your limits every few minutes. Barista never changes, stores, or shares the login.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 ForEach(WatchedApp.all.filter(\.isInstalled), id: \.id) { app in
                     Toggle(isOn: Binding(get: { runtime.watches(app) }, set: { runtime.setWatches(app, $0) })) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -127,6 +136,13 @@ struct CoffeeSettingsView: View {
             }
             Section {
                 Toggle("Check for updates automatically", isOn: $runtime.checksForUpdates)
+                Toggle(isOn: $runtime.shareActiveCount) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Help count active users")
+                        Text("Once a day, tells baristatime.app that a copy of Barista is running: its version, that it’s a Mac, and whether it’s the first time today, this week, and this month. No ID, and nothing about you or your usage.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 HStack {
                     Button("Check now") { runtime.checkForUpdates(userInitiated: true) }
                         .disabled(runtime.isCheckingForUpdates)
@@ -141,7 +157,7 @@ struct CoffeeSettingsView: View {
                     }
                 }
             } header: { Text("Updates") } footer: {
-                Text("Once a day, Barista asks GitHub whether there’s a newer release. Nothing about you or your Mac is sent. Updates are signed; Barista installs them and relaunches.")
+                Text("Once a day, Barista asks GitHub whether there’s a newer release. Nothing about you or your Mac is sent. Updates are signed; Barista installs them and relaunches. The active-user count is separate and anonymous.")
             }
 
             Section {

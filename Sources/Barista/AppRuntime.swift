@@ -71,6 +71,39 @@ final class AppRuntime: ObservableObject {
             }
         }
     }
+    /// Notifications as a plan limit fills: on pace to run out early, 80%, 95%, used up, and reset.
+    @Published var limitAlerts: Bool = UserDefaults.standard.object(forKey: "limitAlerts") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(limitAlerts, forKey: "limitAlerts")
+            if limitAlerts && notificationAuthorization == .notDetermined {
+                Task { @MainActor in
+                    _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                    refreshPermissions()
+                }
+            }
+        }
+    }
+    /// Ask ChatGPT for the ChatGPT plan's limits with Codex's saved login (read-only).
+    @Published var codexAccountLimits: Bool = UserDefaults.standard.object(forKey: "codexAccountLimits") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(codexAccountLimits, forKey: "codexAccountLimits")
+            if codexAccountLimits {
+                fetchCodexAccountLimits(force: true)
+            } else {
+                CodexAccount.forget()
+                refreshUsage(force: true)
+            }
+        }
+    }
+    private var isFetchingCodexLimits = false
+    private var lastCodexAttempt: Date?
+    /// Once a day, tell baristatime.app that a copy is running, to count active users. No ID is sent
+    /// (docs/ACTIVE-USERS.md).
+    @Published var shareActiveCount: Bool = UserDefaults.standard.object(forKey: "shareActiveCount") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(shareActiveCount, forKey: "shareActiveCount") }
+    }
+    private var isSendingActivePing = false
+    private var activePingTimer: Timer?
     private let notificationDelegate = NotificationDelegate()
     /// Ask Anthropic for the Claude plan's limits with Claude Code's saved login (read-only).
     @Published var claudeAccountLimits: Bool = UserDefaults.standard.object(forKey: "claudeAccountLimits") as? Bool ?? true {
@@ -243,10 +276,12 @@ final class AppRuntime: ObservableObject {
         refreshPermissions()
         refreshUsage()
         fetchClaudeAccountLimits()
+        fetchCodexAccountLimits()
         let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshUsage()
                 self?.fetchClaudeAccountLimits()
+                self?.fetchCodexAccountLimits()
             }
         }
         timer.tolerance = 30
@@ -259,6 +294,31 @@ final class AppRuntime: ObservableObject {
         RunLoop.main.add(activity, forMode: .common)
         activityTimer = activity
         startScheduleChecks()
+        startActivePings()
+    }
+    /// Checks hourly whether today's (UTC) ping has been sent, so sleep and restarts neither skip nor repeat it.
+    private func startActivePings() {
+        let timer = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sendActivePingIfDue() }
+        }
+        timer.tolerance = 60
+        RunLoop.main.add(timer, forMode: .common)
+        activePingTimer = timer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.sendActivePingIfDue() }
+    }
+    private func sendActivePingIfDue() {
+        guard shareActiveCount, !isSendingActivePing else { return }
+        let today = ActivePing.day(Date())
+        guard let flags = ActivePing.flags(last: defaults.string(forKey: "lastActivePing"), today: today) else { return }
+        isSendingActivePing = true
+        Task.detached(priority: .utility) {
+            let sent = await ActivePing.send(flags)
+            await MainActor.run {
+                self.isSendingActivePing = false
+                // Only a ping that arrived is remembered; otherwise the next hourly check tries again.
+                if sent { self.defaults.set(today, forKey: "lastActivePing") }
+            }
+        }
     }
 
     // MARK: Schedule
@@ -419,6 +479,8 @@ final class AppRuntime: ObservableObject {
             let outcome = await ClaudeAccount.refresh(interactive: interactive)
             await MainActor.run {
                 self.isFetchingClaudeLimits = false
+                // Turned off while asking: what was just saved is forgotten too.
+                guard self.claudeAccountLimits else { return ClaudeAccount.forget() }
                 switch outcome {
                 case .updated:
                     self.claudeNeedsPermission = false
@@ -430,6 +492,24 @@ final class AppRuntime: ObservableObject {
                     self.claudeNeedsPermission = true
                 default: break
                 }
+            }
+        }
+    }
+    /// Fetches ChatGPT account limits off the main actor, then refreshes the report. Never more than one at
+    /// a time, and background fetches (launch and the timer) are at least 5 minutes apart. Codex's login is
+    /// a file, so there is nothing to ask permission for; without one, nothing is sent.
+    func fetchCodexAccountLimits(force: Bool = false) {
+        guard codexAccountLimits, !isFetchingCodexLimits else { return }
+        if !force, let last = lastCodexAttempt, Date().timeIntervalSince(last) < 295 { return }
+        lastCodexAttempt = Date()
+        isFetchingCodexLimits = true
+        Task.detached(priority: .utility) {
+            let outcome = await CodexAccount.refresh()
+            await MainActor.run {
+                self.isFetchingCodexLimits = false
+                // Turned off while asking: what was just saved is forgotten too.
+                guard self.codexAccountLimits else { return CodexAccount.forget() }
+                if outcome == .updated { self.refreshUsage(force: true) }
             }
         }
     }
@@ -449,6 +529,7 @@ final class AppRuntime: ObservableObject {
                 self.usage = report
                 self.isRefreshingUsage = false
                 self.sendWeeklySummaryIfDue(report)
+                self.sendLimitAlerts(report)
             }
         }
     }
@@ -489,6 +570,34 @@ final class AppRuntime: ObservableObject {
         postWeeklySummary(summary, key: key)
     }
     private var requestingSummaryPermission = false
+    /// Notifies as a plan limit fills (docs/USAGE.md, "Limit alerts"). What was already sent is remembered
+    /// across launches, so each notice comes once per window.
+    private func sendLimitAlerts(_ report: UsageReport, now: Date = Date()) {
+        guard limitAlerts, notificationAuthorization != .denied else { return }
+        var state = defaults.data(forKey: "limitAlertState").flatMap { try? JSONDecoder().decode(LimitAlertState.self, from: $0) } ?? LimitAlertState()
+        let alerts = LimitAlerts.evaluate(report.limits, state: &state, now: now)
+        if let saved = try? JSONEncoder().encode(state) { defaults.set(saved, forKey: "limitAlertState") }
+        guard !alerts.isEmpty else { return }
+        if notificationAuthorization == .notDetermined {
+            // On by default, so nobody has been asked yet: ask quietly, as the weekly summary does.
+            Task { @MainActor in
+                let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .provisional])) ?? false
+                refreshPermissions()
+                if granted, limitAlerts { postLimitAlerts(alerts) }
+            }
+            return
+        }
+        postLimitAlerts(alerts)
+    }
+    private func postLimitAlerts(_ alerts: [LimitAlert]) {
+        for alert in alerts {
+            let content = UNMutableNotificationContent()
+            content.title = alert.title
+            content.body = alert.body
+            content.userInfo = ["open": "overview"]
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "limit-\(UUID().uuidString)", content: content, trigger: nil))
+        }
+    }
     private func postWeeklySummary(_ summary: WeeklySummary, key: String) {
         defaults.set(key, forKey: "weeklySummarySent")
         let content = UNMutableNotificationContent()
@@ -802,15 +911,16 @@ final class AppRuntime: ObservableObject {
     }
 }
 
-/// Clicking a notification: the weekly summary opens History; any other (a session ended), the panel.
+/// Clicking a notification: the weekly summary opens History, a limit alert opens Usage & Limits, and any
+/// other (a session ended) opens the panel.
 /// macOS calls these on a background queue, so nothing here is main-actor isolated (see the 0.0.6 crash).
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     @MainActor var onOpen: ((UsageTab?) -> Void)?
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        let opensHistory = response.notification.request.content.userInfo["open"] as? String == "history"
-        Task { @MainActor in self.onOpen?(opensHistory ? .history : nil) }
+        let open = response.notification.request.content.userInfo["open"] as? String
+        Task { @MainActor in self.onOpen?(open == "history" ? .history : open == "overview" ? .overview : nil) }
         completionHandler()
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,

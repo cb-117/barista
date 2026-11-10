@@ -16,6 +16,7 @@ mod panel;
 #[cfg(windows)]
 mod report;
 
+use barista_core::active_ping;
 use barista_core::activity::{self, ActivityTracker, WatchedApp};
 use barista_core::control::{default_path, ControlServer};
 use barista_core::hooks::{self, HookAgent};
@@ -46,6 +47,8 @@ pub struct App {
     pub update: Option<AvailableUpdate>,
     pub update_status: Option<String>,
     pub checking_for_updates: bool,
+    /// The day's active-user ping is on its way (docs/ACTIVE-USERS.md).
+    pub sending_active_ping: bool,
     pub agents: Vec<(HookAgent, AgentStatus)>,
     pub launch_at_login: bool,
     /// Saves nothing and touches no OS settings (`--serve` test mode).
@@ -58,9 +61,10 @@ pub struct App {
     pub usage_week: Option<serde_json::Value>,
     pub usage_updated: Option<std::time::Instant>,
     pub usage_loading: bool,
-    /// Claude account limits: when the app last asked (at most every 5 minutes), and whether it's asking now.
-    pub account_last_attempt: Option<std::time::Instant>,
-    pub account_fetching: bool,
+    /// Account limits (Claude, ChatGPT): when the app last asked each (at most every 5 minutes),
+    /// and which it's asking now.
+    pub account_last_attempt: HashMap<LimitsAccount, std::time::Instant>,
+    pub account_fetching: HashSet<LimitsAccount>,
     /// Watched apps (Cowork, ChatGPT): busy trackers, live session IDs, and apps whose session you
     /// stopped (they wait for a quiet spell before starting another).
     pub activity: HashMap<&'static str, ActivityTracker>,
@@ -377,6 +381,7 @@ pub fn refresh_usage(app: &Shared, max_age: Duration) {
         state.usage_panel = Some(panel);
         state.usage_week = week;
         send_weekly_summary_if_due(&mut state, &value, chrono::Local::now().naive_local());
+        send_limit_alerts_if_due(&mut state, &value, now());
         state.usage = Some(value);
         state.usage_updated = Some(std::time::Instant::now());
         state.usage_loading = false;
@@ -410,6 +415,33 @@ fn send_weekly_summary_if_due(state: &mut App, report: &serde_json::Value, now: 
     platform::notify_with_action("Your week in Barista", &summary.text(), "Open history", "usage-report:history");
 }
 
+/// Shows one limit alert. On Windows its button opens the panel's usage view. On Linux the limits
+/// are in the tray's menu, which can't be opened from here (and the usage report doesn't list
+/// them), so the notice has no button.
+fn show_limit_alert(alert: &barista_core::limit_alerts::Alert) {
+    if cfg!(windows) {
+        platform::notify_with_action(&alert.title, &alert.body, "Open usage", "panel:usage");
+    } else {
+        platform::notify(&alert.title, &alert.body);
+    }
+}
+
+/// Notifies as a plan's limit windows fill, once per level and window, if Limit alerts and
+/// notifications are on (docs/USAGE.md, "Limit alerts").
+fn send_limit_alerts_if_due(state: &mut App, report: &serde_json::Value, now: f64) {
+    if state.ephemeral || !state.prefs.notifications_enabled || !state.prefs.limit_alerts {
+        return;
+    }
+    let (alerts, remembered) = barista_core::limit_alerts::evaluate(&report["limits"], &state.prefs.limit_alert_state, now);
+    if remembered != state.prefs.limit_alert_state {
+        state.prefs.limit_alert_state = remembered;
+        state.save();
+    }
+    for alert in &alerts {
+        show_limit_alert(alert);
+    }
+}
+
 /// Writes the visual usage report (`barista report`) and opens it in the browser, off the main thread.
 /// Only a failure shows up, as a notice.
 pub fn open_usage_report(app: &Shared, period: barista_core::usage::Period) {
@@ -424,39 +456,89 @@ pub fn open_usage_report(app: &Shared, period: barista_core::usage::Period) {
     });
 }
 
-/// Asks your Claude account for its limits on a background thread: at most once every 5 minutes
-/// from the last attempt (unless `now`, for turning the setting on), never two at once.
-pub fn fetch_claude_account(app: &Shared, now: bool) {
+/// An account Barista can ask for its plan's limits, read-only, with the login its agent saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LimitsAccount {
+    /// Your Claude account, with Claude Code's login.
+    Claude,
+    /// Your ChatGPT account, with Codex's login.
+    ChatGpt,
+}
+
+impl LimitsAccount {
+    pub const ALL: [Self; 2] = [Self::Claude, Self::ChatGpt];
+
+    pub fn enabled(self, prefs: &Prefs) -> bool {
+        match self {
+            Self::Claude => prefs.claude_account_limits,
+            Self::ChatGpt => prefs.codex_account_limits,
+        }
+    }
+
+    /// Asks once and saves the limits; false when nothing new was saved.
+    fn refresh(self) -> bool {
+        match self {
+            Self::Claude => barista_core::claude_account::refresh().is_ok(),
+            Self::ChatGpt => barista_core::codex_account::refresh().is_ok(),
+        }
+    }
+
+    fn forget(self) {
+        let directory = barista_core::usage::data_dir();
+        match self {
+            Self::Claude => barista_core::claude_account::delete_saved(&directory),
+            Self::ChatGpt => barista_core::codex_account::delete_saved(&directory),
+        }
+    }
+}
+
+/// Asks an account for its limits on a background thread: at most once every 5 minutes from the
+/// last attempt (unless `now`, for turning the setting on), never two at once for one account.
+pub fn fetch_account(app: &Shared, account: LimitsAccount, now: bool) {
     {
         let mut state = lock(app);
-        let recent = state.account_last_attempt.is_some_and(|at| at.elapsed() < Duration::from_secs(300));
-        if state.ephemeral || !state.prefs.claude_account_limits || state.account_fetching || (recent && !now) {
+        let recent = state
+            .account_last_attempt
+            .get(&account)
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(300));
+        if state.ephemeral || !account.enabled(&state.prefs) || state.account_fetching.contains(&account) || (recent && !now) {
             return;
         }
-        state.account_fetching = true;
-        state.account_last_attempt = Some(std::time::Instant::now());
+        state.account_fetching.insert(account);
+        state.account_last_attempt.insert(account, std::time::Instant::now());
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        let refreshed = barista_core::claude_account::refresh().is_ok();
-        lock(&app).account_fetching = false;
+        let refreshed = account.refresh();
+        let still_enabled = {
+            let mut state = lock(&app);
+            state.account_fetching.remove(&account);
+            account.enabled(&state.prefs)
+        };
+        if !still_enabled {
+            // Turned off while asking: what was just saved is forgotten too.
+            account.forget();
+        }
         if refreshed {
             refresh_usage(&app, Duration::ZERO);
         }
     });
 }
 
-/// Turns reading limits from your Claude account on or off. Off forgets what was saved.
-pub fn set_claude_account_limits(app: &Shared, enabled: bool) {
+/// Turns reading limits from an account on or off. Off forgets what was saved.
+pub fn set_account_limits(app: &Shared, account: LimitsAccount, enabled: bool) {
     {
         let mut state = lock(app);
-        state.prefs.claude_account_limits = enabled;
+        match account {
+            LimitsAccount::Claude => state.prefs.claude_account_limits = enabled,
+            LimitsAccount::ChatGpt => state.prefs.codex_account_limits = enabled,
+        }
         state.save();
     }
     if enabled {
-        fetch_claude_account(app, true);
+        fetch_account(app, account, true);
     } else {
-        barista_core::claude_account::delete_saved(&barista_core::usage::data_dir());
+        account.forget();
         refresh_usage(app, Duration::ZERO);
     }
 }
@@ -497,6 +579,41 @@ pub fn check_for_updates(app: &Shared, user_initiated: bool) {
             Err(_) => {}
         }
     });
+}
+
+/// Tells baristatime.app that a copy of Barista is running, on a background thread: once per UTC
+/// day while Help count active users is on, never two at once, and never from the test service
+/// (docs/ACTIVE-USERS.md). Only a reply that got through is remembered; otherwise the next hourly
+/// check tries again.
+pub fn send_active_ping_if_due(app: &Shared) {
+    let today = active_ping::today();
+    let flags = {
+        let mut state = lock(app);
+        let Some(flags) = active_ping_due(&state.prefs, state.ephemeral, state.sending_active_ping, today) else {
+            return;
+        };
+        state.sending_active_ping = true;
+        flags
+    };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let sent = active_ping::send(flags);
+        let mut state = lock(&app);
+        state.sending_active_ping = false;
+        if sent {
+            state.prefs.last_active_ping = Some(active_ping::date_text(today));
+            state.save();
+        }
+    });
+}
+
+/// What today's ping would say, or None when there is none to send: the setting is off, this is the
+/// test service, one is already on its way, or today's got through.
+fn active_ping_due(prefs: &Prefs, ephemeral: bool, sending: bool, today: chrono::NaiveDate) -> Option<active_ping::Flags> {
+    if ephemeral || !prefs.share_active_count || sending {
+        return None;
+    }
+    active_ping::due(prefs.last_active_ping.as_deref(), today)
 }
 
 struct Options {
@@ -555,6 +672,7 @@ fn main() {
         update: None,
         update_status: None,
         checking_for_updates: false,
+        sending_active_ping: false,
         agents: Vec::new(),
         launch_at_login: false,
         ephemeral,
@@ -563,8 +681,8 @@ fn main() {
         usage_week: None,
         usage_updated: None,
         usage_loading: false,
-        account_last_attempt: None,
-        account_fetching: false,
+        account_last_attempt: HashMap::new(),
+        account_fetching: HashSet::new(),
         activity: HashMap::new(),
         activity_leases: HashMap::new(),
         activity_stopped: HashSet::new(),
@@ -622,15 +740,18 @@ fn main() {
                 state.update_activity(app, root, &cpu, time);
             }
         });
-        // Usage: soon after launch, then every five minutes. Claude's limits come from your Claude
-        // account first (read-only use of Claude Code's login), unless turned off.
+        // Usage: soon after launch, then every five minutes. Plan limits come from your Claude and
+        // ChatGPT accounts first (read-only use of Claude Code's and Codex's logins), unless turned off.
         let usage_app = app.clone();
         std::thread::spawn(move || loop {
-            fetch_claude_account(&usage_app, false);
+            for account in LimitsAccount::ALL {
+                fetch_account(&usage_app, account, false);
+            }
             refresh_usage(&usage_app, Duration::from_secs(60));
             std::thread::sleep(Duration::from_secs(300));
         });
         // Check hourly whether a day has passed, so sleep and restarts don't skip or repeat checks.
+        // The active-user ping keeps the same hours, whether or not update checks are on.
         let app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(10));
@@ -642,6 +763,7 @@ fn main() {
                 if due {
                     check_for_updates(&app, false);
                 }
+                send_active_ping_if_due(&app);
                 std::thread::sleep(Duration::from_secs(3600));
             }
         });
@@ -694,5 +816,31 @@ fn show_completion(completion: &SessionCompletion, threshold: i32) {
             "Coffee break complete",
             &format!("{} · {}.", completion.title, completion.reason.label()),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_active_ping_waits_for_its_turn() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let mut prefs = Prefs::default();
+        // A new copy: on by default, and its first ping says so.
+        let first = active_ping_due(&prefs, false, false, today).unwrap();
+        assert!(first.new && first.weekly && first.monthly);
+        // Never from the test service, never two at once, never with the setting off.
+        assert_eq!(active_ping_due(&prefs, true, false, today), None);
+        assert_eq!(active_ping_due(&prefs, false, true, today), None);
+        prefs.share_active_count = false;
+        assert_eq!(active_ping_due(&prefs, false, false, today), None);
+        prefs.share_active_count = true;
+        // Once today's got through, nothing until tomorrow, whether or not updates are checked.
+        prefs.last_active_ping = Some(active_ping::date_text(today));
+        assert_eq!(active_ping_due(&prefs, false, false, today), None);
+        prefs.checks_for_updates = false;
+        let tomorrow = active_ping_due(&prefs, false, false, today.succ_opt().unwrap()).unwrap();
+        assert!(!tomorrow.new && !tomorrow.weekly && !tomorrow.monthly);
     }
 }

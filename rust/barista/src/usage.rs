@@ -513,7 +513,11 @@ pub struct Snapshot {
     pub activity: Vec<Activity>,
     pub cursor: Vec<CursorRecord>,
     pub codex_limits: Option<CodexLimits>,
+    /// `codex_limits` came from your ChatGPT account rather than Codex's logs.
+    pub codex_from_account: bool,
     pub claude_limits: Option<ClaudeLimits>,
+    /// The Claude plan's name, from Claude Code's profile on this computer.
+    pub claude_plan: Option<String>,
 }
 
 /// Brings the cache up to date with the agents' logs, then returns every bucket and Cursor record.
@@ -581,21 +585,24 @@ fn collect_in(directory: &Path) -> Snapshot {
             });
         }
     }
-    let codex_limits = cache
+    let logged = cache
         .files
         .values()
         .filter_map(|f| f.limits.clone())
         .max_by(|a, b| a.observed_at.total_cmp(&b.observed_at));
+    let (codex_limits, codex_from_account) = newest_codex_limits(crate::codex_account::read(directory, now()), logged);
     Snapshot {
         entries,
         activity,
         cursor: read_cursor(directory),
         codex_limits,
+        codex_from_account,
         claude_limits: newest_claude_limits([
             crate::claude_account::read(directory, now()),
             read_claude_status_limits(directory),
             read_claude_app_limits(now()),
         ]),
+        claude_plan: read_claude_plan(),
     }
 }
 
@@ -676,6 +683,101 @@ pub fn newest_claude_limits(sources: impl IntoIterator<Item = Option<ClaudeLimit
         })
 }
 
+/// The ChatGPT plan's limits observed most recently: your account's or Codex's logs' (your account
+/// on a tie), and whether they are your account's.
+pub fn newest_codex_limits(account: Option<CodexLimits>, logged: Option<CodexLimits>) -> (Option<CodexLimits>, bool) {
+    match (account, logged) {
+        (Some(account), Some(logged)) if logged.observed_at > account.observed_at => (Some(logged), false),
+        (Some(account), _) => (Some(account), true),
+        (None, logged) => (logged, false),
+    }
+}
+
+/// The Claude plan's name from the profile Claude Code keeps on this computer (`oauthAccount` in
+/// `.claude.json`), with no network request. None when the profile doesn't say.
+fn read_claude_plan() -> Option<String> {
+    let directory = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .and_then(|value| value.split(',').map(str::trim).find(|entry| !entry.is_empty()).map(PathBuf::from))
+        .or_else(dirs::home_dir)?;
+    let profile: Value = serde_json::from_slice(&fs::read(directory.join(".claude.json")).ok()?).ok()?;
+    let account = profile.get("oauthAccount").filter(|a| a.is_object())?;
+    let kind = non_empty(account, "organizationType").unwrap_or("");
+    let tier = non_empty(account, "userRateLimitTier")
+        .or_else(|| non_empty(account, "organizationRateLimitTier"))
+        .unwrap_or("");
+    claude_plan_name(kind, tier).map(String::from)
+}
+
+/// "Max 5x", "Team", "Pro"…, from the profile's organization type and rate-limit tier. The first
+/// match wins (docs/USAGE.md, "Claude plan name").
+pub fn claude_plan_name(kind: &str, tier: &str) -> Option<&'static str> {
+    if kind.contains("enterprise") {
+        Some("Enterprise")
+    } else if kind.contains("team") {
+        Some("Team")
+    } else if tier.contains("max_20x") {
+        Some("Max 20x")
+    } else if tier.contains("max_5x") {
+        Some("Max 5x")
+    } else if tier.contains("max") || kind.contains("max") {
+        Some("Max")
+    } else if tier.contains("pro") || kind.contains("pro") {
+        Some("Pro")
+    } else {
+        None
+    }
+}
+
+/// Whether a window is on course to run out before it resets (docs/USAGE.md, "Pace"). Every part
+/// is None when unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pace {
+    /// How much of the window has passed: where even use would put the bar.
+    pub elapsed_percent: Option<f64>,
+    /// The percentage at the reset if the rate so far holds (it can pass 100).
+    pub projected_percent: Option<f64>,
+    /// When the window runs out at this rate, if that is before it resets.
+    pub limit_at: Option<f64>,
+    /// "over" (on course to run out before the reset) or "ok".
+    pub pace: Option<&'static str>,
+}
+
+/// Rounded to one decimal, half away from zero.
+fn round1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+/// The pace of a window of `minutes` that is `used` percent full and resets at `resets_at`.
+pub fn pace(minutes: Option<u64>, used: f64, resets_at: Option<f64>, now: f64) -> Pace {
+    let (Some(minutes), Some(resets_at)) = (minutes.filter(|m| *m > 0), resets_at.filter(|at| *at > now)) else {
+        return Pace::default();
+    };
+    let window = minutes as f64 * 60.0;
+    let passed = window - (resets_at - now);
+    if passed <= 0.0 {
+        // The reset is more than a whole window away.
+        return Pace::default();
+    }
+    let elapsed = (passed / window).min(1.0);
+    let mut pace = Pace {
+        elapsed_percent: Some(round1(elapsed * 100.0)),
+        ..Pace::default()
+    };
+    // Early in a window one burst projects nonsense.
+    if elapsed < 0.08 || used < 1.0 {
+        return pace;
+    }
+    let projected = used / elapsed;
+    pace.projected_percent = Some(round1(projected));
+    pace.pace = Some(if projected >= 100.0 { "over" } else { "ok" });
+    if used < 100.0 {
+        let limit_at = now + (100.0 - used) * (elapsed * window) / used;
+        pace.limit_at = Some(limit_at).filter(|at| *at < resets_at);
+    }
+    pace
+}
+
 /// "5-hour", "Weekly", "N-hour", or "N-day".
 pub fn window_label(minutes: u64) -> String {
     match minutes {
@@ -689,6 +791,7 @@ pub fn window_label(minutes: u64) -> String {
 /// One limit window. A window whose reset time has passed reads 0% with `reset: true`.
 fn window_json(id: &str, label: String, minutes: Option<u64>, used: f64, resets_at: Option<f64>, now: f64) -> Value {
     let reset = resets_at.is_some_and(|at| at <= now);
+    let pace = pace(minutes, used, resets_at, now);
     json!({
         "id": id,
         "label": label,
@@ -696,10 +799,14 @@ fn window_json(id: &str, label: String, minutes: Option<u64>, used: f64, resets_
         "usedPercent": if reset { 0.0 } else { used },
         "resetsAt": resets_at.map(format_date),
         "reset": reset,
+        "elapsedPercent": pace.elapsed_percent,
+        "projectedPercent": pace.projected_percent,
+        "limitAt": pace.limit_at.map(format_date),
+        "pace": pace.pace,
     })
 }
 
-fn claude_limits_json(limits: Option<&ClaudeLimits>, now: f64) -> Value {
+fn claude_limits_json(limits: Option<&ClaudeLimits>, plan: Option<&str>, now: f64) -> Value {
     let Some(limits) = limits else {
         return unavailable_limits("claude", "Claude plan");
     };
@@ -715,7 +822,7 @@ fn claude_limits_json(limits: Option<&ClaudeLimits>, now: f64) -> Value {
         }
         return json!({
             "agent": "claude", "name": "Claude plan", "available": true, "source": limits.source,
-            "observedAt": format_date(limits.observed_at), "plan": null, "credits": null, "windows": windows,
+            "observedAt": format_date(limits.observed_at), "plan": plan, "credits": null, "windows": windows,
         });
     }
     for (id, minutes) in [("five_hour", Some(300u64)), ("seven_day", Some(10080)), ("spend_limit", None)] {
@@ -739,11 +846,11 @@ fn claude_limits_json(limits: Option<&ClaudeLimits>, now: f64) -> Value {
     }
     json!({
         "agent": "claude", "name": "Claude plan", "available": true, "source": limits.source,
-        "observedAt": format_date(limits.observed_at), "plan": null, "credits": null, "windows": windows,
+        "observedAt": format_date(limits.observed_at), "plan": plan, "credits": null, "windows": windows,
     })
 }
 
-fn codex_limits_json(limits: Option<&CodexLimits>, now: f64) -> Value {
+fn codex_limits_json(limits: Option<&CodexLimits>, from_account: bool, now: f64) -> Value {
     let Some(limits) = limits else {
         return unavailable_limits("codex", "ChatGPT plan");
     };
@@ -766,7 +873,8 @@ fn codex_limits_json(limits: Option<&CodexLimits>, now: f64) -> Value {
         json!({"balance": c.get("balance").cloned().unwrap_or(Value::Null), "unlimited": c.get("unlimited").and_then(Value::as_bool).unwrap_or(false)})
     });
     json!({
-        "agent": "codex", "name": "ChatGPT plan", "available": true, "source": "Codex",
+        "agent": "codex", "name": "ChatGPT plan", "available": true,
+        "source": if from_account { "ChatGPT account" } else { "Codex" },
         "observedAt": format_date(limits.observed_at), "plan": limits.plan, "credits": credits, "windows": windows,
     })
 }
@@ -779,8 +887,8 @@ fn unavailable_limits(agent: &str, name: &str) -> Value {
 pub fn limits_json(snapshot: &Snapshot) -> Value {
     let now = now();
     json!([
-        claude_limits_json(snapshot.claude_limits.as_ref(), now),
-        codex_limits_json(snapshot.codex_limits.as_ref(), now),
+        claude_limits_json(snapshot.claude_limits.as_ref(), snapshot.claude_plan.as_deref(), now),
+        codex_limits_json(snapshot.codex_limits.as_ref(), snapshot.codex_from_account, now),
         unavailable_limits("cursor", "Cursor"),
     ])
 }
@@ -1622,7 +1730,18 @@ fn local_time(seconds: f64) -> Option<chrono::DateTime<Local>> {
     chrono::DateTime::from_timestamp(seconds as i64, 0).map(|t| t.with_timezone(&Local))
 }
 
-/// One plan's limits on a line: "5-hour 24% (resets 3:10 PM) · Weekly 0% (reset) · prolite".
+/// A time of day when under 24 hours away ("3:10 PM"), else a date ("Sat Nov 14").
+fn near_time(at: chrono::DateTime<Local>, now: f64) -> String {
+    let format = if at.timestamp() as f64 - now < 86400.0 {
+        "%-I:%M %p"
+    } else {
+        "%a %b %-d"
+    };
+    at.format(format).to_string()
+}
+
+/// One plan's limits on a line: "5-hour 62% (resets 3:10 PM · runs out 1:40 PM) · Weekly 0% (reset)
+/// · prolite".
 pub fn limit_summary(limit: &Value) -> String {
     if limit["available"].as_bool() != Some(true) {
         return if limit["agent"] == "cursor" {
@@ -1639,12 +1758,14 @@ pub fn limit_summary(limit: &Value) -> String {
         if window["reset"].as_bool() == Some(true) {
             part.push_str(" (reset)");
         } else if let Some(at) = window["resetsAt"].as_str().and_then(parse_date).and_then(local_time) {
-            let format = if at.timestamp() as f64 - now < 86400.0 {
-                "%-I:%M %p"
-            } else {
-                "%a %b %-d"
-            };
-            part.push_str(&format!(" (resets {})", at.format(format)));
+            part.push_str(&format!(" (resets {}", near_time(at, now)));
+            // Pace: when it runs out at this rate, else where it is heading by the reset.
+            if let Some(out) = window["limitAt"].as_str().and_then(parse_date).and_then(local_time) {
+                part.push_str(&format!(" · runs out {}", near_time(out, now)));
+            } else if let Some(projected) = window["projectedPercent"].as_f64() {
+                part.push_str(&format!(" · on pace for {}%", projected.round() as i64));
+            }
+            part.push(')');
         }
         if let (Some(used), Some(limit)) = (window["usedUSD"].as_f64(), window["limitUSD"].as_f64()) {
             part.push_str(&format!(" (${used:.2} of ${limit:.2})"));
@@ -1827,14 +1948,131 @@ mod tests {
                 "spend_limit": {"used_percentage": 62.8, "resets_at": 4_102_444_800u64, "used_usd": 314.12, "limit_usd": 500, "period": "monthly"}
             }),
         };
-        let value = claude_limits_json(Some(&limits), 2_000.0);
+        let value = claude_limits_json(Some(&limits), None, 2_000.0);
         let windows = value["windows"].as_array().unwrap();
         assert_eq!(windows.len(), 2);
         assert_eq!(windows[0]["label"], "5-hour");
         assert_eq!(windows[1]["id"], "spend_limit");
         assert_eq!(windows[1]["limitUSD"], 500);
         assert_eq!(windows[1]["period"], "monthly");
-        assert_eq!(claude_limits_json(None, 0.0)["available"], false);
+        assert_eq!(claude_limits_json(None, None, 0.0)["available"], false);
+        // The plan's name shows only with limits.
+        assert_eq!(claude_limits_json(Some(&limits), Some("Max 5x"), 2_000.0)["plan"], "Max 5x");
+        assert_eq!(claude_limits_json(None, Some("Max 5x"), 0.0)["plan"], Value::Null);
+    }
+
+    #[test]
+    fn pace_projects_the_rate_so_far() {
+        let now = 1_000_000.0;
+        // Half of a 5-hour window gone with 60% used: on course for 120%, out in 100 minutes.
+        let half = pace(Some(300), 60.0, Some(now + 9000.0), now);
+        assert_eq!(half.elapsed_percent, Some(50.0));
+        assert_eq!(half.projected_percent, Some(120.0));
+        assert_eq!(half.pace, Some("over"));
+        assert_eq!(half.limit_at, Some(now + 6000.0));
+        // A day into a week with 10% used: on course for 70%, so it lasts.
+        let week = pace(Some(10080), 10.0, Some(now + 6.0 * 86400.0), now);
+        assert_eq!(week.elapsed_percent, Some(14.3));
+        assert_eq!(week.projected_percent, Some(70.0));
+        assert_eq!((week.pace, week.limit_at), (Some("ok"), None));
+        // Exactly on course for 100% is over, but it runs out at the reset, not before it.
+        let even = pace(Some(300), 50.0, Some(now + 9000.0), now);
+        assert_eq!((even.pace, even.limit_at), (Some("over"), None));
+        // Used up: over, with nothing left to run out.
+        let full = pace(Some(300), 100.0, Some(now + 9000.0), now);
+        assert_eq!(
+            (full.projected_percent, full.pace, full.limit_at),
+            (Some(200.0), Some("over"), None)
+        );
+    }
+
+    #[test]
+    fn pace_is_unknown_early_or_without_a_window() {
+        let now = 1_000_000.0;
+        // Under 8% of the window gone, or under 1% used: only where even use would be.
+        let early = pace(Some(300), 5.0, Some(now + 17700.0), now);
+        assert_eq!(early.elapsed_percent, Some(1.7));
+        assert_eq!((early.projected_percent, early.limit_at, early.pace), (None, None, None));
+        let unused = pace(Some(10080), 0.5, Some(now + 6.0 * 86400.0), now);
+        assert_eq!((unused.elapsed_percent, unused.pace), (Some(14.3), None));
+        assert_eq!(pace(Some(300), 4.0, Some(now + 16560.0), now).pace, Some("ok"), "8% gone is enough");
+        // No length, no reset time, a reset that has passed, or one more than a window away.
+        for (minutes, resets_at) in [
+            (None, Some(now + 60.0)),
+            (Some(0), Some(now + 60.0)),
+            (Some(300), None),
+            (Some(300), Some(now)),
+            (Some(300), Some(now - 60.0)),
+            (Some(300), Some(now + 18000.0)),
+            (Some(300), Some(now + 86400.0)),
+        ] {
+            assert_eq!(pace(minutes, 50.0, resets_at, now), Pace::default(), "{minutes:?} {resets_at:?}");
+        }
+        // Every window carries the fields, null when unknown.
+        let window = window_json("primary", "Weekly".into(), Some(10080), 6.0, Some(now + 30.0 * 86400.0), now);
+        for key in ["elapsedPercent", "projectedPercent", "limitAt", "pace"] {
+            assert_eq!(window.get(key), Some(&Value::Null), "{key}");
+        }
+        let window = window_json("five_hour", "5-hour".into(), Some(300), 60.0, Some(now + 9000.0), now);
+        assert_eq!(
+            (&window["elapsedPercent"], &window["projectedPercent"], &window["pace"]),
+            (&json!(50.0), &json!(120.0), &json!("over"))
+        );
+        assert_eq!(window["limitAt"], format_date(now + 6000.0));
+    }
+
+    #[test]
+    fn limit_summary_adds_the_pace() {
+        let now = now();
+        let plan = |windows: Vec<Value>| json!({"agent": "claude", "available": true, "windows": windows});
+        let hot = window_json("five_hour", "5-hour".into(), Some(300), 60.0, Some(now + 9000.0), now);
+        let calm = window_json("seven_day", "Weekly".into(), Some(10080), 10.0, Some(now + 6.0 * 86400.0), now);
+        let early = window_json("five_hour", "5-hour".into(), Some(300), 5.0, Some(now + 17700.0), now);
+        let text = limit_summary(&plan(vec![hot, calm, early]));
+        let parts: Vec<&str> = text.split(" · ").collect();
+        assert!(parts[0].starts_with("5-hour 60% (resets "), "{text}");
+        assert!(parts[1].starts_with("runs out ") && parts[1].ends_with(')'), "{text}");
+        assert!(parts[2].starts_with("Weekly 10% (resets "), "{text}");
+        assert_eq!(parts[3], "on pace for 70%)", "{text}");
+        assert!(parts[4].starts_with("5-hour 5% (resets ") && parts[4].ends_with(')'), "{text}");
+        assert_eq!(parts.len(), 5, "{text}");
+    }
+
+    #[test]
+    fn claude_plan_names_follow_type_then_tier() {
+        assert_eq!(claude_plan_name("claude_max", "default_claude_max_5x"), Some("Max 5x"));
+        assert_eq!(claude_plan_name("claude_max", "default_claude_max_20x"), Some("Max 20x"));
+        assert_eq!(claude_plan_name("claude_max", "default_claude_ai"), Some("Max"));
+        assert_eq!(claude_plan_name("", "default_claude_max"), Some("Max"));
+        assert_eq!(claude_plan_name("claude_team", "default_claude_max_5x"), Some("Team"));
+        assert_eq!(claude_plan_name("claude_enterprise", ""), Some("Enterprise"));
+        assert_eq!(claude_plan_name("claude_pro", ""), Some("Pro"));
+        assert_eq!(claude_plan_name("", "default_claude_pro"), Some("Pro"));
+        assert_eq!(claude_plan_name("something", "default_raven"), None);
+        assert_eq!(claude_plan_name("", ""), None);
+    }
+
+    #[test]
+    fn chatgpt_limits_come_from_the_newest_source() {
+        let limits = |observed_at: f64| CodexLimits {
+            observed_at,
+            primary: Some(json!({"used_percent": 20.0, "window_minutes": 300, "resets_at": 4_102_444_800u64})),
+            ..CodexLimits::default()
+        };
+        let source = |account: Option<f64>, logged: Option<f64>| {
+            let (limits, from_account) = newest_codex_limits(account.map(limits), logged.map(limits));
+            (limits.map(|l| l.observed_at), from_account)
+        };
+        assert_eq!(source(Some(200.0), Some(100.0)), (Some(200.0), true));
+        assert_eq!(source(Some(100.0), Some(200.0)), (Some(200.0), false));
+        assert_eq!(source(Some(100.0), Some(100.0)), (Some(100.0), true), "your account on a tie");
+        assert_eq!(source(Some(100.0), None), (Some(100.0), true));
+        assert_eq!(source(None, Some(100.0)), (Some(100.0), false));
+        assert_eq!(source(None, None), (None, false));
+        assert_eq!(codex_limits_json(Some(&limits(100.0)), true, 1_000.0)["source"], "ChatGPT account");
+        let logged = codex_limits_json(Some(&limits(100.0)), false, 1_000.0);
+        assert_eq!(logged["source"], "Codex");
+        assert_eq!(logged["windows"][0]["label"], "5-hour");
     }
 
     #[test]

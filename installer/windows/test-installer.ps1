@@ -12,6 +12,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# This test starts Barista for real. Point its active-user ping (docs/ACTIVE-USERS.md) at nothing, so
+# a test run is never counted as a user. Setup and the app it starts inherit this.
+$env:BARISTA_PING_URL = 'http://127.0.0.1:9/api/ping'
 $Setup = (Resolve-Path $Setup).Path
 if (-not $Version) {
     if ((Split-Path $Setup -Leaf) -match '^Barista-Setup-(.+)\.exe$') { $Version = $Matches[1] }
