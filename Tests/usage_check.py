@@ -227,6 +227,13 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     body = (FIXTURE / 'claude-account-usage.json').read_bytes()
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path == '/elsewhere':
+                # Where the 302 below points. Answers with good limits, so a client that followed the
+                # redirect would succeed, and be caught.
+                served['followed'] = served.get('followed', 0) + 1
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self.wfile.write(body)
+                return
             served['count'] += 1
             served['auth'] = self.headers.get('Authorization'); served['beta'] = self.headers.get('anthropic-beta')
             self.send_response(served['status']); self.send_header('Content-Type', 'application/json')
@@ -271,6 +278,7 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert served['count'] == 2 and report(home, data)['limits'][0]['source'] == 'Claude account', 'errors keep the previous result'
     served['status'] = 302
     run(home, data, 'limits', 'refresh', extra=account_env, ok=False)
+    assert served['count'] == 3 and 'followed' not in served, f'a redirect is never followed: {served}'
     assert report(home, data)['limits'][0]['source'] == 'Claude account', 'redirects are refused and keep the previous result'
     # The endpoint override only applies together with a test credentials file.
     no_creds = {'BARISTA_CLAUDE_USAGE_URL': account_env['BARISTA_CLAUDE_USAGE_URL'], 'BARISTA_CLAUDE_CREDENTIALS': ''}
@@ -290,6 +298,159 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert json.loads(credentials.read_text())['claudeAiOauth']['refreshToken'] == 'refresh-xyz', 'the login is never modified'
     server.shutdown()
     print('PASS limits: Codex windows, plan and credits; Claude status line, reset windows, Claude app fallback (stale ignored); Claude account fetch, never sends an expired token, keeps results on errors', flush=True)
+
+    # Pace: where even use would put each window, the projection at its reset, and when it runs out.
+    def claude_windows(used5, left5, used7, left7):
+        start = time.time()
+        status = {'model': {'display_name': 'Opus'}, 'rate_limits': {
+            'five_hour': {'used_percentage': used5, 'resets_at': int(start + left5)},
+            'seven_day': {'used_percentage': used7, 'resets_at': int(start + left7)}}}
+        line = run(home, data, 'statusline', stdin=json.dumps(status)).stdout.strip()
+        reply = report(home, data)
+        return start, line, reply['limits'], {w['id']: w for w in reply['limits'][0]['windows']}
+    def near(value, want, slack):
+        return value is not None and abs(value - want) <= slack
+    def seconds(iso):
+        return datetime.datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
+    pace_keys = ('elapsedPercent', 'projectedPercent', 'limitAt', 'pace')
+    # Half of the 5-hour window gone with 60% used: on course for 120%, out in 100 minutes.
+    start, line, limits, windows = claude_windows(60, 9000, 10, 6 * 86400)
+    assert line == 'Opus · 5h 60% · 7d 10%', line
+    assert limits[0]['source'] == 'Claude Code', limits[0]
+    five, seven = windows['five_hour'], windows['seven_day']
+    assert near(five['elapsedPercent'], 50, 0.2) and near(five['projectedPercent'], 120, 0.6) and five['pace'] == 'over', five
+    assert five['limitAt'] and near(seconds(five['limitAt']) - start, 6000, 20), five
+    # A day into the week with 10% used: on course for 70%, so it lasts.
+    assert near(seven['elapsedPercent'], 14.3, 0.2) and near(seven['projectedPercent'], 70, 0.6), seven
+    assert seven['pace'] == 'ok' and seven['limitAt'] is None, seven
+    text = run(home, data, 'usage').stdout
+    assert 'runs out' in text and 'on pace for 70%' in text, text
+    # Windows that reset far in the future (more than a window away) have no pace; the fields stay, as null.
+    for window in limits[1]['windows']:
+        assert all(key in window and window[key] is None for key in pace_keys), window
+    # Too early in a window (under 8% gone), or under 1% used, to trust the rate.
+    start, line, limits, windows = claude_windows(5, 17700, 0.5, 6 * 86400)
+    five, seven = windows['five_hour'], windows['seven_day']
+    assert near(five['elapsedPercent'], 1.7, 0.2) and all(five[key] is None for key in pace_keys[1:]), five
+    assert near(seven['elapsedPercent'], 14.3, 0.2) and all(seven[key] is None for key in pace_keys[1:]), seven
+    # Used up: over, with nothing left to run out.
+    start, line, limits, windows = claude_windows(100, 9000, 10, 6 * 86400)
+    five = windows['five_hour']
+    assert five['pace'] == 'over' and near(five['projectedPercent'], 200, 1) and five['limitAt'] is None, five
+    print('PASS pace: elapsed, projected, and run-out time; none too early in a window or far from a reset', flush=True)
+
+    # The Claude plan's name, from the profile Claude Code keeps (no network).
+    profile = home / '.claude' / '.claude.json'
+    def plan_for(account):
+        profile.write_text(account if isinstance(account, str) else json.dumps({'numStartups': 3, 'oauthAccount': account}))
+        return report(home, data)['limits'][0]['plan']
+    assert report(home, data)['limits'][0]['plan'] is None, 'no profile, no plan name'
+    assert plan_for({'organizationType': 'claude_max', 'userRateLimitTier': 'default_claude_max_5x', 'emailAddress': 'a@b.c'}) == 'Max 5x'
+    assert plan_for({'organizationType': 'claude_max', 'organizationRateLimitTier': 'default_claude_max_20x'}) == 'Max 20x'
+    assert plan_for({'organizationType': 'claude_max', 'userRateLimitTier': 'default_claude_ai'}) == 'Max'
+    assert plan_for({'organizationType': 'claude_team', 'userRateLimitTier': 'default_claude_max_5x'}) == 'Team'
+    assert plan_for({'organizationType': 'claude_enterprise'}) == 'Enterprise'
+    assert plan_for({'organizationType': 'claude_pro'}) == 'Pro'
+    assert plan_for({'organizationType': 'something', 'organizationRateLimitTier': 'default_raven'}) is None
+    assert plan_for('{broken') is None and plan_for({}) is None
+    profile.unlink()
+    print('PASS Claude plan name: from the local profile, by organization type and rate-limit tier', flush=True)
+
+    # Your ChatGPT account, through a local stand-in for ChatGPT's usage endpoint.
+    import base64
+    def jwt(exp):
+        part = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip('=')
+        return f"{part({'alg': 'none'})}.{part({'exp': exp, 'sub': 'user-123'})}.signature"
+    chatgpt = {'count': 0, 'status': 200, 'auth': None, 'account': None, 'agent': None,
+               'body': (FIXTURE / 'codex-account-usage.json').read_bytes()}
+    class ChatGPT(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/elsewhere':
+                # Where the 302 below points: good limits, so following the redirect would succeed.
+                chatgpt['followed'] = chatgpt.get('followed', 0) + 1
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps({'plan_type': 'followed', 'rate_limit': {'primary_window': {'used_percent': 1, 'limit_window_seconds': 18000, 'reset_at': 4102444800}}}).encode())
+                return
+            chatgpt['count'] += 1
+            chatgpt['auth'] = self.headers.get('Authorization'); chatgpt['account'] = self.headers.get('ChatGPT-Account-Id')
+            chatgpt['agent'] = self.headers.get('User-Agent')
+            self.send_response(chatgpt['status']); self.send_header('Content-Type', 'application/json')
+            if chatgpt['status'] == 302:
+                self.send_header('Location', '/elsewhere')
+            self.end_headers()
+            self.wfile.write(chatgpt['body'] if chatgpt['status'] == 200 else b'{"error":"nope"}')
+        def log_message(self, *args): pass
+    chatgpt_server = http.server.HTTPServer(('127.0.0.1', 0), ChatGPT)
+    threading.Thread(target=chatgpt_server.serve_forever, daemon=True).start()
+    codex_auth = temporary / 'codex-auth.json'
+    def write_codex_auth(token, account='acct-1'):
+        tokens = {'id_token': 'id-secret', 'access_token': token, 'refresh_token': 'refresh-abc'}
+        if account:
+            tokens['account_id'] = account
+        codex_auth.write_text(json.dumps({'auth_mode': 'chatgpt', 'OPENAI_API_KEY': None, 'tokens': tokens}))
+    codex_env = {'BARISTA_CODEX_AUTH': str(codex_auth), 'BARISTA_CODEX_USAGE_URL': f'http://127.0.0.1:{chatgpt_server.server_port}/backend-api/wham/usage'}
+    def refresh_codex(ok=True):
+        return json.loads(run(home, data, 'limits', 'refresh', '--agent', 'codex', '--json', extra=codex_env, ok=ok).stdout)
+    token = jwt(int(time.time()) + 3600)
+    write_codex_auth(token)
+    result = refresh_codex()
+    assert result == {'ok': True, 'message': 'ChatGPT account limits updated.'}, result
+    assert chatgpt['count'] == 1 and chatgpt['auth'] == f'Bearer {token}' and chatgpt['account'] == 'acct-1', chatgpt
+    assert chatgpt['agent'].startswith('Barista/'), chatgpt['agent']
+    saved_path = data / 'codex-account-limits.json'
+    saved = saved_path.read_text()
+    for secret in (token, 'refresh-abc', 'id-secret', 'someone@example.com', 'user-123', 'acct-1'):
+        assert secret not in saved, f'{secret} must never be written'
+    assert sorted(json.loads(saved)['usage']) == ['credits', 'plan_type', 'rate_limit'], saved
+    codex = report(home, data)['limits'][1]
+    windows = {w['id']: w for w in codex['windows']}
+    assert codex['source'] == 'ChatGPT account' and codex['available'] and codex['plan'] == 'plus', codex
+    assert codex['credits'] == {'balance': '1200.0000000000', 'unlimited': False}, codex
+    assert windows['primary']['label'] == '5-hour' and windows['primary']['usedPercent'] == 20 and windows['primary']['windowMinutes'] == 300, windows
+    assert windows['primary']['resetsAt'] == '2100-01-01T00:00:00Z' and not windows['primary']['reset'], windows
+    assert windows['secondary']['label'] == 'Weekly' and windows['secondary']['usedPercent'] == 41.5 and windows['secondary']['windowMinutes'] == 10080, windows
+    assert windows['secondary']['resetsAt'].startswith('2100-01-02'), windows
+    text = run(home, data, 'usage').stdout
+    assert '5-hour 20%' in text and 'Weekly 42%' in text, text
+    # A plan with one window and no credits, as ChatGPT reports it.
+    chatgpt['body'] = json.dumps({'plan_type': 'prolite', 'email': 'someone@example.com', 'rate_limit': {
+        'primary_window': {'used_percent': 7, 'limit_window_seconds': 604800, 'reset_at': 4102444800}, 'secondary_window': None}}).encode()
+    write_codex_auth('opaque-token', account=None)
+    assert refresh_codex()['ok'] and chatgpt['auth'] == 'Bearer opaque-token' and chatgpt['account'] is None, 'a token with no readable expiry is sent as it is'
+    codex = report(home, data)['limits'][1]
+    assert [w['id'] for w in codex['windows']] == ['primary'] and codex['windows'][0]['label'] == 'Weekly' and codex['credits'] is None, codex
+    assert codex['plan'] == 'prolite' and codex['source'] == 'ChatGPT account', codex
+    # An expired login is never sent (or refreshed); failures keep the last good result.
+    before = chatgpt['count']
+    write_codex_auth(jwt(int(time.time()) - 60))
+    expired = refresh_codex(ok=False)
+    assert expired['ok'] is False and 'expired' in expired['message'] and chatgpt['count'] == before, (expired, chatgpt)
+    write_codex_auth(token); chatgpt['status'] = 500
+    assert refresh_codex(ok=False)['message'] == 'ChatGPT replied 500.'
+    assert chatgpt['count'] == before + 1 and report(home, data)['limits'][1]['source'] == 'ChatGPT account', 'errors keep the previous result'
+    chatgpt['status'] = 302
+    assert not refresh_codex(ok=False)['ok']
+    assert chatgpt['count'] == before + 2 and 'followed' not in chatgpt, f'a redirect is never followed: {chatgpt}'
+    assert report(home, data)['limits'][1]['plan'] == 'prolite', 'redirects are refused and keep the previous result'
+    # No ChatGPT sign-in (an API key only), and the override without a test login file.
+    codex_auth.write_text(json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'sk-test', 'tokens': None}))
+    missing = refresh_codex(ok=False)
+    assert missing['message'] == 'No Codex login found.', missing
+    before = chatgpt['count']
+    run(home, data, 'limits', 'refresh', '--agent', 'codex', extra={'BARISTA_CODEX_USAGE_URL': codex_env['BARISTA_CODEX_USAGE_URL'], 'BARISTA_CODEX_AUTH': ''}, ok=False)
+    assert chatgpt['count'] == before, 'without a test login file the override is ignored (the fixture home has no Codex login)'
+    # Plain `limits refresh` still means Claude.
+    write_credentials(int((time.time() - 60) * 1000))
+    for agent in ([], ['--agent', 'claude']):
+        assert 'Claude Code' in json.loads(run(home, data, 'limits', 'refresh', *agent, '--json', extra=account_env, ok=False).stdout)['message']
+    run(home, data, 'limits', 'refresh', '--agent', 'cursor', ok=False)
+    # Account results older than an hour are not shown: Codex's logs take over again.
+    saved_json = json.loads(saved_path.read_text())
+    saved_json['observedAt'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    saved_path.write_text(json.dumps(saved_json))
+    assert report(home, data)['limits'][1]['source'] == 'Codex', 'stale account results are ignored'
+    chatgpt_server.shutdown()
+    print('PASS ChatGPT account: live limits, plan and credits; only limits are saved; never sends an expired token; keeps results on errors', flush=True)
 
     # The partial last line is finished later: it counts once, on the next run.
     claude_log = home / '.claude' / 'projects' / '-tmp-proj' / 'claude-s2.jsonl'

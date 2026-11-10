@@ -94,46 +94,67 @@ pub fn usable_token(credentials: &Value, now: f64) -> Result<String, Skipped> {
     Ok(token.to_string())
 }
 
+/// Why a request for an account's limits got no usable answer.
+pub(crate) enum FetchError {
+    /// curl couldn't complete the request.
+    Unreachable(String),
+    /// Anything but HTTP 200 with a JSON object.
+    Status(String),
+}
+
+/// One credentialed GET with the system's curl: `headers` (one per line) go to curl on stdin
+/// (`-H @-`), so a token never appears in the process list; redirects are never followed (no `-L`);
+/// and no `.curlrc` applies (`curl -q`). Only HTTP 200 with a JSON object succeeds.
+pub(crate) fn fetch(url: &str, headers: &str) -> Result<Value, FetchError> {
+    let mut command = crate::update::curl();
+    command
+        .args(["-sS", "--max-time", "15", "-H", "@-", "-w", "\n%{http_code}"])
+        .arg(url)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(|error| FetchError::Unreachable(error.to_string()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(headers.as_bytes());
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| FetchError::Unreachable(error.to_string()))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let (body, status) = text.rsplit_once('\n').unwrap_or(("", ""));
+    let status = status.trim();
+    // curl exits nonzero when the transfer failed, even if a status line and part of a body arrived
+    // (a connection dropped mid-answer); what did arrive is not an answer.
+    if !output.status.success() || status.is_empty() || status == "000" {
+        let detail = output
+            .status
+            .code()
+            .filter(|code| *code != 0)
+            .map_or_else(|| "no response".to_string(), |code| format!("curl error {code}"));
+        return Err(FetchError::Unreachable(detail));
+    }
+    if status != "200" {
+        return Err(FetchError::Status(status.to_string()));
+    }
+    let usage: Value = serde_json::from_str(body).map_err(|_| FetchError::Status("200 without JSON".into()))?;
+    if !usage.is_object() {
+        return Err(FetchError::Status("200 without a JSON object".into()));
+    }
+    Ok(usage)
+}
+
 /// Asks Anthropic for the account's limits once and saves them. The previous result stays on any failure.
 pub fn refresh() -> Result<(), Skipped> {
     let path = credentials_path().ok_or(Skipped::NoLogin)?;
     let credentials: Value = serde_json::from_slice(&fs::read(&path).map_err(|_| Skipped::NoLogin)?).map_err(|_| Skipped::NoLogin)?;
     let token = usable_token(&credentials, now())?;
-    let url = usage_url();
-    // Headers go to curl on stdin (-H @-), so the token never appears in the process list.
     let headers = format!(
         "Authorization: Bearer {token}\nanthropic-beta: oauth-2025-04-20\nUser-Agent: Barista/{VERSION}\nAccept: application/json\n"
     );
-    let mut command = crate::update::curl();
-    // No -L: redirects are never followed.
-    command
-        .args(["-sS", "--max-time", "15", "-H", "@-", "-w", "\n%{http_code}"])
-        .arg(&url)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|error| Skipped::Unreachable(error.to_string()))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(headers.as_bytes());
-    }
-    let output = child.wait_with_output().map_err(|error| Skipped::Unreachable(error.to_string()))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let (body, status) = text.rsplit_once('\n').unwrap_or(("", ""));
-    let status = status.trim();
-    if status.is_empty() || status == "000" {
-        let detail = output
-            .status
-            .code()
-            .map_or_else(|| "no response".to_string(), |code| format!("curl error {code}"));
-        return Err(Skipped::Unreachable(detail));
-    }
-    if status != "200" {
-        return Err(Skipped::Status(status.to_string()));
-    }
-    let usage: Value = serde_json::from_str(body).map_err(|_| Skipped::Status("200 without JSON".into()))?;
-    if !usage.is_object() {
-        return Err(Skipped::Status("200 without a JSON object".into()));
-    }
+    let usage = fetch(&usage_url(), &headers).map_err(|error| match error {
+        FetchError::Unreachable(detail) => Skipped::Unreachable(detail),
+        FetchError::Status(status) => Skipped::Status(status),
+    })?;
     save(&data_dir(), &usage).map_err(Skipped::Unreachable)
 }
 
@@ -259,6 +280,48 @@ mod tests {
         assert_eq!(usable_token(&credentials((now + 30.0) * 1000.0), now), Err(Skipped::Expired));
         assert_eq!(usable_token(&credentials((now - 1.0) * 1000.0), now), Err(Skipped::Expired));
         assert_eq!(usable_token(&json!({}), now), Err(Skipped::NoLogin));
+    }
+
+    /// A server on this computer that answers one request with `reply`, then hangs up.
+    fn stand_in(reply: &'static str) -> String {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/usage", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => request.extend_from_slice(&buffer[..count]),
+                }
+            }
+            let _ = stream.write_all(reply.as_bytes());
+        });
+        url
+    }
+
+    /// Runs the system's `curl`, as the app does, against this computer only.
+    #[test]
+    fn an_answer_cut_short_is_a_failure_even_if_what_arrived_is_json() {
+        let has_curl = crate::update::curl()
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !has_curl {
+            return;
+        }
+        let whole = stand_in(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"plan_type\":\"plus\"}",
+        );
+        assert_eq!(fetch(&whole, "Accept: application/json\n").ok(), Some(json!({"plan_type": "plus"})));
+        // The same bytes, but the server promised 1000 and hung up: curl reports a failed transfer.
+        let cut = stand_in("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{\"plan_type\":\"plus\"}");
+        assert!(matches!(fetch(&cut, "Accept: application/json\n"), Err(FetchError::Unreachable(_))));
     }
 
     #[test]

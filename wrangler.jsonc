@@ -17,5 +17,8 @@
     { "pattern": "www.baristatime.app", "custom_domain": true }
   ],
   "workers_dev": false,
-  "observability": { "enabled": true }
+  // Errors and console output are kept. Cloudflare's per-request ("invocation") logs are off: they
+  // would record every request's URL and metadata, and /api/ping promises to keep nothing but its
+  // six fields (docs/ACTIVE-USERS.md).
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
 }

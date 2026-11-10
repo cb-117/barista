@@ -123,20 +123,29 @@ struct CoffeeCLI {
                 return
             }
             if options.command == "limits" {
-                // Fetches Claude account limits once (the app does this every few minutes).
-                try options.validate(positionalCount: 1)
-                guard options.positionals[0] == "refresh" else { throw CoffeeError.message("Use: barista limits refresh") }
-                // An explicit command, so macOS may ask for Keychain access; the app's background reads never do.
-                let outcome = runBlocking { await ClaudeAccount.refresh(interactive: true) }
+                // Fetches account limits once (the app does this every few minutes): Claude's, or ChatGPT's with --agent codex.
+                try options.validate(values: ["--agent"], positionalCount: 1)
+                guard options.positionals[0] == "refresh" else { throw CoffeeError.message("Use: barista limits refresh [--agent claude|codex]") }
+                let ok: Bool, message: String
+                switch options.values["--agent"] ?? "claude" {
+                case "claude":
+                    // An explicit command, so macOS may ask for Keychain access; the app's background reads never do.
+                    let outcome = runBlocking { await ClaudeAccount.refresh(interactive: true) }
+                    (ok, message) = (outcome.ok, outcome.message)
+                case "codex":
+                    let outcome = runBlocking { await CodexAccount.refresh() }
+                    (ok, message) = (outcome.ok, outcome.message)
+                default: throw CoffeeError.message("--agent must be claude or codex.")
+                }
                 if options.flags.contains("--json") {
-                    let object: [String: Any] = ["ok": outcome.ok, "message": outcome.message]
+                    let object: [String: Any] = ["ok": ok, "message": message]
                     if let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]) {
                         print(String(decoding: data, as: UTF8.self))
                     }
                 } else {
-                    print(outcome.message)
+                    print(message)
                 }
-                if !outcome.ok { exit(1) }
+                if !ok { exit(1) }
                 return
             }
             if options.command == "usage" {
@@ -449,7 +458,7 @@ struct CoffeeCLI {
     barista setup [--agent claude|codex|cursor]
     barista usage [--period today|week|month|all] [--json]
     barista report [--period today|week|month|all] [--output PATH] [--no-open] [--json]
-    barista limits refresh [--json]
+    barista limits refresh [--agent claude|codex] [--json]
     barista statusline install|uninstall|status [--settings PATH]
     barista version
 
@@ -461,8 +470,10 @@ struct CoffeeCLI {
 
     setup connects every agent it finds (Claude Code, Codex, Cursor) and starts Barista.
     limits refresh fetches your Claude plan limits from your Claude account now, using
-    Claude Code's saved login read-only (the app does this every few minutes).
-    usage reports plan limits, then sessions and tokens per agent and model from local logs,
+    Claude Code's saved login read-only (the app does this every few minutes). With
+    --agent codex it fetches your ChatGPT plan limits, using Codex's saved login read-only.
+    usage reports plan limits and their pace (whether a limit is on course to run out before
+    it resets), then sessions and tokens per agent and model from local logs,
     with costs estimated at API list prices (not what a subscription charges); with --period,
     also active time, sessions, tokens, and cost per project (Git repository).
     report writes a visual usage report (an HTML page, nothing uploaded) and opens it.

@@ -180,11 +180,59 @@ recently wins:
    no reset times. This file is undocumented and rarely updated, so a missing or unreadable file, or a
    newest sample older than **1 hour**, is ignored.
 
-**ChatGPT plan** (Codex and the ChatGPT app share it). While reading Codex logs, a `token_count` event
-whose `payload.rate_limits` has a non-null `primary` or `secondary` replaces the latest limits if its
-timestamp is newer: `primary`/`secondary` each `{used_percent, window_minutes, resets_at}`, plus
-`plan_type` and `credits` (`{balance, unlimited, has_credits}`). This is read even from events skipped as
-duplicate token counts. Implementations cache it with the rest of the usage cache.
+**Claude plan name.** The Claude plan's `plan` comes from the profile Claude Code keeps on this computer,
+with no network request: the `oauthAccount` object in `.claude.json`, in the first comma-separated entry
+of `CLAUDE_CONFIG_DIR` if that is set, else in the home folder. Let `type` be its `organizationType` and
+`tier` its `userRateLimitTier`, else its `organizationRateLimitTier` (missing strings are empty). The
+first match wins: `type` contains `enterprise` → `Enterprise`; `type` contains `team` → `Team`; `tier`
+contains `max_20x` → `Max 20x`; `tier` contains `max_5x` → `Max 5x`; `tier` or `type` contains `max` →
+`Max`; `tier` or `type` contains `pro` → `Pro`; otherwise `plan` is null. It is null whenever the Claude
+plan has no limits to show. Claude Code refreshes this profile when you sign in, so it can lag after you
+switch accounts.
+
+**ChatGPT plan** (Codex and the ChatGPT app share it). Two sources; the one observed most recently wins
+(your account on a tie):
+
+0. **Your ChatGPT account** (what Codex's `/status` shows). The Barista app fetches it in the background
+   at most once every 5 minutes (counting from the last attempt), unless turned off in Settings
+   (preference `codexAccountLimits`, default on). The only other fetch is the explicit
+   `barista limits refresh --agent codex` command.
+   - Credential: Codex's saved login, `auth.json` in `CODEX_HOME` (default `~/.codex`;
+     `BARISTA_CODEX_AUTH` overrides with a JSON file path, for tests): `tokens.access_token` and
+     `tokens.account_id`. No `access_token` (an API-key login, or no file), or one containing a
+     control character, is `No Codex login found.`; an `account_id` containing one is left out. The
+     token is a JWT: if its payload (the second dot-separated part, base64url) is a JSON object with a
+     numeric `exp` (Unix seconds), use the token only while it expires more than 60 seconds from now;
+     a token without a readable `exp` is sent as it is. **Never refresh it** (that would rotate Codex's
+     login), never write it anywhere, never log it, and never pass it on a command line.
+   - Request: `GET https://chatgpt.com/backend-api/wham/usage` with `Authorization: Bearer <token>`,
+     `ChatGPT-Account-Id: <account_id>` (left out when there is none), `User-Agent: Barista/<version>`,
+     `Accept: application/json`, 15-second timeout, no redirects followed, no cookies or caching.
+     `BARISTA_CODEX_USAGE_URL` replaces the URL **only when `BARISTA_CODEX_AUTH` is also set** (tests).
+     Rust runs `curl -q` with headers on stdin, as for Claude. Anything but HTTP 200 with a JSON object
+     fails and keeps the previous result. This endpoint is undocumented, so every field is optional.
+   - Result: written atomically to `codex-account-limits.json` in the data folder as
+     `{"observedAt": "<ISO now>", "usage": {"plan_type": …, "rate_limit": …, "credits": …}}`. Only those
+     three keys of the response are kept (each only if present): the response also carries your email
+     and account IDs, which are never saved. Results older than **1 hour** are ignored. Turning the
+     setting off deletes the file (also when a fetch was under way; the same goes for Claude).
+   - `barista limits refresh --agent codex [--json]` fetches once, ignoring the 5-minute spacing. It
+     prints `ChatGPT account limits updated.` and exits 0, or exits 1 with one of: `No Codex login
+     found.`, `Codex's login has expired. Open Codex to renew it.`, `Couldn't reach ChatGPT
+     (<detail>).`, `ChatGPT replied <HTTP status>.` With `--json` it prints `{"ok": <bool>, "message":
+     "<text>"}`. Without `--agent` (or with `--agent claude`) the command refreshes Claude, as before.
+   - Windows: `rate_limit.primary_window` → id `primary` and `rate_limit.secondary_window` → id
+     `secondary`, each only when it is an object with a numeric `used_percent`. `usedPercent` =
+     `used_percent`; `windowMinutes` = `limit_window_seconds` ÷ 60, rounded (null when missing or 0);
+     `resetsAt` = `reset_at` (Unix seconds); the label comes from the window length. `plan` =
+     `plan_type`. `credits`, when it is an object, gives `balance` and `unlimited` as below. Source
+     label: `ChatGPT account`.
+1. **Codex's logs.** While reading Codex logs, a `token_count` event whose `payload.rate_limits` has a
+   non-null `primary` or `secondary` replaces the latest limits if its timestamp is newer:
+   `primary`/`secondary` each `{used_percent, window_minutes, resets_at}`, plus `plan_type` and `credits`
+   (`{balance, unlimited, has_credits}`). This is read even from events skipped as duplicate token
+   counts. Implementations cache it with the rest of the usage cache. Source label: `Codex`. These are
+   as old as your last Codex turn.
 
 **Cursor**: not available on this computer; reported with `available: false`.
 
@@ -192,6 +240,71 @@ A window whose `resetsAt` has passed is reported with `usedPercent: 0` and `rese
 from the window length: 300 minutes → `5-hour`, 10080 → `Weekly`, otherwise `N-hour` (whole hours under a
 day) or `N-day`. Claude's `five_hour` is 300 minutes and `seven_day` 10080; the desktop app's `fh` and
 `sd` likewise.
+
+### Pace
+
+A percentage alone doesn't say whether a window will run out before it resets. Every window also
+reports `elapsedPercent`, `projectedPercent`, `limitAt`, and `pace`, each null when unknown. For a
+window with `windowMinutes` W above 0 and a `resetsAt` R after now (so not `reset`):
+
+- S = W × 60 and E = S − (R − now), the seconds of the window that have passed. If E ≤ 0 (the reset is
+  more than a whole window away), all four are null.
+- e = min(E ÷ S, 1). `elapsedPercent` = e × 100: where even use would put the bar.
+- The rate is only trusted once e ≥ 0.08 and `usedPercent` ≥ 1 (early in a window one burst projects
+  nonsense). Before that, `projectedPercent`, `limitAt`, and `pace` are null.
+- `projectedPercent` = `usedPercent` ÷ e: the percentage at the reset if the rate so far holds (it can
+  pass 100).
+- `pace` = `"over"` when `usedPercent` ÷ e ≥ 100 (on course to run out before the reset), else `"ok"`.
+- `limitAt` = now + (100 − `usedPercent`) × (e × S) ÷ `usedPercent` seconds, as an ISO time, when
+  `usedPercent` is under 100 and that time is before R; else null.
+
+`elapsedPercent` and `projectedPercent` are rounded to one decimal (half away from zero). Windows without
+a length or a reset time (spend limits, extra usage, the Claude app's snapshot) have no pace. Pace uses
+the current time with the last reported percentage, so it assumes nothing was used since the plan was
+last observed (`observedAt`).
+
+In the text output a window with a pace adds it after the reset time: `5-hour 62% (resets 3:10 PM · runs
+out 1:40 PM)` when `limitAt` is set, else `Weekly 8% (resets Nov 14 · on pace for 30%)` with
+`projectedPercent` rounded to a whole number.
+
+### Limit alerts
+
+The Barista app (not the CLI) can notify you as a window fills. It looks at the limits each time it
+refreshes usage, when the **Limit alerts** setting is on (preference `limitAlerts`, default on) and
+notifications are allowed as for the weekly summary. It remembers, per **slot** (`<agent>|<window id>`),
+the window's reset time, the highest **level** already notified (0 to start), whether the window got
+**hot**, and its `<Who> <label>` (for the reset notice).
+
+The **running windows** are those of each available plan observed within the last hour that have a
+`windowMinutes`, a `resetsAt` after now, and are not `reset`. A running window is the **same window**
+as the one remembered for its slot unless its `resetsAt` is later than the remembered one by at least
+half the window (`windowMinutes` × 30 seconds): reset times can jitter by a second between reports.
+
+1. For each remembered slot whose reset time is at or before now, unless a running window is the same
+   window (its reset time was corrected to a moment later, so it hasn't reset): if it was hot and the
+   reset passed no more than an hour ago, notify **reset**. Then forget the slot.
+2. For each running window:
+   - If nothing is remembered for its slot, or it is not the same window, start at level 0, not hot.
+     Remember the current `resetsAt` either way.
+   - Its level is 100 when `usedPercent` ≥ 99.5; else 95 when ≥ 95; else 80 when ≥ 80; else 1 when
+     `usedPercent` ≥ 40, `pace` is `over`, and `limitAt` is set; else 0.
+   - If its level is above the remembered level, notify for that level (once, so a jump from 70% to
+     96% sends only the 95 notice) and remember it.
+   - It is hot once `usedPercent` ≥ 90.
+
+Notifications use `<Who>`: `Claude` for `claude`, `ChatGPT` for `codex`, else the plan's name; `<label>`,
+the window's label; `<N>`, `usedPercent` rounded to a whole number; and times written as `at 3:10 PM`
+when under 24 hours away, else as a date (`on Nov 14`):
+
+| Level | Title | Body |
+| --- | --- | --- |
+| 1 | `<Who> <label> limit is running hot` | `<N>% used. At this pace it runs out <limitAt>, before it resets <resetsAt>.` |
+| 80, 95 | `<Who> <label> limit: <N>% used` | `At this pace it runs out <limitAt>. It resets <resetsAt>.` when `limitAt` is set, else `It resets <resetsAt>.` |
+| 100 | `<Who> <label> limit reached` | `It resets <resetsAt>.` |
+| reset | `<Who> <label> limit reset` | `A fresh window has started.` |
+
+Clicking one opens Usage & Limits (Mac), or the panel's usage view (Windows). On Linux the limits are in
+the tray menu, which a notification can't open, so the notice has no button.
 
 **Installing the status line.** `barista statusline install|uninstall|status [--settings PATH]` edits
 `~/.claude/settings.json` (or PATH), preserving everything else, with the same backup and
@@ -255,10 +368,12 @@ JSON (keys sorted, like every Barista reply):
     {"agent": "claude", "name": "Claude plan", "available": true, "source": "Claude Code",
      "observedAt": "…", "plan": null, "credits": null,
      "windows": [{"id": "five_hour", "label": "5-hour", "windowMinutes": 300, "usedPercent": 23.5,
-                  "resetsAt": "…", "reset": false}]},
+                  "resetsAt": "…", "reset": false, "elapsedPercent": 50, "projectedPercent": 47,
+                  "limitAt": null, "pace": "ok"}]},
     {"agent": "codex", "name": "ChatGPT plan", "available": true, "source": "Codex",
      "observedAt": "…", "plan": "prolite", "credits": {"balance": "75000.0000000000", "unlimited": false},
-     "windows": [{"id": "primary", "label": "Weekly", "windowMinutes": 10080, "usedPercent": 6, "resetsAt": "…", "reset": false}]},
+     "windows": [{"id": "primary", "label": "Weekly", "windowMinutes": 10080, "usedPercent": 6, "resetsAt": "…", "reset": false,
+                  "elapsedPercent": null, "projectedPercent": null, "limitAt": null, "pace": null}]},
     {"agent": "cursor", "name": "Cursor", "available": false, "source": null, "observedAt": null,
      "plan": null, "credits": null, "windows": []}
   ],
@@ -279,10 +394,13 @@ JSON (keys sorted, like every Barista reply):
 ```
 
 - `limits` always lists `claude`, `codex`, `cursor` in that order. `available` is false when nothing has
-  been observed (then `source`, `observedAt` are null and `windows` empty). Claude `source` is `Claude Code`
-  or `Claude app`; window ids are `five_hour`, `seven_day`, `spend_limit` (status line) or `five_hour`,
-  `seven_day` (app); `spend_limit` adds `usedUSD`, `limitUSD`, `period` when present. `resetsAt` is ISO or
-  null. Codex window ids are `primary`, `secondary`. `credits` is null unless reported.
+  been observed (then `source`, `observedAt` are null and `windows` empty). Claude `source` is `Claude
+  account`, `Claude Code`, or `Claude app`; window ids are `five_hour`, `seven_day`, `spend_limit` (status
+  line) or `five_hour`, `seven_day` (app); `spend_limit` adds `usedUSD`, `limitUSD`, `period` when present.
+  `resetsAt` is ISO or null. Codex `source` is `ChatGPT account` or `Codex`; its window ids are `primary`,
+  `secondary`. `credits` is null unless reported. `plan` is the plan's name when known (`Max 5x`,
+  `prolite`), else null. Every window has `elapsedPercent`, `projectedPercent`, `limitAt`, and `pace`
+  (see Pace), null when unknown.
 - `agents` always lists `claude`, `codex`, `cursor` in that order; `models` is sorted by `totalTokens`
   descending, then `turns` descending, then name.
 - `cacheWriteTokens` = 5-minute + 1-hour writes. `totalTokens` = input + output + cache read + cache write.
@@ -322,7 +440,9 @@ most 10, then `  … and N more`): `  app           19m active · 2 sessions · 
 padded to the longest shown, at most 24 characters; token and cost parts left out when it has no tokens;
 `Cursor` turns as `2 turns` before the tokens when it has any).
 
-The MCP tool `barista_usage` (optional `period`, default `week`) returns the same JSON, limits included.
+The MCP tool `barista_usage` (optional `period`, default `week`) returns the same JSON, limits and pace
+included, so an agent can check how much of a plan is left, and whether it is on course to run out,
+before starting a large job.
 
 ## Visual report
 

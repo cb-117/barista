@@ -13,6 +13,35 @@ public struct LimitWindow: Sendable, Equatable {
     public var usedUSD: Double?
     public var limitUSD: Double?
     public var period: String?
+    /// Pace (docs/USAGE.md, "Pace"); each nil when unknown.
+    /// How much of the window has passed: where even use would put the bar.
+    public var elapsedPercent: Double?
+    /// The percentage at the reset if the rate so far holds.
+    public var projectedPercent: Double?
+    /// When the window runs out at this rate, if that is before it resets.
+    public var limitAt: Date?
+    /// "over" when on course to run out before the reset, else "ok".
+    public var pace: String?
+
+    /// Fills in the pace fields from the time the window has left.
+    mutating func applyPace(now: Date) {
+        guard let minutes = windowMinutes, minutes > 0, let resetsAt, !reset else { return }
+        let span = Double(minutes) * 60
+        let elapsed = span - resetsAt.timeIntervalSince(now)
+        guard elapsed > 0 else { return }
+        let fraction = min(elapsed / span, 1)
+        let round1 = { (value: Double) in (value * 10).rounded() / 10 }
+        elapsedPercent = round1(fraction * 100)
+        // Early in a window one burst projects nonsense.
+        guard fraction >= 0.08, usedPercent >= 1 else { return }
+        let projected = usedPercent / fraction
+        projectedPercent = round1(projected)
+        pace = projected >= 100 ? "over" : "ok"
+        if usedPercent < 100 {
+            let hit = now.addingTimeInterval((100 - usedPercent) * (fraction * span) / usedPercent)
+            if hit < resetsAt { limitAt = hit }
+        }
+    }
 }
 
 public struct PlanCredits: Sendable, Equatable {
@@ -25,7 +54,7 @@ public struct PlanLimits: Sendable, Equatable {
     public let name: String
     public let source: String?
     public let observedAt: Date?
-    public let plan: String?
+    public var plan: String?
     public let credits: PlanCredits?
     public let windows: [LimitWindow]
     public var available: Bool { observedAt != nil }
@@ -44,8 +73,10 @@ public struct PlanLimits: Sendable, Equatable {
     /// A window whose reset time has passed reports 0% used.
     public static func window(id: String, minutes: Int?, usedPercent: Double, resetsAt: Date?, now: Date, label: String? = nil) -> LimitWindow {
         let reset = resetsAt.map { $0 <= now } ?? false
-        return LimitWindow(id: id, label: label ?? Self.label(minutes: minutes), windowMinutes: minutes,
-                           usedPercent: reset ? 0 : usedPercent, resetsAt: resetsAt, reset: reset)
+        var window = LimitWindow(id: id, label: label ?? Self.label(minutes: minutes), windowMinutes: minutes,
+                                 usedPercent: reset ? 0 : usedPercent, resetsAt: resetsAt, reset: reset)
+        window.applyPace(now: now)
+        return window
     }
 
     static func unavailable(_ agent: UsageAgent, name: String) -> PlanLimits {
@@ -119,8 +150,11 @@ public enum ClaudeLimits {
 
     static func current(now: Date) -> PlanLimits {
         let candidates = [ClaudeAccount.current(now: now), fromStatusLine(now: now), fromApp(now: now)].compactMap { $0 }
-        return candidates.max { ($0.observedAt ?? .distantPast) < ($1.observedAt ?? .distantPast) }
-            ?? .unavailable(.claude, name: "Claude plan")
+        guard var newest = candidates.max(by: { ($0.observedAt ?? .distantPast) < ($1.observedAt ?? .distantPast) }) else {
+            return .unavailable(.claude, name: "Claude plan")
+        }
+        newest.plan = ClaudeProfile.planName()
+        return newest
     }
 
     private static func fromStatusLine(now: Date) -> PlanLimits? {
@@ -282,14 +316,6 @@ public enum ClaudeAccount {
         init(_ credential: Credential) { self.credential = credential }
     }
 
-    /// Refuses every redirect, so a redirect is a failure and never replaces the saved result.
-    private final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
-        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                        newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-            completionHandler(nil)
-        }
-    }
-
     /// Asks Anthropic for the account's current limits and saves them. Keeps the old result on any failure.
     public static func refresh(interactive: Bool = false) async -> Outcome {
         let token: String
@@ -305,21 +331,12 @@ public enum ClaudeAccount {
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        configuration.urlCache = nil
-        let session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        let data: Data, response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            return .unreachable((error as? URLError).map { "\($0.code.rawValue)" } ?? "network error")
+        let usage: [String: Any]
+        switch await AccountRequest.json(request) {
+        case .success(let object): usage = object
+        case .failure(.unreachable(let detail)): return .unreachable(detail)
+        case .failure(.status(let status)): return .httpStatus(status)
         }
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200 else { return .httpStatus(status) }
-        guard let usage = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return .httpStatus(status) }
         do {
             let object: [String: Any] = ["observedAt": UsageStore.formatDate(Date()), "usage": usage]
             let saved = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
@@ -387,5 +404,217 @@ public enum ClaudeAccount {
             windows.append(extra)
         }
         return windows
+    }
+}
+
+/// Barista's own requests: one that carries a saved login to the service that issued it, and the
+/// active-user ping. No redirects are followed (a redirect is a failure, so a header never reaches
+/// another host), and no cookies or cache are kept.
+enum AccountRequest {
+    enum Failure: Error {
+        case unreachable(String)
+        case status(Int)
+    }
+
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
+
+    /// A session for one request; invalidate it afterwards.
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.tlsMinimumSupportedProtocolVersion = .TLSv12
+        return URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+    }
+
+    /// The response's JSON object, or why there isn't one. Anything but HTTP 200 with a JSON object fails.
+    static func json(_ request: URLRequest) async -> Result<[String: Any], Failure> {
+        let session = session()
+        defer { session.finishTasksAndInvalidate() }
+        let data: Data, response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            return .failure(.unreachable((error as? URLError).map { "\($0.code.rawValue)" } ?? "network error"))
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .failure(.status(status))
+        }
+        return .success(object)
+    }
+}
+
+/// The Claude plan's name, from the profile Claude Code keeps on this computer. No network request.
+enum ClaudeProfile {
+    static var file: URL {
+        if let configured = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], !configured.isEmpty,
+           let first = configured.split(separator: ",").first {
+            return URL(fileURLWithPath: String(first).trimmingCharacters(in: .whitespaces)).appendingPathComponent(".claude.json")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+    }
+
+    static func planName() -> String? {
+        guard let data = try? Data(contentsOf: file),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let account = object["oauthAccount"] as? [String: Any] else { return nil }
+        let text = { (key: String) -> String? in (account[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+        return planName(type: text("organizationType") ?? "", tier: text("userRateLimitTier") ?? text("organizationRateLimitTier") ?? "")
+    }
+
+    /// "Max 5x", "Team", "Pro"…, or nil when the profile doesn't say.
+    static func planName(type: String, tier: String) -> String? {
+        if type.contains("enterprise") { return "Enterprise" }
+        if type.contains("team") { return "Team" }
+        if tier.contains("max_20x") { return "Max 20x" }
+        if tier.contains("max_5x") { return "Max 5x" }
+        if tier.contains("max") || type.contains("max") { return "Max" }
+        if tier.contains("pro") || type.contains("pro") { return "Pro" }
+        return nil
+    }
+}
+
+/// ChatGPT plan limits from the user's ChatGPT account, as Codex's own /status shows them.
+/// The Barista app fetches in the background (at most every 5 minutes); `barista limits refresh --agent codex`
+/// is the only other fetch. Uses Codex's saved login read-only: never refreshed, written, or logged.
+public enum CodexAccount {
+    static var resultFile: URL { UsageLocations.dataDirectory.appendingPathComponent("codex-account-limits.json") }
+    static let defaultEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    /// Results older than this are not shown.
+    static let maxAge: TimeInterval = 3600
+
+    /// The test login file, if one is configured.
+    private static var testAuth: String? {
+        guard let path = ProcessInfo.processInfo.environment["BARISTA_CODEX_AUTH"], !path.isEmpty else { return nil }
+        return path
+    }
+    static var authFile: URL {
+        testAuth.map { URL(fileURLWithPath: $0) } ?? UsageLocations.codexHome.appendingPathComponent("auth.json")
+    }
+    /// The endpoint override applies only with a test login file, so nothing can redirect a real login.
+    static var endpoint: URL {
+        guard testAuth != nil, let override = ProcessInfo.processInfo.environment["BARISTA_CODEX_USAGE_URL"],
+              !override.isEmpty, let url = URL(string: override) else { return defaultEndpoint }
+        return url
+    }
+
+    public enum Outcome: Sendable, Equatable {
+        case updated, noLogin, loginExpired
+        case unreachable(String)
+        case httpStatus(Int)
+        public var ok: Bool { self == .updated }
+        public var message: String {
+            switch self {
+            case .updated: "ChatGPT account limits updated."
+            case .noLogin: "No Codex login found."
+            case .loginExpired: "Codex\u{2019}s login has expired. Open Codex to renew it."
+            case .unreachable(let detail): "Couldn\u{2019}t reach ChatGPT (\(detail))."
+            case .httpStatus(let status): "ChatGPT replied \(status)."
+            }
+        }
+    }
+
+    enum Credential: Equatable {
+        case token(String, account: String?)
+        case noLogin, expired
+    }
+
+    /// Reads Codex's login. An API-key login has no ChatGPT plan to ask about.
+    static func credential(now: Date = Date()) -> Credential {
+        guard let data = try? Data(contentsOf: authFile),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let tokens = object["tokens"] as? [String: Any],
+              let token = tokens["access_token"] as? String, headerSafe(token) else { return .noLogin }
+        if let expires = expiry(ofJWT: token), expires.timeIntervalSince(now) <= 60 { return .expired }
+        let account = (tokens["account_id"] as? String).flatMap { headerSafe($0) ? $0 : nil }
+        return .token(token, account: account)
+    }
+
+    /// A value that can go in a request header: not empty, and no control characters (nothing that
+    /// could start another header line).
+    static func headerSafe(_ value: String) -> Bool {
+        !value.isEmpty && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
+
+    /// A JWT's `exp`, read locally from its payload; nil when the token isn't a JWT with one.
+    static func expiry(ofJWT token: String) -> Date? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 2 else { return nil }
+        var payload = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload),
+              let claims = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let exp = (claims["exp"] as? NSNumber)?.doubleValue else { return nil }
+        return Date(timeIntervalSince1970: exp)
+    }
+
+    /// Asks ChatGPT for the account's current limits and saves them. Keeps the old result on any failure.
+    public static func refresh() async -> Outcome {
+        let token: String, account: String?
+        switch credential() {
+        case .token(let value, let id): (token, account) = (value, id)
+        case .noLogin: return .noLogin
+        case .expired: return .loginExpired
+        }
+        var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let account { request.setValue(account, forHTTPHeaderField: "ChatGPT-Account-Id") }
+        request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let response: [String: Any]
+        switch await AccountRequest.json(request) {
+        case .success(let object): response = object
+        case .failure(.unreachable(let detail)): return .unreachable(detail)
+        case .failure(.status(let status)): return .httpStatus(status)
+        }
+        // The response also carries the account's email and IDs. Only the limits are kept.
+        var usage: [String: Any] = [:]
+        for key in ["plan_type", "rate_limit", "credits"] {
+            if let value = response[key] { usage[key] = value }
+        }
+        do {
+            let object: [String: Any] = ["observedAt": UsageStore.formatDate(Date()), "usage": usage]
+            let saved = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            try FileManager.default.createDirectory(at: UsageLocations.dataDirectory, withIntermediateDirectories: true)
+            try saved.write(to: resultFile, options: .atomic)
+        } catch {
+            return .unreachable("couldn\u{2019}t save the result")
+        }
+        return .updated
+    }
+
+    /// Turning the setting off: forget the saved result.
+    public static func forget() {
+        try? FileManager.default.removeItem(at: resultFile)
+    }
+
+    static func current(now: Date) -> PlanLimits? {
+        guard let data = try? Data(contentsOf: resultFile),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let observed = (object["observedAt"] as? String).flatMap(UsageStore.parseDate),
+              let usage = object["usage"] as? [String: Any],
+              now.timeIntervalSince(observed) <= maxAge else { return nil }
+        let rateLimit = usage["rate_limit"] as? [String: Any]
+        var windows: [LimitWindow] = []
+        for (id, key) in [("primary", "primary_window"), ("secondary", "secondary_window")] {
+            guard let raw = rateLimit?[key] as? [String: Any], let used = (raw["used_percent"] as? NSNumber)?.doubleValue else { continue }
+            let seconds = (raw["limit_window_seconds"] as? NSNumber)?.doubleValue ?? 0
+            let minutes = Int((seconds / 60).rounded())
+            windows.append(PlanLimits.window(id: id, minutes: minutes > 0 ? minutes : nil, usedPercent: used,
+                                             resetsAt: (raw["reset_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }, now: now))
+        }
+        var credits: PlanCredits?
+        if let raw = usage["credits"] as? [String: Any] {
+            credits = PlanCredits(balance: raw["balance"] as? String, unlimited: raw["unlimited"] as? Bool ?? false)
+        }
+        return PlanLimits(agent: .codex, name: "ChatGPT plan", source: "ChatGPT account", observedAt: observed,
+                          plan: usage["plan_type"] as? String, credits: credits, windows: windows)
     }
 }

@@ -18,6 +18,8 @@ jobs:
         run: python3 Tests/agent_integration.py
       - name: Usage tracking and Cursor hooks
         run: python3 Tests/usage_check.py --bin-dir .build/debug
+      - name: Website worker (active-user count)
+        run: node Tests/worker_check.mjs
       - name: App bundle
         run: zsh scripts/build-app.sh --universal
       - name: Zip app

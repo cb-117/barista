@@ -214,17 +214,24 @@ pub fn build(app: &Shared) -> Model {
         "Weekly usage summary on Mondays",
         prefs.weekly_summary,
     ));
+    settings.push(check("toggle:limit-alerts", "Limit alerts", prefs.limit_alerts));
     settings.push(check("toggle:updates", "Check for updates daily", prefs.checks_for_updates));
     settings.push(item(
         "check-updates",
         state.update_status.as_deref().unwrap_or("Check for updates now"),
     ));
+    settings.push(check("toggle:active-count", "Help count active users", prefs.share_active_count));
     settings.push(Entry::Separator);
     settings.push(check("toggle:agents", "Local agent access (CLI, MCP, hooks)", prefs.agent_access));
     settings.push(check(
         "toggle:claude-account",
         "Show Claude plan limits from your Claude account",
         prefs.claude_account_limits,
+    ));
+    settings.push(check(
+        "toggle:codex-account",
+        "Show ChatGPT plan limits from your ChatGPT account",
+        prefs.codex_account_limits,
     ));
     // The Claude and ChatGPT desktop apps have no hooks: Barista watches how busy they are.
     // Neither exists for Linux.
@@ -370,9 +377,17 @@ pub fn handle(app: &Shared, id: &str) -> bool {
                 state.prefs.weekly_summary = !state.prefs.weekly_summary;
                 state.save();
             }
+            "limit-alerts" => {
+                state.prefs.limit_alerts = !state.prefs.limit_alerts;
+                state.save();
+            }
             "updates" => {
                 let value = !state.prefs.checks_for_updates;
                 state.set_checks_for_updates(value)
+            }
+            "active-count" => {
+                state.prefs.share_active_count = !state.prefs.share_active_count;
+                state.save();
             }
             "agents" => {
                 let value = !state.prefs.agent_access;
@@ -381,7 +396,13 @@ pub fn handle(app: &Shared, id: &str) -> bool {
             "claude-account" => {
                 let value = !state.prefs.claude_account_limits;
                 drop(state);
-                crate::set_claude_account_limits(app, value);
+                crate::set_account_limits(app, crate::LimitsAccount::Claude, value);
+                return false;
+            }
+            "codex-account" => {
+                let value = !state.prefs.codex_account_limits;
+                drop(state);
+                crate::set_account_limits(app, crate::LimitsAccount::ChatGpt, value);
                 return false;
             }
             "watch-cowork" => {
@@ -765,12 +786,15 @@ pub fn panel_state(app: &Shared) -> serde_json::Value {
             "batteryThreshold": prefs.battery_threshold,
             "notifications": prefs.notifications_enabled,
             "checksForUpdates": prefs.checks_for_updates,
+            "shareActiveCount": prefs.share_active_count,
             "agentAccess": prefs.agent_access,
             "claudeAccountLimits": prefs.claude_account_limits,
+            "codexAccountLimits": prefs.codex_account_limits,
             "watchCowork": prefs.watch_cowork,
             "watchChatgpt": prefs.watch_chatgpt,
             "launchAtLogin": state.launch_at_login,
             "weeklySummary": prefs.weekly_summary,
+            "limitAlerts": prefs.limit_alerts,
         },
         "week": state.usage_week,
         "agents": agents,

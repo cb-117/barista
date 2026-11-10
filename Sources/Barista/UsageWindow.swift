@@ -24,7 +24,7 @@ struct UsageView: View {
                     else { Button("Refresh") { runtime.refreshUsage(force: true) }.buttonStyle(.link) }
                 }
             } footer: {
-                Text("As reported by the apps themselves. Claude Code, Cowork, and Claude chat share your Claude plan; Codex and the ChatGPT app share your ChatGPT plan. Claude’s limits update each time Claude Code replies.")
+                Text("As reported by the apps themselves. Claude Code, Cowork, and Claude chat share your Claude plan; Codex and the ChatGPT app share your ChatGPT plan. The mark on each bar is where even use would be by now.")
             }
 
             Section {
@@ -70,16 +70,23 @@ struct UsageView: View {
             }
             if plan.available {
                 ForEach(plan.windows, id: \.id) { window in
-                    VStack(alignment: .leading, spacing: 2) {
-                        ProgressView(value: min(100, max(0, window.usedPercent)), total: 100)
-                            .tint(window.usedPercent >= 80 ? .orange : CoffeeTheme.accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        LimitBar(used: window.usedPercent, marker: window.elapsedPercent, tint: tint(window))
+                            .help(window.elapsedPercent == nil ? "" : "The mark is where even use would be by now.")
                         HStack {
                             Text("\(window.label) · \(Int(window.usedPercent.rounded()))% used")
                             Spacer()
-                            Text(resetText(window))
+                            if let pace = paceText(window) {
+                                Text(pace).foregroundColor(window.pace == "over" ? .orange : .secondary)
+                                    + Text(resetText(window).isEmpty ? "" : " · " + resetText(window))
+                            } else {
+                                Text(resetText(window))
+                            }
                         }
                         .font(.caption).foregroundStyle(.secondary)
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(spokenText(window))
                 }
                 if let details = planDetails(plan) {
                     Text(details).font(.caption).foregroundStyle(.secondary)
@@ -112,6 +119,24 @@ struct UsageView: View {
             ? "Resets \(resets.formatted(date: .omitted, time: .shortened))"
             : "Resets \(resets.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))"
     }
+    /// Orange once a window is nearly used or on course to run out before it resets; red when almost gone.
+    private func tint(_ window: LimitWindow) -> Color {
+        if window.usedPercent >= 95 { return .red }
+        return window.usedPercent >= 80 || window.pace == "over" ? .orange : CoffeeTheme.accent
+    }
+    /// "Runs out at 1:40 PM", or "On pace for 48%" when it will last until the reset.
+    private func paceText(_ window: LimitWindow) -> String? {
+        if let limitAt = window.limitAt { return "Runs out \(LimitAlerts.timeText(limitAt, now: Date()))" }
+        guard window.usedPercent < 99.5, let projected = window.projectedPercent else { return nil }
+        return "On pace for \(Int(projected.rounded()))%"
+    }
+    /// One sentence for VoiceOver: "Session, 62 percent used, runs out at 1:40 PM, resets 3:10 PM".
+    private func spokenText(_ window: LimitWindow) -> String {
+        var parts = [window.label, "\(Int(window.usedPercent.rounded())) percent used"]
+        if let pace = paceText(window) { parts.append(pace) }
+        if !resetText(window).isEmpty { parts.append(resetText(window)) }
+        return parts.joined(separator: ", ")
+    }
     private func planDetails(_ plan: PlanLimits) -> String? {
         var parts: [String] = []
         if let name = plan.plan { parts.append("Plan: \(name)") }
@@ -131,7 +156,9 @@ struct UsageView: View {
         case .claude: runtime.claudeAccountLimits
             ? "No data yet. Barista reads your Claude limits from your Claude account every few minutes (and from Claude Code’s status line in a terminal)."
             : "No data yet. Turn on “Show Claude plan limits from your Claude account” in Settings → Agents, or use Claude Code in a terminal with Barista’s status line."
-        case .codex: "No data yet. Appears after your next Codex or ChatGPT-app task."
+        case .codex: runtime.codexAccountLimits
+            ? "No data yet. Barista reads your ChatGPT limits from your ChatGPT account every few minutes once you’re signed in to Codex."
+            : "No data yet. Appears after your next Codex or ChatGPT-app task."
         case .cursor: "Not available on this computer. Cursor doesn’t share plan limits with other apps."
         }
     }
@@ -195,3 +222,27 @@ struct UsageView: View {
     }
 }
 
+/// A limit's bar: how much is used, with a mark where even use would be by now.
+private struct LimitBar: View {
+    let used: Double
+    let marker: Double?
+    let tint: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let fill = width * min(100, max(0, used)) / 100
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.12))
+                if used > 0 { Capsule().fill(tint).frame(width: max(geometry.size.height, fill)) }
+                if let marker {
+                    Capsule().fill(Color.primary.opacity(0.6))
+                        .frame(width: 2, height: geometry.size.height + 5)
+                        .offset(x: min(width - 2, max(0, width * min(100, max(0, marker)) / 100 - 1)))
+                }
+            }
+        }
+        .frame(height: 6)
+        .padding(.vertical, 3)
+    }
+}

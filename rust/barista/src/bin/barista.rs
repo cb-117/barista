@@ -301,14 +301,22 @@ fn run(arguments: Vec<String>) -> Result<i32> {
             return Ok(0);
         }
         "limits" => {
-            // `barista limits refresh`: asks Anthropic for your Claude account's limits once.
-            options.validate(&[], &[], 1)?;
+            // `barista limits refresh`: asks your Claude account (or, with `--agent codex`, your
+            // ChatGPT account) for its limits once.
+            options.validate(&["--agent"], &[], 1)?;
             if options.positionals[0] != "refresh" {
-                return Err(CoffeeError::msg("Use: barista limits refresh"));
+                return Err(CoffeeError::msg("Use: barista limits refresh [--agent claude|codex]"));
             }
-            let (ok, message) = match barista_core::claude_account::refresh() {
-                Ok(()) => (true, barista_core::claude_account::UPDATED_MESSAGE.to_string()),
-                Err(skipped) => (false, skipped.message()),
+            let (ok, message) = match options.values.get("--agent").map_or("claude", String::as_str) {
+                "claude" => match barista_core::claude_account::refresh() {
+                    Ok(()) => (true, barista_core::claude_account::UPDATED_MESSAGE.to_string()),
+                    Err(skipped) => (false, skipped.message()),
+                },
+                "codex" => match barista_core::codex_account::refresh() {
+                    Ok(()) => (true, barista_core::codex_account::UPDATED_MESSAGE.to_string()),
+                    Err(skipped) => (false, skipped.message()),
+                },
+                _ => return Err(CoffeeError::msg("--agent must be claude or codex.")),
             };
             if options.flags.contains("--json") {
                 println!("{}", to_json(&serde_json::json!({"ok": ok, "message": message})));
@@ -770,7 +778,7 @@ barista run [--name \"Build\"] [--display] [--max-awake 28800] -- COMMAND [ARG .
 barista usage [--period today|week|month|all] [--json]
 barista report [--period today|week|month|all] [--output PATH] [--no-open] [--json]
 barista statusline [install|uninstall|status] [--settings PATH]
-barista limits refresh [--json]
+barista limits refresh [--agent claude|codex] [--json]
 barista mcp
 barista hooks install|uninstall|status [--agent claude|codex|cursor] [--settings PATH]
 barista setup [--agent claude|codex|cursor]
@@ -791,9 +799,11 @@ usage reports sessions and tokens for Claude Code and Codex (from their local lo
 Cursor turns (recorded by its hooks) for today, this week, and this month, with costs
 estimated at API list prices. --period shows one period by model and project. It starts with plan
 limits: Claude's (from your Claude account, which the Barista app checks every few minutes using Claude
-Code's saved login, or Claude Code's status line) and ChatGPT's (from Codex's logs). report writes
-the same numbers, with active time per project, as a web page and opens it. limits refresh
-checks your Claude account once. statusline is Claude Code's status line command that records
+Code's saved login, or Claude Code's status line) and ChatGPT's (from your ChatGPT account, checked
+the same way with Codex's saved login, or Codex's logs), each with its pace: when it runs out at
+the rate so far, or where it is heading by its reset. report writes the same numbers, with active
+time per project, as a web page and opens it. limits refresh checks your Claude account once, or
+your ChatGPT account with --agent codex. statusline is Claude Code's status line command that records
 Claude's limits; setup installs it, keeping any status line you already had working behind it.
 
 Global options: --json, --no-launch, --socket PATH. Barista (the coffee cup in the {place})

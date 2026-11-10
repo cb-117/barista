@@ -68,7 +68,7 @@ The Claude desktop app (Cowork, and anything else it runs) and the ChatGPT deskt
 
 ## Usage
 
-`barista usage [--period today|week|month|all] [--json]` and the MCP tool `barista_usage` (`period`, default `week`) report sessions, requests, and tokens per agent and model, with costs estimated at API list prices, plus active time, sessions, tokens, models, and cost per project (`projects` in each period). `barista report` writes the same data as a visual HTML report and opens it in the browser (`--no-open` to only write it). They read local logs in the calling process and never need the app. The JSON shape and counting rules are in [USAGE.md](USAGE.md). Treat costs as estimates, not a bill.
+`barista usage [--period today|week|month|all] [--json]` and the MCP tool `barista_usage` (`period`, default `week`) report sessions, requests, and tokens per agent and model, with costs estimated at API list prices, plus active time, sessions, tokens, models, and cost per project (`projects` in each period). They also report each plan’s limits (`limits`): for every window, the percent used, when it resets, and its pace: `projectedPercent` (where it will be at the reset at this rate), `pace` (`over` when it is on course to run out first), and `limitAt` (when it runs out). Before a large job (many subagents, a long refactor), check that the plan has room; if a window is `over` or nearly used, do less at once or wait for `resetsAt`. `barista limits refresh [--agent claude|codex]` fetches a plan’s limits from the user’s account now. `barista report` writes the same data as a visual HTML report and opens it in the browser (`--no-open` to only write it). They read local logs in the calling process and never need the app. The JSON shape and counting rules are in [USAGE.md](USAGE.md). Treat costs as estimates, not a bill.
 
 ## MCP setup
 
@@ -97,7 +97,7 @@ Tools:
 | `barista_extend` | Add `seconds` to a live session within its original hard limit. |
 | `barista_release` | Release your own ID. Repeated release is safe. |
 | `barista_history` | Read the last 20 local completion summaries. |
-| `barista_usage` | Sessions, requests, and tokens per agent and model for `today`, `week` (default), `month`, or `all`, with estimated API-price costs. |
+| `barista_usage` | Sessions, requests, and tokens per agent and model for `today`, `week` (default), `month`, or `all`, with estimated API-price costs, and each plan’s limits with their pace. |
 
 **Agent behavior:** acquire only for active work that needs the Mac awake. Keep the returned ID. Heartbeat well before expiry (for example every 60 seconds for a 300-second lease). Release on success, failure, cancellation, or when waiting for user input. Do not stop another owner’s session. If your lease disappears because the user stopped it or battery protection ended it, do not automatically reacquire to override that choice. If work legitimately needs a new session, let the user initiate or authorize that work.
 

@@ -116,6 +116,8 @@ pub struct Panel {
     anchor: Cell<Option<Anchor>>,
     /// The last state posted to the page, so an unchanged one isn't sent again.
     posted: RefCell<String>,
+    /// A view ("usage") the page should switch to, sent with the next state once the page is ready.
+    go: Cell<Option<&'static str>>,
 }
 
 /// Light or dark, from the Windows app theme, so the window's first frame matches the page.
@@ -270,6 +272,7 @@ impl Panel {
                 height: Cell::new(HEIGHT),
                 anchor: Cell::new(None),
                 posted: RefCell::new(String::new()),
+                go: Cell::new(None),
             })
         }
     }
@@ -344,12 +347,23 @@ impl Panel {
         }
     }
 
+    /// Asks the page to show one of its views ("main", "usage", "settings") when it next gets state.
+    pub fn open_view(&self, view: &'static str) {
+        self.go.set(Some(view));
+    }
+
     /// Sends the page Barista's state, if it changed since the last one sent.
     pub fn post(&self, state: &serde_json::Value) {
         let shared = self.shared.borrow();
         let (Some(view), true) = (shared.view.as_ref(), shared.ready) else {
             return;
         };
+        if let Some(go) = self.go.take() {
+            let message = wide(&serde_json::json!({ "go": go }).to_string());
+            unsafe {
+                let _ = view.webview.PostWebMessageAsJson(PCWSTR(message.as_ptr()));
+            }
+        }
         let json = state.to_string();
         if *self.posted.borrow() == json {
             return;
@@ -736,6 +750,7 @@ mod tests {
         assert!(page_may_send("panel:height:420"));
         assert!(page_may_send("usage-report:week"));
         assert!(!page_may_send("panel:failed"));
+        assert!(!page_may_send("panel:usage"));
         assert!(!page_may_send("panel:process-failed"));
         assert!(!page_may_send("open-log"));
     }
