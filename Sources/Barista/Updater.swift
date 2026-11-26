@@ -34,7 +34,8 @@ enum Updater {
     }
 
     /// Prepares the new version, then quits so the helper can swap it in. Only returns on failure.
-    static func install(_ update: AvailableUpdate, shouldInstall: () -> Bool, beforeQuit: () -> Void) async throws {
+    /// `background` reopens it without the panel, for an update nobody clicked.
+    static func install(_ update: AvailableUpdate, background: Bool = false, shouldInstall: () -> Bool, beforeQuit: () -> Void) async throws {
         guard let archiveURL = update.archiveURL, let signatureURL = update.signatureURL else {
             throw Failure(message: "This release can’t be installed automatically. Download it instead.", offerDownload: true)
         }
@@ -70,7 +71,7 @@ enum Updater {
         // Cleanup happens only once a working app is back at the target path; if even restoring the
         // old version fails, the work folder (holding it) is left in place rather than deleted.
         let script = """
-        pid="$1"; target="$2"; fresh="$3"; work="$4"
+        pid="$1"; target="$2"; fresh="$3"; work="$4"; background="$5"
         while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
         if mv "$target" "$work/previous.app"; then
           if ! mv "$fresh" "$target"; then
@@ -78,11 +79,11 @@ enum Updater {
           fi
         fi
         # Keep the previous version (in the work folder) unless the app at the target path opened.
-        open "$target" && rm -rf "$work"
+        if [ "$background" = 1 ]; then open "$target" --args --background; else open "$target"; fi && rm -rf "$work"
         """
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        helper.arguments = ["-c", script, "barista-update", String(ProcessInfo.processInfo.processIdentifier), target.path, fresh.path, work.path]
+        helper.arguments = ["-c", script, "barista-update", String(ProcessInfo.processInfo.processIdentifier), target.path, fresh.path, work.path, background ? "1" : "0"]
         helper.standardInput = FileHandle.nullDevice
         helper.standardOutput = FileHandle.nullDevice
         helper.standardError = FileHandle.nullDevice

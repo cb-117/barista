@@ -840,7 +840,7 @@ final class AppRuntime: ObservableObject {
         updateStatus = "Updating to \(update.version)…"
         Task { @MainActor in
             do {
-                try await Updater.install(update, shouldInstall: { !automatic || self.checksForUpdates }) {
+                try await Updater.install(update, background: automatic, shouldInstall: { !automatic || self.checksForUpdates }) {
                     self.prepareForUpdateRelaunch()
                 }
             } catch {
@@ -892,7 +892,8 @@ final class AppRuntime: ObservableObject {
                 availableUpdate = status == 200 ? UpdateCheck.newerRelease(in: data) : nil
                 let due = availableUpdate?.automaticInstallDue(enabled: checksForUpdates, now: now) == true
                 let next = availableUpdate?.installAfter.flatMap { $0 > now ? $0 : nil }
-                defaults.set(due ? now.addingTimeInterval(3600) : min(next ?? .distantFuture, now.addingTimeInterval(86400)), forKey: "nextUpdateCheck")
+                // Hourly retries only help when Barista can replace itself; otherwise check daily.
+                defaults.set(due && canInstallUpdate ? now.addingTimeInterval(3600) : min(next ?? .distantFuture, now.addingTimeInterval(86400)), forKey: "nextUpdateCheck")
                 if userInitiated {
                     updateStatus = availableUpdate.map { "Barista \($0.version) is available." } ?? "You’re up to date (\(BaristaVersion.current))."
                     if availableUpdate != nil { defaults.removeObject(forKey: "dismissedUpdate") }

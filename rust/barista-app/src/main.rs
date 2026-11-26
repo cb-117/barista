@@ -617,6 +617,11 @@ pub fn check_for_updates(app: &Shared, user_initiated: bool) {
             let result = windows_update::install(&app, &update);
             state = lock(&app);
             state.update_status = result.err().map(|e| format!("Couldn’t install Barista {}: {e}", update.version));
+            if state.update_status.is_some() {
+                // A declined prompt or unwritable folder won't fix itself within the hour.
+                state.prefs.next_update_check = Some(now() + 86400.0);
+                state.save();
+            }
         }
         state.checking_for_updates = false;
     });
@@ -737,15 +742,11 @@ fn main() {
     let path = options.serve.clone().unwrap_or_else(default_path);
     #[cfg(windows)]
     let resume = !ephemeral && std::env::args().any(|a| a == "--resume-update");
-    #[cfg(windows)]
-    if resume {
-        match windows_update::Handoff::read() {
-            Ok(saved) => saved.restore(&mut lock(&app)),
-            Err(_) => std::process::exit(1),
-        }
-    }
     let handler_app = app.clone();
     let handler: barista_core::control::Handler = Arc::new(move |request| lock(&handler_app).handle(request));
+    // Until an update's sessions are restored, requests wait rather than see none.
+    #[cfg(windows)]
+    let mut restoring = lock(&app);
     let bound = ControlServer::start(&path, handler.clone());
     #[cfg(windows)]
     let bound = {
@@ -767,6 +768,16 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Whichever copy serves takes the handoff, even one an agent launched mid-update.
+    #[cfg(windows)]
+    {
+        if !ephemeral {
+            if let Some(saved) = windows_update::Handoff::claim(&path) {
+                saved.restore(&mut restoring);
+            }
+        }
+        drop(restoring);
+    }
 
     // Every session decision is re-evaluated each second: expiry, process exit, battery.
     {

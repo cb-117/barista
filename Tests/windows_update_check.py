@@ -14,6 +14,11 @@ parser.add_argument('--setup', type=Path, required=True)
 parser.add_argument('--installed', type=Path, required=True)
 options = parser.parse_args()
 
+# The app finds its state with the Known Folders API, which ignores the LOCALAPPDATA override below.
+sid = subprocess.run(['whoami', '/user', '/fo', 'csv', '/nh'], capture_output=True, text=True,
+                     check=True).stdout.strip().split(',')[-1].strip('"')
+handoff = Path(os.environ['LOCALAPPDATA']) / 'Barista' / f'com.connorbescos.barista-{sid}' / 'update-handoff.json'
+
 with tempfile.TemporaryDirectory(prefix='Barista update ') as temp:
     root = Path(temp)
     portable = root / 'portable copy'
@@ -37,22 +42,25 @@ with tempfile.TemporaryDirectory(prefix='Barista update ') as temp:
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         lease = {'id': lease_id, 'title': 'Update integration', 'source': 'manual', 'startedAt': stamp,
                  'lastHeartbeat': stamp, 'keepDisplayAwake': False}
-        def start(leases):
-            process = subprocess.Popen([str(app), '--background', '--headless', '--resume-update'], stdin=subprocess.PIPE, env=env)
-            process.stdin.write(json.dumps({'saved_at': time.time(), 'sessions': leases, 'stop_token': token,
-                'activity': {}, 'leases': {}, 'stopped': [], 'burst': {}}).encode())
-            process.stdin.close()
-            return process
+        def start(leases, resume=True):
+            # What the previous tray writes before it exits; whichever copy binds the pipe claims it.
+            handoff.parent.mkdir(parents=True, exist_ok=True)
+            handoff.write_text(json.dumps({'saved_at': time.time(), 'sessions': leases, 'stop_token': token,
+                'activity': {}, 'leases': {}, 'stopped': [], 'burst': {}}))
+            flags = ['--resume-update'] if resume else []
+            return subprocess.Popen([str(app), '--background', '--headless', *flags], stdin=subprocess.DEVNULL, env=env)
         def status():
             for _ in range(60):
                 result = subprocess.run([str(cli), 'status', '--json', '--no-launch'], env=env, capture_output=True, timeout=10)
                 if result.returncode == 0:
                     state = json.loads(result.stdout)['state']
                     assert state['stopToken'] == token and state['sessions'][0]['id'] == lease_id, state
+                    assert not handoff.exists(), 'The serving copy left the handoff behind'
                     return state
                 time.sleep(.1)
             raise AssertionError('Barista did not resume the update session')
-        old = start([lease])
+        # A copy an agent hook launches mid-update, without --resume-update, still takes the handoff.
+        old = start([lease], resume=False)
         mcp = subprocess.Popen([str(cli), 'mcp', '--no-launch'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
         fresh = None
         try:

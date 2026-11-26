@@ -1,7 +1,9 @@
 //! Apply a verified Inno update to this installation. Setup replaces the binaries while the
-//! existing tray process serves requests, then the new process inherits its sessions over stdin.
-use crate::{lock, App, Shared};
+//! existing tray process serves requests, then the new process inherits its sessions from a private
+//! handoff file that whichever copy binds the control pipe first claims.
+use crate::{lock, platform, App, Shared};
 use barista_core::activity::{ActivityTracker, WatchedApp};
+use barista_core::control::{default_path, state_dir};
 use barista_core::update::{self, AvailableUpdate};
 use barista_core::{now, CoffeeLease};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -76,13 +78,27 @@ fn scope(folder: &Path) -> &'static str {
     "/PORTABLEUPDATE"
 }
 
+const HANDOFF_FILE: &str = "update-handoff.json";
+
+fn handoff_path(endpoint: &str) -> PathBuf {
+    state_dir(endpoint).join(HANDOFF_FILE)
+}
+
 pub(super) fn install(app: &Shared, update: &AvailableUpdate) -> Result<()> {
     let exe = barista_core::connection::current_executable().with_file_name("barista-app.exe");
+    if platform::is_development_build(&exe) {
+        return Err("Development builds don't update themselves.".into());
+    }
     let folder = exe.parent().ok_or("Cannot locate the installed app.")?;
     let installer = format!("Barista-Setup-{}.exe", update.version);
     let base = format!("https://github.com/cb-117/barista/releases/download/v{}", update.version);
     if update.download_url.as_deref() != Some(&format!("{base}/{installer}")) {
         return Err("This release has no supported Windows installer.".into());
+    }
+    let mode = scope(&fs::canonicalize(folder)?);
+    // All-users Setup elevates; anything else must be able to write here before downloading.
+    if mode != "/ALLUSERS" && tempfile::tempfile_in(folder).is_err() {
+        return Err(format!("Barista can't write to {}.", folder.display()).into());
     }
     let staging = tempfile::Builder::new().prefix("Barista-update-").tempdir()?;
     let manifest = fs::read(download(&base, "SHA256SUMS.txt", staging.path(), 65536)?)?;
@@ -100,7 +116,6 @@ pub(super) fn install(app: &Shared, update: &AvailableUpdate) -> Result<()> {
     if format!("{:x}", digest.finalize()) != expected {
         return Err("Installer signature verification failed.".into());
     }
-    let mode = scope(&fs::canonicalize(folder)?);
     let mut cmd = Command::new(&path);
     cmd.current_dir(staging.path())
         .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/BARISTAAUTOUPDATE", "/NOLAUNCH"])
@@ -125,13 +140,19 @@ pub(super) fn install(app: &Shared, update: &AvailableUpdate) -> Result<()> {
     // Hold the state lock through the handoff: a heartbeat or user stop cannot fall into the gap.
     let mut state = lock(app);
     state.session.refresh();
-    let handoff = Handoff::capture(&state);
-    let mut child = Command::new(&exe)
+    let saved = handoff_path(&default_path());
+    fs::create_dir_all(saved.parent().ok_or("Unable to hand off active sessions.")?)?;
+    barista_core::hooks::write_atomically(&saved, &serde_json::to_vec(&Handoff::capture(&state))?).map_err(|e| e.to_string())?;
+    let started = Command::new(&exe)
         .args(["--background", "--resume-update"])
-        .stdin(Stdio::piped())
-        .spawn()?;
-    let pipe = child.stdin.take().ok_or("Unable to hand off active sessions.")?;
-    serde_json::to_writer(pipe, &handoff)?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(error) = started {
+        let _ = fs::remove_file(&saved);
+        return Err(error.into());
+    }
     std::process::exit(0);
 }
 
@@ -177,11 +198,20 @@ impl Handoff {
             burst: app.activity_burst.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         }
     }
-    pub(super) fn read() -> Result<Self> {
-        Ok(serde_json::from_reader(std::io::stdin().lock().take(4 * 1024 * 1024))?)
+    /// Takes the handoff left for `endpoint`, if any. The rename lets only one starting copy have it.
+    pub(super) fn claim(endpoint: &str) -> Option<Self> {
+        let saved = handoff_path(endpoint);
+        let claimed = saved.with_file_name(format!("update-handoff.{}.json", std::process::id()));
+        fs::rename(&saved, &claimed).ok()?;
+        let mut text = Vec::new();
+        let read = fs::File::open(&claimed).and_then(|file| file.take(4 * 1024 * 1024).read_to_end(&mut text));
+        let _ = fs::remove_file(&claimed);
+        read.ok()?;
+        serde_json::from_slice(&text).ok()
     }
     pub(super) fn restore(mut self, app: &mut App) {
-        if !(0.0..=300.0).contains(&(now() - self.saved_at)) {
+        // A little backward skew: the clock can step during the restart.
+        if !(-5.0..=300.0).contains(&(now() - self.saved_at)) {
             return;
         }
         app.session.resume_after_update(self.sessions, self.stop_token);

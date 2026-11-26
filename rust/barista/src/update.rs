@@ -123,9 +123,17 @@ fn trusted(url: &str) -> bool {
 }
 
 /// The system's `curl`, ignoring the user's `.curlrc` (`-q` must come first) and, on Windows, without
-/// opening a console window.
+/// opening a console window. Windows resolves a bare name in this executable's folder first, so the
+/// built-in System32 copy is named outright.
 pub fn curl() -> Command {
-    let mut command = Command::new("curl");
+    #[cfg(windows)]
+    let program = std::env::var_os("SystemRoot")
+        .map(|root| std::path::PathBuf::from(root).join("System32").join("curl.exe"))
+        .filter(|path| path.is_file())
+        .map_or_else(|| "curl".into(), std::path::PathBuf::into_os_string);
+    #[cfg(not(windows))]
+    let program = "curl";
+    let mut command = Command::new(program);
     command.arg("-q");
     #[cfg(windows)]
     {
