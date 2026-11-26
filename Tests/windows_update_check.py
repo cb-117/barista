@@ -49,8 +49,9 @@ with tempfile.TemporaryDirectory(prefix='Barista update ') as temp:
                 'activity': {}, 'leases': {}, 'stopped': [], 'burst': {}}))
             flags = ['--resume-update'] if resume else []
             return subprocess.Popen([str(app), '--background', '--headless', *flags], stdin=subprocess.DEVNULL, env=env)
-        def status():
-            for _ in range(60):
+        def status(serving=None):
+            result = None
+            for _ in range(100):
                 result = subprocess.run([str(cli), 'status', '--json', '--no-launch'], env=env, capture_output=True, timeout=10)
                 if result.returncode == 0:
                     state = json.loads(result.stdout)['state']
@@ -58,13 +59,15 @@ with tempfile.TemporaryDirectory(prefix='Barista update ') as temp:
                     assert not handoff.exists(), 'The serving copy left the handoff behind'
                     return state
                 time.sleep(.1)
-            raise AssertionError('Barista did not resume the update session')
+            exited = None if serving is None else serving.poll()
+            raise AssertionError(f'Barista did not resume the update session (app exit code {exited}, status exit code '
+                                 f'{result.returncode}): {result.stdout.decode(errors="replace")} {result.stderr.decode(errors="replace")}')
         # A copy an agent hook launches mid-update, without --resume-update, still takes the handoff.
         old = start([lease], resume=False)
         mcp = subprocess.Popen([str(cli), 'mcp', '--no-launch'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
         fresh = None
         try:
-            status()
+            status(old)
             args = [str(options.setup), '/BARISTAAUTOUPDATE', '/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES',
                     '/NORESTART', '/NOLAUNCH', '/DIR=' + str(folder)]
             if folder == portable:
@@ -72,10 +75,10 @@ with tempfile.TemporaryDirectory(prefix='Barista update ') as temp:
             subprocess.run(args, check=True, timeout=180)
             assert old.poll() is None and mcp.poll() is None, 'Setup interrupted a running process'
             assert (folder / 'unins000.exe').exists() == (folder == options.installed)
-            fresh = start(status()['sessions'])
+            fresh = start(status(old)['sessions'])
             old.terminate()
             old.wait(timeout=10)
-            assert status()['awake'] and fresh.poll() is None
+            assert status(fresh)['awake'] and fresh.poll() is None
             print('PASS Windows automatic installer and session handoff:', folder.name, flush=True)
         finally:
             for process in [fresh, mcp, old]:
