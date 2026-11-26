@@ -224,7 +224,10 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
 
     # Your Claude account, through a local stand-in for Anthropic's usage endpoint.
     served = {'count': 0, 'status': 200, 'auth': None, 'beta': None}
-    body = (FIXTURE / 'claude-account-usage.json').read_bytes()
+    account_reply = json.loads((FIXTURE / 'claude-account-usage.json').read_text())
+    for obj in [account_reply, account_reply['limits'][0], account_reply['limits'][2]['scope']['model'], account_reply['spend']['used']]:
+        obj['account_metadata'] = 'private-test-marker'
+    body = json.dumps(account_reply).encode()
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == '/elsewhere':
@@ -258,6 +261,12 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert served['count'] == 1 and served['auth'] == 'Bearer test-token-123' and served['beta'] == 'oauth-2025-04-20', served
     saved = (data / 'claude-account-limits.json').read_text()
     assert 'test-token-123' not in saved and 'refresh-xyz' not in saved, 'the token is never written'
+    assert 'private-test-marker' not in saved, 'only displayed limit and spend fields are saved'
+    invalid = json.loads(credentials.read_text())
+    invalid['claudeAiOauth']['accessToken'] = 'invalid\nvalue'
+    credentials.write_text(json.dumps(invalid))
+    assert json.loads(run(home, data, 'limits', 'refresh', '--json', extra=account_env, ok=False).stdout)['ok'] is False
+    assert served['count'] == 1, 'malformed credentials must be rejected before the request'
     claude = report(home, data)['limits'][0]
     windows = {w['id']: w for w in claude['windows']}
     assert claude['source'] == 'Claude account' and claude['available'], claude
@@ -487,6 +496,21 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     shutil.rmtree(home / '.codex')
     assert usage(home, data)['agents'][1]['requests'] == 4
     print('PASS incremental reads: partial lines, appends, archived Codex logs, emptied and rewritten logs, deleted logs keep history', flush=True)
+
+    # A record can span many read buffers. A following record counts only once its newline arrives.
+    long_dir = temporary / 'long-home' / '.claude' / 'projects' / 'example'
+    long_dir.mkdir(parents=True)
+    long_log = long_dir / 'large.jsonl'
+    example = {'type': 'assistant', 'timestamp': '2026-10-30T12:00:00Z', 'message': {
+        'model': 'test', 'usage': {'input_tokens': 7}}, 'content': 'x' * 262144}
+    line = json.dumps(example).encode()
+    long_log.write_bytes(b'\r\n' + line + b'\r\n' + line)
+    def long_tokens():
+        return usage(temporary / 'long-home', temporary / 'long-data')['totalTokens']
+    assert long_tokens() == 7
+    with long_log.open('ab') as handle:
+        handle.write(b'\n')
+    assert long_tokens() == 14 and long_tokens() == 14
 
     # Period edges use real request times: 00:15 today in a half-hour time zone counts as today.
     zone_home, zone_data = temporary / 'zone-home', temporary / 'zone-data'

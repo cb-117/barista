@@ -4,7 +4,7 @@
 use crate::hooks::write_atomically;
 use crate::models::{format_date, now, parse_date, to_json, VERSION};
 use crate::usage::{data_dir, ClaudeLimits};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -79,13 +79,17 @@ pub fn delete_saved(directory: &Path) {
     let _ = fs::remove_file(directory.join(ACCOUNT_LIMITS_FILE));
 }
 
+pub(crate) fn header_safe(value: &str) -> bool {
+    !value.is_empty() && !value.chars().any(char::is_control)
+}
+
 /// The access token, if it stays valid for more than a minute.
 pub fn usable_token(credentials: &Value, now: f64) -> Result<String, Skipped> {
     let oauth = credentials.get("claudeAiOauth").ok_or(Skipped::NoLogin)?;
     let token = oauth
         .get("accessToken")
         .and_then(Value::as_str)
-        .filter(|t| !t.is_empty())
+        .filter(|t| header_safe(t))
         .ok_or(Skipped::NoLogin)?;
     let expires = oauth.get("expiresAt").and_then(Value::as_f64).ok_or(Skipped::Expired)? / 1000.0;
     if expires <= now + 60.0 {
@@ -160,8 +164,62 @@ pub fn refresh() -> Result<(), Skipped> {
 
 fn save(directory: &Path, usage: &Value) -> Result<(), String> {
     fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let record = json!({"observedAt": format_date(now()), "usage": usage});
+    let record = json!({"observedAt": format_date(now()), "usage": cached_usage(usage)});
     write_atomically(&directory.join(ACCOUNT_LIMITS_FILE), to_json(&record).as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Keep the response shape older versions read, and only the fields used by windows().
+fn cached_usage(usage: &Value) -> Value {
+    fn fields(value: &Value, numbers: &[&str], strings: &[&str]) -> Value {
+        let mut kept = Map::new();
+        for key in numbers {
+            if let Some(number) = value.get(key).filter(|v| v.is_number()) {
+                kept.insert(key.to_string(), number.clone());
+            }
+        }
+        for key in strings {
+            if let Some(text) = value.get(key).and_then(Value::as_str) {
+                kept.insert(key.to_string(), Value::from(text));
+            }
+        }
+        Value::Object(kept)
+    }
+    let mut kept = json!({});
+    if let Some(limits) = usage["limits"].as_array() {
+        kept["limits"] = limits
+            .iter()
+            .map(|limit| {
+                let mut row = fields(limit, &["percent"], &["kind", "resets_at"]);
+                if limit["kind"] == "weekly_scoped" && limit["scope"].is_object() {
+                    let scope = &limit["scope"];
+                    let mut label = fields(scope, &[], &["surface"]);
+                    if scope["model"].is_object() {
+                        label["model"] = fields(&scope["model"], &[], &["display_name"]);
+                    }
+                    row["scope"] = label;
+                }
+                row
+            })
+            .collect();
+    } else {
+        for key in ["five_hour", "seven_day"] {
+            if usage[key].is_object() {
+                kept[key] = fields(&usage[key], &["utilization"], &["resets_at"]);
+            }
+        }
+    }
+    let spend = &usage["spend"];
+    if spend["enabled"] == true {
+        let mut extra = fields(spend, &["percent"], &[]);
+        extra["enabled"] = true.into();
+        for key in ["used", "limit"] {
+            if spend[key].is_object() {
+                extra[key] = fields(&spend[key], &["amount_minor", "exponent"], &[]);
+            }
+        }
+        kept["spend"] = extra;
+    }
+    kept
 }
 
 /// The last saved account limits, unless older than an hour.

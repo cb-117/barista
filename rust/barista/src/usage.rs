@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -434,7 +434,8 @@ fn record_codex_limits(value: &Value, payload: &Value, state: &mut FileState) {
 /// Reads whatever was appended to `path` since the cache last saw it.
 fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet<String>) {
     let Ok(mut file) = fs::File::open(path) else { return };
-    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let Ok(metadata) = file.metadata() else { return };
+    let size = metadata.len();
     if size < state.offset {
         // Rewritten: drop what this file contributed and start over.
         for key in state.keys.drain(..) {
@@ -448,15 +449,14 @@ fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet
     if size == state.offset || file.seek(SeekFrom::Start(state.offset)).is_err() {
         return;
     }
-    let mut data = Vec::new();
-    if file.read_to_end(&mut data).is_err() {
-        return;
-    }
-    // A line without its newline is still being written; leave it for the next run.
-    let Some(end) = data.iter().rposition(|b| *b == b'\n') else {
-        return;
-    };
-    for line in data[..end].split(|b| *b == b'\n') {
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        let Ok(count) = reader.read_until(b'\n', &mut buffer) else { break };
+        // EOF, or a line still being written. Leave the offset at the last complete record.
+        let Some(line) = buffer.strip_suffix(b"\n") else { break };
+        state.offset += count as u64;
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.is_empty() {
             continue;
@@ -467,7 +467,6 @@ fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet
             codex_line(line, path, state);
         }
     }
-    state.offset += end as u64 + 1;
 }
 
 /// One 15-minute bucket of Claude or Codex usage.
@@ -533,7 +532,7 @@ fn collect_in(directory: &Path) -> Snapshot {
         .filter(|cache: &Cache| cache.version == CACHE_VERSION)
         .unwrap_or_default();
     cache.version = CACHE_VERSION;
-    let before = serde_json::to_vec(&cache).unwrap_or_default();
+    let mut changed = false;
     let mut seen: HashSet<String> = cache.files.values().flat_map(|f| f.keys.iter().cloned()).collect();
     let mut codex_names: HashSet<String> = HashSet::new();
     for (agent, path) in log_files() {
@@ -548,13 +547,18 @@ fn collect_in(directory: &Path) -> Snapshot {
         } else {
             path.to_string_lossy().into_owned()
         };
-        let state = cache.files.entry(key).or_insert_with(|| FileState {
-            agent: agent.to_string(),
-            ..FileState::default()
+        let state = cache.files.entry(key).or_insert_with(|| {
+            changed = true;
+            FileState {
+                agent: agent.to_string(),
+                ..FileState::default()
+            }
         });
+        let offset = state.offset;
         read_file(agent, &path, state, &mut seen);
+        changed |= state.offset != offset;
     }
-    if serde_json::to_vec(&cache).unwrap_or_default() != before && fs::create_dir_all(directory).is_ok() {
+    if changed && fs::create_dir_all(directory).is_ok() {
         if let Ok(data) = serde_json::to_vec(&cache) {
             let _ = write_atomically(&cache_path, &data);
         }

@@ -149,8 +149,10 @@ recently wins:
      `curl -q` (first argument, so no `.curlrc` applies) with headers on stdin (`-H @-`), and on Windows
      without a console window. Anything but HTTP 200 with a JSON object fails and keeps the previous result.
    - Result: written atomically to `claude-account-limits.json` in the data folder as
-     `{"observedAt": "<ISO now>", "usage": <the response>}`, and read by `barista usage`, the MCP tool, and
-     the app. Results older than **1 hour** are ignored. Turning the setting off deletes the file.
+     `{"observedAt": "<ISO now>", "usage": <limit and spend fields>}`, and read by `barista usage`, the MCP
+     tool, and the app. Barista keeps the fields used to display each window, its scope, and enabled
+     spending limits. The next successful refresh replaces any full response saved by an older version.
+     Results older than **1 hour** are ignored. Turning the setting off deletes the file.
    - `barista limits refresh [--json]` fetches once, ignoring the 5-minute spacing. It prints
      `Claude account limits updated.` and exits 0, or exits 1 with one of: `No Claude Code login found.`,
      `Claude Code's login has expired. Open Claude Code to renew it.`, `Couldn't reach Anthropic

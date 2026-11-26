@@ -94,7 +94,7 @@ zsh scripts/build-app.sh --universal
 
 Move `build/Barista.app` to Applications for everyday use. The app opens its panel on a normal launch; agent-triggered launches stay in the background. The power icon quits the app. **Stop** ends only your own timer; **Stop all** stops every awake session without terminating work.
 
-Settings opens in its own window from the gear icon, the right-click menu, or ⌘, in the panel. The default shortcut is **Control–Option–Command–C**. Change it in Settings. The first time Barista runs from Applications, it adds itself to macOS Login Items. At login a tiny bundled helper opens it quietly in the menu bar. Turn this off in Settings → **Launch at login**; it stays off. macOS may ask you to approve it in System Settings → General → Login Items. Notifications request permission only when you enable them.
+Open Settings from the gear icon, the right-click menu, or with ⌘, while Barista is active. Press ⌘W to close the front Settings or Usage & Limits window and leave timers running. Press ⌘Q to quit Barista and end its sessions. The default shortcut is **Control–Option–Command–C**. Change it in Settings. The first time Barista runs from Applications, it adds itself to macOS Login Items. At login a tiny bundled helper opens it quietly in the menu bar. Turn this off in Settings → **Launch at login**; it stays off. macOS may ask you to approve it in System Settings → General → Login Items. Notifications request permission only when you enable them.
 
 ## Claude Code
 

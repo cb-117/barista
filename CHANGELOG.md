@@ -9,6 +9,12 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-25
+
+- **Mac keyboard shortcuts.** Press ⌘W to close the front Settings or Usage & Limits window and keep your timers running. Press ⌘, to open Settings, or ⌘Q to quit Barista and release its awake sessions, while Barista is active.
+- **Lower memory use for large agent logs.** Barista now reads Claude and Codex logs one record at a time. Mac builds reuse timestamp parsers, and Windows and Linux builds skip re-encoding the usage cache when nothing has changed.
+- **Less account data on disk.** Each successful Claude account refresh saves only the limit and spending fields that Barista displays. Existing snapshots still work, and Barista rejects malformed Claude login tokens before sending a request.
+
 ## [0.1.1] - 2026-11-09
 
 ### Added

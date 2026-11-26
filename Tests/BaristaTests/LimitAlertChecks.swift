@@ -81,7 +81,7 @@ func limitAlertChecks() {
     let stale = [plan(.claude, [window(used: 99, resetsIn: 1)])]
     precondition(LimitAlerts.evaluate(stale, state: &late, now: now.addingTimeInterval(2), time: time).isEmpty && late.slots.isEmpty, "A window whose reset has passed is skipped")
     // A token that could start another header line is never sent.
-    precondition(CodexAccount.headerSafe("abc.def") && !CodexAccount.headerSafe("abc\nX-Evil: 1") && !CodexAccount.headerSafe(""), "Header-safe tokens only")
+    precondition(AccountRequest.headerSafe("abc.def") && !AccountRequest.headerSafe("abc\nX-Evil: 1") && !AccountRequest.headerSafe(""), "Header-safe tokens only")
     // ChatGPT's plan, and each window, has its own slot.
     alerts = check([window("primary", minutes: 10080, used: 81, resetsIn: 86400, label: "Weekly")], .codex)
     precondition(alerts.map(\.title) == ["ChatGPT Weekly limit: 81% used"] && alerts[0].body == "It resets in 1440m.", "ChatGPT: \(alerts)")

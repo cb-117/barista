@@ -25,6 +25,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var wakeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let mainMenu = NSMenu()
+        let appMenu = NSMenu()
+        appMenu.addItem(action("Settings…", key: ",") { [weak self] in self?.runtime.onShowSettings?() })
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit Barista", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q").target = NSApp
+        mainMenu.addItem(withTitle: "Barista", action: nil, keyEquivalent: "").submenu = appMenu
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        mainMenu.addItem(withTitle: "File", action: nil, keyEquivalent: "").submenu = fileMenu
+        NSApp.mainMenu = mainMenu
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
         item.button?.target = self
@@ -206,10 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         support.submenu?.addItem(action("Star on GitHub") { NSWorkspace.shared.open(BaristaVersion.repoPage) })
         support.submenu?.addItem(action("Buy Me a Coffee") { NSWorkspace.shared.open(BaristaVersion.supportPage) })
         menu.addItem(support)
-        menu.addItem(action("Quit Barista", key: "q") { [weak self] in
-            self?.runtime.shutdown()
-            NSApp.terminate(nil)
-        })
+        menu.addItem(action("Quit Barista", key: "q") { NSApp.terminate(nil) })
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
     private func action(_ title: String, key: String = "", _ handler: @escaping @MainActor () -> Void) -> NSMenuItem {

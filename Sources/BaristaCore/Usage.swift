@@ -242,7 +242,7 @@ public enum UsageStore {
         for folder in ["sessions", "archived_sessions"] {
             logs += jsonl(under: UsageLocations.codexHome.appendingPathComponent(folder)).map { ($0, .codex) }
         }
-        logs.sort { Array($0.path.utf8).lexicographicallyPrecedes(Array($1.path.utf8)) }
+        logs.sort { $0.path.utf8.lexicographicallyPrecedes($1.path.utf8) }
         var seen = Set(cache.files.values.flatMap(\.keys))
         var changed = false
         var visited = Set<String>()
@@ -292,21 +292,31 @@ public enum UsageStore {
 
     /// Reads complete lines after `state.offset`. Returns false if nothing new could be read.
     private static func read(path: String, agent: UsageAgent, state: inout FileState, seen: inout Set<String>) -> Bool {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
-        defer { try? handle.close() }
-        do { try handle.seek(toOffset: UInt64(state.offset)) } catch { return false }
-        guard let data = try? handle.readToEnd(), let lastNewline = data.lastIndex(of: 10) else { return false }
-        let complete = data[data.startIndex...lastNewline]
+        guard let file = fopen(path, "r") else { return false }
+        defer { fclose(file) }
+        let start = state.offset
+        guard fseeko(file, off_t(start), SEEK_SET) == 0 else { return false }
+        var buffer: UnsafeMutablePointer<CChar>?
+        var capacity = 0
+        defer { free(buffer) }
         let fallbackSession = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-        for line in complete.split(separator: 10, omittingEmptySubsequences: true) {
-            switch agent {
-            case .claude: readClaude(Data(line), session: fallbackSession, state: &state, seen: &seen)
-            case .codex: readCodex(Data(line), session: fallbackSession, state: &state)
-            case .cursor: break
+        while true {
+            let count = getline(&buffer, &capacity, file)
+            // The writer may still be appending. Resume at the start of that line next time.
+            guard count > 0, let buffer, buffer[count - 1] == 10 else { break }
+            state.offset += count
+            if count > 1 {
+                autoreleasepool {
+                    let line = Data(bytes: buffer, count: count - 1)
+                    switch agent {
+                    case .claude: readClaude(line, session: fallbackSession, state: &state, seen: &seen)
+                    case .codex: readCodex(line, session: fallbackSession, state: &state)
+                    case .cursor: break
+                    }
+                }
             }
         }
-        state.offset += complete.count
-        return true
+        return state.offset != start
     }
 
     private static func contains(_ line: Data, _ needle: String) -> Bool { line.range(of: Data(needle.utf8)) != nil }
@@ -316,14 +326,12 @@ public enum UsageStore {
               let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
         state.setFolder(object["cwd"])
         let type = object["type"] as? String
-        if type == "user" || type == "assistant", let time = (object["timestamp"] as? String).flatMap(parseDate) {
-            state.addActivity(time)
-        }
+        guard type == "user" || type == "assistant", let time = (object["timestamp"] as? String).flatMap(parseDate) else { return }
+        state.addActivity(time)
         guard type == "assistant",
               let message = object["message"] as? [String: Any],
               let usage = message["usage"] as? [String: Any],
-              let model = message["model"] as? String, model != "<synthetic>",
-              let time = (object["timestamp"] as? String).flatMap(parseDate) else { return }
+              let model = message["model"] as? String, model != "<synthetic>" else { return }
         if let id = message["id"] as? String {
             let key = id + ":" + (object["requestId"] as? String ?? "")
             guard seen.insert(key).inserted else { return }
@@ -802,11 +810,24 @@ public enum UsageStore {
 
     // MARK: Dates
 
-    static func parseDate(_ text: String) -> Date? {
+    // ISO8601DateFormatter is mutable. Reuse a pair on each parsing thread.
+    private final class LogDateFormatters {
         let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: text) { return date }
-        return ISO8601DateFormatter().date(from: text)
+        let wholeSeconds = ISO8601DateFormatter()
+
+        init() { fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds] }
+    }
+    static func parseDate(_ text: String) -> Date? {
+        let key = "com.connorbescos.barista.logDateFormatters"
+        let local = Thread.current.threadDictionary
+        let formats: LogDateFormatters
+        if let existing = local[key] as? LogDateFormatters {
+            formats = existing
+        } else {
+            formats = LogDateFormatters()
+            local[key] = formats
+        }
+        return formats.fractional.date(from: text) ?? formats.wholeSeconds.date(from: text)
     }
     static func formatDate(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 }
