@@ -431,12 +431,13 @@ fn record_codex_limits(value: &Value, payload: &Value, state: &mut FileState) {
     });
 }
 
-/// Reads whatever was appended to `path` since the cache last saw it.
-fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet<String>) {
-    let Ok(mut file) = fs::File::open(path) else { return };
-    let Ok(metadata) = file.metadata() else { return };
+/// Reads appended records and reports whether they or a truncation changed the cache.
+fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet<String>) -> bool {
+    let Ok(mut file) = fs::File::open(path) else { return false };
+    let Ok(metadata) = file.metadata() else { return false };
     let size = metadata.len();
-    if size < state.offset {
+    let mut changed = size < state.offset;
+    if changed {
         // Rewritten: drop what this file contributed and start over.
         for key in state.keys.drain(..) {
             seen.remove(&key);
@@ -447,7 +448,7 @@ fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet
         };
     }
     if size == state.offset || file.seek(SeekFrom::Start(state.offset)).is_err() {
-        return;
+        return changed;
     }
     let mut reader = BufReader::new(file);
     let mut buffer = Vec::new();
@@ -457,6 +458,7 @@ fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet
         // EOF, or a line still being written. Leave the offset at the last complete record.
         let Some(line) = buffer.strip_suffix(b"\n") else { break };
         state.offset += count as u64;
+        changed = true;
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.is_empty() {
             continue;
@@ -467,6 +469,7 @@ fn read_file(agent: &str, path: &Path, state: &mut FileState, seen: &mut HashSet
             codex_line(line, path, state);
         }
     }
+    changed
 }
 
 /// One 15-minute bucket of Claude or Codex usage.
@@ -554,9 +557,7 @@ fn collect_in(directory: &Path) -> Snapshot {
                 ..FileState::default()
             }
         });
-        let offset = state.offset;
-        read_file(agent, &path, state, &mut seen);
-        changed |= state.offset != offset;
+        changed |= read_file(agent, &path, state, &mut seen);
     }
     if changed && fs::create_dir_all(directory).is_ok() {
         if let Ok(data) = serde_json::to_vec(&cache) {

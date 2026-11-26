@@ -140,9 +140,11 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
         path.write_text(path.read_text().replace('__ROOT__', json.dumps(str(root))[1:-1]))
 
     check(usage(home, data), expected)
-    check(usage(home, data), expected)  # Second run reads the cache.
-    caches = [p.name for p in data.iterdir() if p.name.startswith('usage-cache')]
-    assert caches, 'usage keeps a cache in the data folder'
+    cache, = data.glob('usage-cache*.json')
+    os.utime(cache, (1_700_000_000, 1_700_000_000))
+    before_mtime = cache.stat().st_mtime_ns
+    check(usage(home, data), expected)
+    assert cache.stat().st_mtime_ns == before_mtime, 'a scan without new records must not rewrite the cache'
     print('PASS fixture totals: dedupe, cache writes by TTL, subagents, Codex deltas, unpriced models, Cursor turns', flush=True)
 
     utc = usage(home, data, 'all', tz='UTC')
@@ -298,8 +300,20 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
         (override_home / '.claude' / '.credentials.json').write_text(credentials.read_text())
         run(override_home, data, 'limits', 'refresh', extra=no_creds, ok=False)
         assert served['count'] == before, 'without a test credentials file the override is ignored'
-    # Account results older than an hour are not shown.
     saved_path = data / 'claude-account-limits.json'
+    # Older builds saved the full response. Both readers still recognize its fallback windows.
+    legacy = {'five_hour': {'utilization': 33, 'account_metadata': 'private-test-marker'},
+              'seven_day': {'utilization': 14}, 'spend': {'enabled': False, 'note': 'private-test-marker'}}
+    saved_path.write_text(json.dumps({'observedAt': json.loads(saved)['observedAt'], 'usage': legacy}))
+    def legacy_windows():
+        return [(w['id'], w['usedPercent']) for w in report(home, data)['limits'][0]['windows']]
+    assert legacy_windows() == [('five_hour', 33), ('seven_day', 14)]
+    body = json.dumps(legacy).encode()
+    served['status'] = 200
+    run(home, data, 'limits', 'refresh', extra=account_env)
+    assert json.loads(saved_path.read_text())['usage'] == {'five_hour': {'utilization': 33}, 'seven_day': {'utilization': 14}}
+    assert legacy_windows() == [('five_hour', 33), ('seven_day', 14)]
+    # Account results older than an hour are not shown.
     saved_json = json.loads(saved_path.read_text())
     saved_json['observedAt'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
     saved_path.write_text(json.dumps(saved_json))

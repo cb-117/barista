@@ -352,7 +352,9 @@ public enum ClaudeAccount {
     private static func cachedUsage(_ usage: [String: Any]) -> [String: Any] {
         func fields(_ object: [String: Any], numbers: [String] = [], strings: [String] = []) -> [String: Any] {
             var kept: [String: Any] = [:]
-            for key in numbers { kept[key] = object[key] as? NSNumber }
+            for key in numbers {
+                if let number = object[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { kept[key] = number }
+            }
             for key in strings { kept[key] = object[key] as? String }
             return kept
         }
@@ -372,8 +374,10 @@ public enum ClaudeAccount {
                 if let window = usage[key] as? [String: Any] { kept[key] = fields(window, numbers: ["utilization"], strings: ["resets_at"]) }
             }
         }
-        if let spend = usage["spend"] as? [String: Any], spend["enabled"] as? Bool == true {
-            var extra = fields(spend, numbers: ["enabled", "percent"])
+        if let spend = usage["spend"] as? [String: Any], let enabled = spend["enabled"] as? NSNumber,
+           CFGetTypeID(enabled) == CFBooleanGetTypeID(), enabled.boolValue {
+            var extra = fields(spend, numbers: ["percent"])
+            extra["enabled"] = true
             for key in ["used", "limit"] {
                 if let money = spend[key] as? [String: Any] { extra[key] = fields(money, numbers: ["amount_minor", "exponent"]) }
             }

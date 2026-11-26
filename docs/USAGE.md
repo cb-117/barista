@@ -132,7 +132,8 @@ recently wins:
      `Claude Code-credentials`; on Linux and Windows `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json`
      (`BARISTA_CLAUDE_CREDENTIALS` overrides with a JSON file path, for tests). The JSON holds
      `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (Unix ms). Use the token only while it
-     expires more than 60 seconds from now. **Never refresh it** (that would rotate Claude Code's login),
+     expires more than 60 seconds from now. Reject empty tokens and tokens containing control
+     characters before making a request. **Never refresh it** (that would rotate Claude Code's login),
      never write it anywhere, never log it, and never pass it on a command line.
    - macOS Keychain access: read the item with `/usr/bin/security find-generic-password -s "Claude Code-credentials" -w`,
      the tool Claude Code uses to save and read it, so the item's access list already allows it and macOS
