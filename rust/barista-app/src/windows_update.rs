@@ -116,8 +116,10 @@ pub(super) fn install(app: &Shared, update: &AvailableUpdate) -> Result<()> {
     if format!("{:x}", digest.finalize()) != expected {
         return Err("Installer signature verification failed.".into());
     }
+    // Setup may run elevated, so it starts outside any folder this user can write to.
+    let system = std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("System32"));
     let mut cmd = Command::new(&path);
-    cmd.current_dir(staging.path())
+    cmd.current_dir(system.filter(|dir| dir.is_dir()).unwrap_or_else(|| folder.to_path_buf()))
         .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/BARISTAAUTOUPDATE", "/NOLAUNCH"])
         .arg(mode)
         .arg(format!("/DIR={}", folder.display()))
@@ -175,7 +177,9 @@ mod tests {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+/// Fields default, so a later version's handoff (with more of them) still restores.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct Handoff {
     saved_at: f64,
     sessions: Vec<CoffeeLease>,

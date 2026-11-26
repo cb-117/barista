@@ -199,6 +199,7 @@ public enum UsagePricing {
             guard let at = state.fetchedAt else { return ModelPrices.checkedOn }
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
             formatter.timeZone = TimeZone(identifier: "UTC")
             formatter.dateFormat = "yyyy-MM-dd"
             return formatter.string(from: at)
@@ -240,12 +241,12 @@ public enum UsagePricing {
             return (value * 1_000_000 * 1_000_000).rounded() / 1_000_000
         }
         var found: [String: (bare: Bool, price: ModelPrice)] = [:]
-        for (key, value) in list {
-            guard let entry = value as? [String: Any], let provider = entry["litellm_provider"] as? String, providers.contains(provider),
+        for key in list.keys.sorted() {
+            guard let entry = list[key] as? [String: Any], let provider = entry["litellm_provider"] as? String, providers.contains(provider),
                   let mode = entry["mode"] as? String, mode == "chat" || mode == "responses" else { continue }
             let bare = !key.contains("/")
             let model = key.hasPrefix(provider + "/") ? String(key.dropFirst(provider.count + 1)) : key
-            guard !model.isEmpty, !model.contains("/"), model == normalized(model).trimmingCharacters(in: .whitespaces),
+            guard !model.isEmpty, !model.contains("/"), model == normalized(model).trimmingCharacters(in: .whitespacesAndNewlines),
                   let input = perMillion(entry, "input_cost_per_token"), let output = perMillion(entry, "output_cost_per_token"),
                   input > 0, output > 0 else { continue }
             let openAI = provider == "openai"
@@ -283,8 +284,12 @@ public enum UsagePricing {
         request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
         let session = URLSession(configuration: .ephemeral)
         defer { session.finishTasksAndInvalidate() }
-        guard let (data, response) = try? await session.data(for: request), (response as? HTTPURLResponse)?.statusCode == 200,
-              response.url?.scheme == "https", data.count < 50_000_000 else { return false }
+        // Downloaded to a file, so an oversized reply is refused without being held in memory.
+        guard let (file, response) = try? await session.download(for: request), (response as? HTTPURLResponse)?.statusCode == 200,
+              response.url?.scheme == "https" else { return false }
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size < 50_000_000,
+              let data = try? Data(contentsOf: file) else { return false }
         let downloaded = convert(litellm: data)
         guard downloaded.count >= minimumEntries else { return false }
         let saved = Saved(fetchedAt: now.timeIntervalSince1970, prices: downloaded)

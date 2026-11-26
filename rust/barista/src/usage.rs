@@ -46,6 +46,7 @@ const PRICES_MAX_AGE: f64 = 86_400.0;
 const PRICES_RETRY: f64 = 3600.0;
 /// Fewer entries than this means the download isn't the list we expect.
 const PRICES_MIN_ENTRIES: usize = 50;
+const PRICES_MAX_BYTES: usize = 50_000_000;
 const PRICE_PROVIDERS: [&str; 6] = ["anthropic", "openai", "gemini", "xai", "deepseek", "mistral"];
 
 /// The saved download: LiteLLM's first-party chat prices in Barista's format.
@@ -237,8 +238,9 @@ pub fn refresh_prices() -> bool {
     if let Ok(data) = serde_json::to_vec(&saved) {
         let _ = write_atomically(&path, &data);
     }
-    let changed = merged_prices(&saved.prices) != prices().prices;
-    *price_table().write().unwrap_or_else(|e| e.into_inner()) = Arc::new(PriceTable::new(merged_prices(&saved.prices), Some(now)));
+    let merged = merged_prices(&saved.prices);
+    let changed = merged != prices().prices;
+    *price_table().write().unwrap_or_else(|e| e.into_inner()) = Arc::new(PriceTable::new(merged, Some(now)));
     changed
 }
 
@@ -262,7 +264,8 @@ fn download_prices() -> Option<Vec<Price>> {
         .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
-    if !output.status.success() {
+    // `--max-filesize` can't stop a chunked reply on older curl, so the size is checked here too.
+    if !output.status.success() || output.stdout.len() > PRICES_MAX_BYTES {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);

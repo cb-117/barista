@@ -157,7 +157,7 @@ struct CoffeeSettingsView: View {
                     }
                 }
             } header: { Text("Updates") } footer: {
-                Text("Barista checks GitHub daily. After a release has been available for 24 hours, Barista verifies the update and relaunches with your awake sessions. Choose Update to install sooner.")
+                Text("Barista checks GitHub daily. After a release has been available for 24 hours, Barista verifies the update and relaunches with your awake sessions. Choose Update to install sooner. While this is on, Barista also refreshes model prices for cost estimates daily.")
             }
 
             Section {
