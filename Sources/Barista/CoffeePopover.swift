@@ -267,7 +267,7 @@ struct CoffeePopover: View {
             Button { runtime.onShowSettings?() } label: { Image(systemName: "gearshape") }
                 .help("Settings").accessibilityLabel("Settings")
                 .keyboardShortcut(",", modifiers: .command)
-            Button { runtime.shutdown(); NSApplication.shared.terminate(nil) } label: { Image(systemName: "power") }
+            Button { NSApplication.shared.terminate(nil) } label: { Image(systemName: "power") }
                 .help("Quit Barista").accessibilityLabel("Quit Barista")
         }
         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)

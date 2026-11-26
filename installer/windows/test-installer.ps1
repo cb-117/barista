@@ -108,6 +108,9 @@ if (-not $linkId) { Write-Host "::warning::Couldn't read the Start menu shortcut
 elseif ($linkId -ne 'Barista.App') { Fail "Start menu shortcut AppUserModelID is '$linkId', expected Barista.App" }
 Write-Host 'Fresh install: files, version, startup entry, PATH, shortcut, and branding verified.'
 
+python (Join-Path $PSScriptRoot '../../Tests/windows_update_check.py') --setup $Setup --installed $dir
+if ($LASTEXITCODE -ne 0) { Fail 'Automatic installer / handoff test failed' }
+
 # --- 2. Upgrade over a running Barista, keeping the user's choices --------------------------------
 $app = Start-Process -FilePath (Join-Path $dir 'barista-app.exe') -ArgumentList '--background' -PassThru
 # `barista mcp` runs until its stdin closes; keep it open so the upgrade has to stop it.

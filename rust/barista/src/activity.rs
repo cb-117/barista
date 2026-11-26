@@ -46,7 +46,8 @@ pub mod policy {
 }
 
 /// Decides, sample by sample, whether an app is busy. Pure, so it can be tested with made-up samples.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ActivityTracker {
     previous: HashMap<i32, f64>,
     /// (end, seconds, cpu seconds used)

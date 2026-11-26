@@ -132,7 +132,8 @@ recently wins:
      `Claude Code-credentials`; on Linux and Windows `<CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json`
      (`BARISTA_CLAUDE_CREDENTIALS` overrides with a JSON file path, for tests). The JSON holds
      `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (Unix ms). Use the token only while it
-     expires more than 60 seconds from now. **Never refresh it** (that would rotate Claude Code's login),
+     expires more than 60 seconds from now. Reject empty tokens and tokens containing control
+     characters before making a request. **Never refresh it** (that would rotate Claude Code's login),
      never write it anywhere, never log it, and never pass it on a command line.
    - macOS Keychain access: read the item with `/usr/bin/security find-generic-password -s "Claude Code-credentials" -w`,
      the tool Claude Code uses to save and read it, so the item's access list already allows it and macOS
@@ -149,8 +150,10 @@ recently wins:
      `curl -q` (first argument, so no `.curlrc` applies) with headers on stdin (`-H @-`), and on Windows
      without a console window. Anything but HTTP 200 with a JSON object fails and keeps the previous result.
    - Result: written atomically to `claude-account-limits.json` in the data folder as
-     `{"observedAt": "<ISO now>", "usage": <the response>}`, and read by `barista usage`, the MCP tool, and
-     the app. Results older than **1 hour** are ignored. Turning the setting off deletes the file.
+     `{"observedAt": "<ISO now>", "usage": <limit and spend fields>}`, and read by `barista usage`, the MCP
+     tool, and the app. Barista keeps the fields used to display each window, its scope, and enabled
+     spending limits. The next successful refresh replaces any full response saved by an older version.
+     Results older than **1 hour** are ignored. Turning the setting off deletes the file.
    - `barista limits refresh [--json]` fetches once, ignoring the 5-minute spacing. It prints
      `Claude account limits updated.` and exits 0, or exits 1 with one of: `No Claude Code login found.`,
      `Claude Code's login has expired. Open Claude Code to renew it.`, `Couldn't reach Anthropic
@@ -325,7 +328,15 @@ is missing or unreadable, uninstall fails with an error and leaves the settings 
 ## Cost estimates
 
 Prices come from `Sources/BaristaCore/ModelPrices.swift` (USD per million tokens; the Rust build reads
-the same JSON). The model is cut at the first `[` or `@`, then the longest price entry that equals it or
+the same JSON), updated once a day from [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+while the app's update checks are on. The app downloads it with a plain HTTPS GET (no identifiers) when
+`model-prices.json` in the data folder is a day old (a failed download waits an hour), and saves its
+first-party chat models (Anthropic, OpenAI, Gemini, xAI, DeepSeek, Mistral) by bare name
+(`gemini/gemini-4-neon` → `gemini-4-neon`) with their short-context rates: OpenAI's cache writes are 0, a
+missing cache-read rate is the input rate, and a missing 1-hour write rate the 5-minute one. A download
+with fewer than 50 such models is ignored. Downloaded entries replace built-in ones of the same model;
+built-in models it lacks stay. The CLI and MCP server read the saved file but never download, and
+`estimateNote` dates the prices by the download (UTC) when there is one. The model is cut at the first `[` or `@`, then the longest price entry that equals it or
 is followed in it by `-` wins. Cost = input × `input` + output × `output` + cache read × `cacheRead` +
 5-minute writes × `cacheWrite5m` + 1-hour writes × `cacheWrite1h`, divided by 1,000,000. Tokens of an
 unlisted model are counted as **unpriced**. These are pay-as-you-go API rates, not what a Claude,

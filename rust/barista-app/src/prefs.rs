@@ -13,6 +13,7 @@ pub struct Prefs {
     pub checks_for_updates: bool,
     pub show_countdown: bool,
     pub last_update_check: f64,
+    pub next_update_check: Option<f64>,
     pub dismissed_update: Option<String>,
     pub launch_at_login_choice_made: bool,
     /// Your last timer, in seconds; -1 means "until stopped".
@@ -48,6 +49,7 @@ impl Default for Prefs {
             checks_for_updates: true,
             show_countdown: true,
             last_update_check: 0.0,
+            next_update_check: None,
             dismissed_update: None,
             launch_at_login_choice_made: false,
             last_session_seconds: 1800.0,

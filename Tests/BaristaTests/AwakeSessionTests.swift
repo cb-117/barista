@@ -224,7 +224,7 @@ func updateCheckComparesReleases() {
     func release(_ fields: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: fields) }
     let base = "https://github.com/cb-117/barista/releases/download/v0.2.0/"
     func asset(_ name: String) -> [String: Any] { ["name": name, "browser_download_url": base + name] }
-    let newer = release(["tag_name": "v0.2.0", "html_url": "https://github.com/cb-117/barista/releases/tag/v0.2.0",
+    let newer = release(["tag_name": "v0.2.0", "published_at": "2026-11-25T00:00:00Z", "html_url": "https://github.com/cb-117/barista/releases/tag/v0.2.0",
                          "assets": [asset("Barista-0.2.0.zip"), asset("Barista-0.2.0.zip.sig"), asset("Barista-0.2.0.dmg")]])
     let update = UpdateCheck.newerRelease(in: newer, than: "0.0.1")
     expect(update?.version == "0.2.0")
@@ -232,10 +232,15 @@ func updateCheckComparesReleases() {
     expect(update?.archiveURL?.lastPathComponent == "Barista-0.2.0.zip")
     expect(update?.signatureURL?.lastPathComponent == "Barista-0.2.0.zip.sig")
     expect(update?.canInstallInPlace == true)
+    let deadline = ISO8601DateFormatter().date(from: "2026-11-26T00:00:00Z")!
+    expect(update?.automaticInstallDue(enabled: true, now: deadline.addingTimeInterval(-1)) == false)
+    expect(update?.automaticInstallDue(enabled: true, now: deadline) == true)
+    expect(update?.automaticInstallDue(enabled: false, now: deadline) == false)
     expect(UpdateCheck.newerRelease(in: newer, than: "0.2.0") == nil)
     // Without a signature there's no in-place install, only a download.
     let unsigned = UpdateCheck.newerRelease(in: release(["tag_name": "v0.2.0", "assets": [asset("Barista-0.2.0.zip")]]), than: "0.0.1")
     expect(unsigned?.canInstallInPlace == false && unsigned?.downloadURL?.lastPathComponent == "Barista-0.2.0.zip")
+    expect(unsigned?.automaticInstallDue(enabled: true, now: deadline) == false)
     expect(UpdateCheck.newerRelease(in: release(["tag_name": "v9.0.0", "prerelease": true]), than: "0.0.1") == nil)
     // Release data can't send the app to an arbitrary site.
     let hostile = release(["tag_name": "v9.0.0", "html_url": "https://evil.example/x",
@@ -311,6 +316,7 @@ struct SessionChecks {
         print("Passed all 11 session checks: expiration, indefinite sessions, extensions, display changes, failures, failed transitions, stop tokens and turn caps, custom-duration input, menu-bar text, update checks, and update handoff.")
         try await runTaskSessionChecks()
         weeklySummaryChecks()
+        priceChecks()
         limitAlertChecks()
         activePingChecks()
         scheduledSessionChecks()

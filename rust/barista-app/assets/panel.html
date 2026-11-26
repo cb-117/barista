@@ -569,7 +569,7 @@ function renderSettings(root) {
       el("div", { class: "row" }, button("small-button", "Copy CLI path", "copy:cli"), button("small-button", "Copy MCP setup", "copy:mcp"))),
     el("div", { class: "group-title", text: "Updates" }),
     el("div", { class: "group" },
-      settingRow("Check for updates daily", null, toggle(p.checksForUpdates, "toggle:updates", "Check for updates daily")),
+      settingRow("Install updates automatically after 24 hours", "Barista checks GitHub daily and refreshes model prices for cost estimates. All-users installs may ask for administrator approval.", toggle(p.checksForUpdates, "toggle:updates", "Install updates automatically after 24 hours")),
       settingRow(state.updateStatus || `Barista ${state.version}`, null, button("small-button", "Check now", "check-updates")),
       settingRow("Help count active users", "Once a day, tells baristatime.app that a copy of Barista is running: its version, Windows or Linux, and whether it’s the first time today, this week, and this month. No ID, and nothing about you or your usage.", toggle(p.shareActiveCount, "toggle:active-count", "Help count active users"))),
     el("div", { class: "group-title", text: "Support Barista" }),

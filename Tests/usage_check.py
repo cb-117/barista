@@ -140,9 +140,11 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
         path.write_text(path.read_text().replace('__ROOT__', json.dumps(str(root))[1:-1]))
 
     check(usage(home, data), expected)
-    check(usage(home, data), expected)  # Second run reads the cache.
-    caches = [p.name for p in data.iterdir() if p.name.startswith('usage-cache')]
-    assert caches, 'usage keeps a cache in the data folder'
+    cache, = data.glob('usage-cache*.json')
+    os.utime(cache, (1_700_000_000, 1_700_000_000))
+    before_mtime = cache.stat().st_mtime_ns
+    check(usage(home, data), expected)
+    assert cache.stat().st_mtime_ns == before_mtime, 'a scan without new records must not rewrite the cache'
     print('PASS fixture totals: dedupe, cache writes by TTL, subagents, Codex deltas, unpriced models, Cursor turns', flush=True)
 
     utc = usage(home, data, 'all', tz='UTC')
@@ -224,7 +226,10 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
 
     # Your Claude account, through a local stand-in for Anthropic's usage endpoint.
     served = {'count': 0, 'status': 200, 'auth': None, 'beta': None}
-    body = (FIXTURE / 'claude-account-usage.json').read_bytes()
+    account_reply = json.loads((FIXTURE / 'claude-account-usage.json').read_text())
+    for obj in [account_reply, account_reply['limits'][0], account_reply['limits'][2]['scope']['model'], account_reply['spend']['used']]:
+        obj['account_metadata'] = 'private-test-marker'
+    body = json.dumps(account_reply).encode()
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == '/elsewhere':
@@ -258,6 +263,12 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     assert served['count'] == 1 and served['auth'] == 'Bearer test-token-123' and served['beta'] == 'oauth-2025-04-20', served
     saved = (data / 'claude-account-limits.json').read_text()
     assert 'test-token-123' not in saved and 'refresh-xyz' not in saved, 'the token is never written'
+    assert 'private-test-marker' not in saved, 'only displayed limit and spend fields are saved'
+    invalid = json.loads(credentials.read_text())
+    invalid['claudeAiOauth']['accessToken'] = 'invalid\nvalue'
+    credentials.write_text(json.dumps(invalid))
+    assert json.loads(run(home, data, 'limits', 'refresh', '--json', extra=account_env, ok=False).stdout)['ok'] is False
+    assert served['count'] == 1, 'malformed credentials must be rejected before the request'
     claude = report(home, data)['limits'][0]
     windows = {w['id']: w for w in claude['windows']}
     assert claude['source'] == 'Claude account' and claude['available'], claude
@@ -289,8 +300,20 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
         (override_home / '.claude' / '.credentials.json').write_text(credentials.read_text())
         run(override_home, data, 'limits', 'refresh', extra=no_creds, ok=False)
         assert served['count'] == before, 'without a test credentials file the override is ignored'
-    # Account results older than an hour are not shown.
     saved_path = data / 'claude-account-limits.json'
+    # Older builds saved the full response. Both readers still recognize its fallback windows.
+    legacy = {'five_hour': {'utilization': 33, 'account_metadata': 'private-test-marker'},
+              'seven_day': {'utilization': 14}, 'spend': {'enabled': False, 'note': 'private-test-marker'}}
+    saved_path.write_text(json.dumps({'observedAt': json.loads(saved)['observedAt'], 'usage': legacy}))
+    def legacy_windows():
+        return [(w['id'], w['usedPercent']) for w in report(home, data)['limits'][0]['windows']]
+    assert legacy_windows() == [('five_hour', 33), ('seven_day', 14)]
+    body = json.dumps(legacy).encode()
+    served['status'] = 200
+    run(home, data, 'limits', 'refresh', extra=account_env)
+    assert json.loads(saved_path.read_text())['usage'] == {'five_hour': {'utilization': 33}, 'seven_day': {'utilization': 14}}
+    assert legacy_windows() == [('five_hour', 33), ('seven_day', 14)]
+    # Account results older than an hour are not shown.
     saved_json = json.loads(saved_path.read_text())
     saved_json['observedAt'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
     saved_path.write_text(json.dumps(saved_json))
@@ -487,6 +510,21 @@ with tempfile.TemporaryDirectory(prefix='barista-usage-') as temporary:
     shutil.rmtree(home / '.codex')
     assert usage(home, data)['agents'][1]['requests'] == 4
     print('PASS incremental reads: partial lines, appends, archived Codex logs, emptied and rewritten logs, deleted logs keep history', flush=True)
+
+    # A record can span many read buffers. A following record counts only once its newline arrives.
+    long_dir = temporary / 'long-home' / '.claude' / 'projects' / 'example'
+    long_dir.mkdir(parents=True)
+    long_log = long_dir / 'large.jsonl'
+    example = {'type': 'assistant', 'timestamp': '2026-10-30T12:00:00Z', 'message': {
+        'model': 'test', 'usage': {'input_tokens': 7}}, 'content': 'x' * 262144}
+    line = json.dumps(example).encode()
+    long_log.write_bytes(b'\r\n' + line + b'\r\n' + line)
+    def long_tokens():
+        return usage(temporary / 'long-home', temporary / 'long-data')['totalTokens']
+    assert long_tokens() == 7
+    with long_log.open('ab') as handle:
+        handle.write(b'\n')
+    assert long_tokens() == 14 and long_tokens() == 14
 
     # Period edges use real request times: 00:15 today in a half-hour time zone counts as today.
     zone_home, zone_data = temporary / 'zone-home', temporary / 'zone-data'

@@ -1,7 +1,7 @@
 //! ChatGPT plan limits from your ChatGPT account: the numbers Codex's `/status` shows.
 //! Uses Codex's saved login read-only (never refreshed, written, logged, or put on a command
 //! line). docs/USAGE.md, "Plan limits", ChatGPT plan, source 0, is the specification.
-use crate::claude_account::{fetch, FetchError};
+use crate::claude_account::{fetch, header_safe, FetchError};
 use crate::hooks::write_atomically;
 use crate::models::{format_date, now, parse_date, to_json, VERSION};
 use crate::usage::{data_dir, CodexLimits};
@@ -105,11 +105,6 @@ fn token_expiry(token: &str) -> Option<f64> {
     let payload = token.split('.').nth(1)?;
     let value: Value = serde_json::from_slice(&base64url(payload)?).ok()?;
     value.as_object()?.get("exp")?.as_f64()
-}
-
-/// A value that can go on a header line: not empty, with no control characters.
-fn header_safe(value: &str) -> bool {
-    !value.is_empty() && !value.chars().any(char::is_control)
 }
 
 /// The access token and account ID of a ChatGPT sign-in. A token whose expiry is readable is used

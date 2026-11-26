@@ -111,7 +111,7 @@ public struct UsageReport: Sendable, Equatable {
     public let periods: [PeriodUsage]
     /// Claude, ChatGPT (Codex), and Cursor plans, in that order.
     public let limits: [PlanLimits]
-    public static let estimateNote = "Costs are estimates at API list prices (checked \(ModelPrices.checkedOn)), not what a subscription charges."
+    public static var estimateNote: String { "Costs are estimates at API list prices (checked \(UsagePricing.checkedOn)), not what a subscription charges." }
 }
 
 // MARK: - Locations
@@ -140,13 +140,71 @@ public enum UsageLocations {
 
 // MARK: - Prices
 
-public struct ModelPrice: Decodable, Sendable {
+public struct ModelPrice: Codable, Sendable, Equatable {
     public let model: String
     public let input, output, cacheRead, cacheWrite5m, cacheWrite1h: Double
 }
 
+/// The built-in table (ModelPrices.swift), updated once a day from LiteLLM's list (docs/USAGE.md).
 public enum UsagePricing {
-    public static let table: [ModelPrice] = (try? JSONDecoder().decode([ModelPrice].self, from: Data(ModelPrices.json.utf8))) ?? []
+    public static let pricesURL = URL(string: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json")!
+    static let fileName = "model-prices.json"
+    static let maxAge: TimeInterval = 86400
+    /// A failed download waits this long before the next try.
+    static let retryAfter: TimeInterval = 3600
+    /// Fewer entries than this means the download isn't the list we expect.
+    static let minimumEntries = 50
+    static let providers: Set<String> = ["anthropic", "openai", "gemini", "xai", "deepseek", "mistral"]
+
+    public static let bundled: [ModelPrice] = (try? JSONDecoder().decode([ModelPrice].self, from: Data(ModelPrices.json.utf8))) ?? []
+
+    /// The saved download, in the same format the Rust build writes.
+    struct Saved: Codable {
+        var fetchedAt: Double
+        var prices: [ModelPrice]
+    }
+
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var loaded = false
+        var table: [ModelPrice] = []
+        var fetchedAt: Date?
+        /// Normalized model → index into `table`, since every log bucket asks.
+        var memo: [String: Int?] = [:]
+        var lastTry: Date = .distantPast
+    }
+    private static let state = State()
+
+    private static func withState<T>(_ body: (State) -> T) -> T {
+        state.lock.lock()
+        defer { state.lock.unlock() }
+        if !state.loaded {
+            state.loaded = true
+            if let saved = readSaved() { apply(saved.prices, fetchedAt: Date(timeIntervalSince1970: saved.fetchedAt), to: state) }
+            else { state.table = bundled }
+        }
+        return body(state)
+    }
+    private static func apply(_ downloaded: [ModelPrice], fetchedAt: Date?, to state: State) {
+        state.table = merged(downloaded)
+        state.fetchedAt = fetchedAt
+        state.memo = [:]
+    }
+
+    /// The prices in use.
+    public static var table: [ModelPrice] { withState { $0.table } }
+    /// The date the estimates' prices were checked: the download's (UTC), else the built-in table's.
+    public static var checkedOn: String {
+        withState { state in
+            guard let at = state.fetchedAt else { return ModelPrices.checkedOn }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.timeZone = TimeZone(identifier: "UTC")
+            formatter.dateFormat = "yyyy-MM-dd"
+            return formatter.string(from: at)
+        }
+    }
 
     /// A log's model ID cut at the first `[` or `@`.
     public static func normalized(_ model: String) -> String {
@@ -155,7 +213,100 @@ public enum UsagePricing {
     /// The longest entry equal to the model or followed in it by "-".
     public static func price(for model: String) -> ModelPrice? {
         let id = normalized(model)
-        return table.filter { id == $0.model || id.hasPrefix($0.model + "-") }.max { $0.model.count < $1.model.count }
+        return withState { state in
+            if let index = state.memo[id] { return index.map { state.table[$0] } }
+            let index = state.table.indices.filter { id == state.table[$0].model || id.hasPrefix(state.table[$0].model + "-") }
+                .max { state.table[$0].model.count < state.table[$1].model.count }
+            state.memo[id] = index
+            return index.map { state.table[$0] }
+        }
+    }
+
+    /// Downloaded entries replace built-in ones of the same model; built-in models the download lacks stay.
+    static func merged(_ downloaded: [ModelPrice]) -> [ModelPrice] {
+        let names = Set(downloaded.map(\.model))
+        return bundled.filter { !names.contains($0.model) } + downloaded
+    }
+
+    /// LiteLLM's list → Barista's entries: first-party chat models priced per token, by their bare name
+    /// (`gemini/gemini-4-neon` → `gemini-4-neon`; a bare key wins over a prefixed one). Short-context
+    /// rates only. OpenAI bills no cache writes; a missing cache-read rate is the input rate, a missing
+    /// 1-hour write rate the 5-minute one.
+    public static func convert(litellm data: Data) -> [ModelPrice] {
+        guard let list = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        func perMillion(_ entry: [String: Any], _ key: String) -> Double? {
+            guard let number = entry[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            let value = number.doubleValue
+            guard value.isFinite, value >= 0, value < 0.01 else { return nil }
+            return (value * 1_000_000 * 1_000_000).rounded() / 1_000_000
+        }
+        var found: [String: (bare: Bool, price: ModelPrice)] = [:]
+        for key in list.keys.sorted() {
+            guard let entry = list[key] as? [String: Any], let provider = entry["litellm_provider"] as? String, providers.contains(provider),
+                  let mode = entry["mode"] as? String, mode == "chat" || mode == "responses" else { continue }
+            let bare = !key.contains("/")
+            let model = key.hasPrefix(provider + "/") ? String(key.dropFirst(provider.count + 1)) : key
+            guard !model.isEmpty, !model.contains("/"), model == normalized(model).trimmingCharacters(in: .whitespacesAndNewlines),
+                  let input = perMillion(entry, "input_cost_per_token"), let output = perMillion(entry, "output_cost_per_token"),
+                  input > 0, output > 0 else { continue }
+            let openAI = provider == "openai"
+            let write5m = openAI ? 0 : perMillion(entry, "cache_creation_input_token_cost") ?? input
+            let price = ModelPrice(model: model, input: input, output: output,
+                                   cacheRead: perMillion(entry, "cache_read_input_token_cost") ?? input,
+                                   cacheWrite5m: write5m,
+                                   cacheWrite1h: openAI ? 0 : perMillion(entry, "cache_creation_input_token_cost_above_1hr") ?? write5m)
+            if let kept = found[model], kept.bare, !bare { continue }
+            found[model] = (bare, price)
+        }
+        return found.keys.sorted().compactMap { found[$0]?.price }
+    }
+
+    static var savedURL: URL { UsageLocations.dataDirectory.appendingPathComponent(fileName) }
+
+    static func readSaved() -> Saved? {
+        guard let data = try? Data(contentsOf: savedURL), let saved = try? JSONDecoder().decode(Saved.self, from: data),
+              saved.prices.count >= minimumEntries else { return nil }
+        return saved
+    }
+
+    /// Downloads LiteLLM's price list when the saved copy is a day old (sending nothing but a standard
+    /// HTTPS request), saves it, and switches to it. True when prices changed.
+    @discardableResult
+    public static func refreshIfDue(now: Date = Date()) async -> Bool {
+        if let saved = readSaved(), (0..<maxAge).contains(now.timeIntervalSince1970 - saved.fetchedAt) { return false }
+        let due = withState { state in
+            guard now.timeIntervalSince(state.lastTry) >= retryAfter else { return false }
+            state.lastTry = now
+            return true
+        }
+        guard due else { return false }
+        var request = URLRequest(url: pricesURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        // Downloaded to a file, so an oversized reply is refused without being held in memory.
+        guard let (file, response) = try? await session.download(for: request), (response as? HTTPURLResponse)?.statusCode == 200,
+              response.url?.scheme == "https" else { return false }
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size < 50_000_000,
+              let data = try? Data(contentsOf: file) else { return false }
+        let downloaded = convert(litellm: data)
+        guard downloaded.count >= minimumEntries else { return false }
+        let saved = Saved(fetchedAt: now.timeIntervalSince1970, prices: downloaded)
+        try? FileManager.default.createDirectory(at: UsageLocations.dataDirectory, withIntermediateDirectories: true)
+        if let encoded = try? JSONEncoder().encode(saved) { try? encoded.write(to: savedURL, options: .atomic) }
+        return withState { state in
+            let changed = merged(downloaded) != state.table
+            apply(downloaded, fetchedAt: now, to: state)
+            return changed
+        }
+    }
+
+    /// Tests: price with `downloaded` merged in, as a download would.
+    static func use(_ downloaded: [ModelPrice]?, fetchedAt: Date? = nil) {
+        withState { state in
+            if let downloaded { apply(downloaded, fetchedAt: fetchedAt, to: state) } else { state.table = bundled; state.fetchedAt = nil; state.memo = [:] }
+        }
     }
 }
 
@@ -242,7 +393,7 @@ public enum UsageStore {
         for folder in ["sessions", "archived_sessions"] {
             logs += jsonl(under: UsageLocations.codexHome.appendingPathComponent(folder)).map { ($0, .codex) }
         }
-        logs.sort { Array($0.path.utf8).lexicographicallyPrecedes(Array($1.path.utf8)) }
+        logs.sort { $0.path.utf8.lexicographicallyPrecedes($1.path.utf8) }
         var seen = Set(cache.files.values.flatMap(\.keys))
         var changed = false
         var visited = Set<String>()
@@ -292,21 +443,31 @@ public enum UsageStore {
 
     /// Reads complete lines after `state.offset`. Returns false if nothing new could be read.
     private static func read(path: String, agent: UsageAgent, state: inout FileState, seen: inout Set<String>) -> Bool {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
-        defer { try? handle.close() }
-        do { try handle.seek(toOffset: UInt64(state.offset)) } catch { return false }
-        guard let data = try? handle.readToEnd(), let lastNewline = data.lastIndex(of: 10) else { return false }
-        let complete = data[data.startIndex...lastNewline]
+        guard let file = fopen(path, "r") else { return false }
+        defer { fclose(file) }
+        let start = state.offset
+        guard fseeko(file, off_t(start), SEEK_SET) == 0 else { return false }
+        var buffer: UnsafeMutablePointer<CChar>?
+        var capacity = 0
+        defer { free(buffer) }
         let fallbackSession = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-        for line in complete.split(separator: 10, omittingEmptySubsequences: true) {
-            switch agent {
-            case .claude: readClaude(Data(line), session: fallbackSession, state: &state, seen: &seen)
-            case .codex: readCodex(Data(line), session: fallbackSession, state: &state)
-            case .cursor: break
+        while true {
+            let count = getline(&buffer, &capacity, file)
+            // The writer may still be appending. Resume at the start of that line next time.
+            guard count > 0, let buffer, buffer[count - 1] == 10 else { break }
+            state.offset += count
+            if count > 1 {
+                autoreleasepool {
+                    let line = Data(bytes: buffer, count: count - 1)
+                    switch agent {
+                    case .claude: readClaude(line, session: fallbackSession, state: &state, seen: &seen)
+                    case .codex: readCodex(line, session: fallbackSession, state: &state)
+                    case .cursor: break
+                    }
+                }
             }
         }
-        state.offset += complete.count
-        return true
+        return state.offset != start
     }
 
     private static func contains(_ line: Data, _ needle: String) -> Bool { line.range(of: Data(needle.utf8)) != nil }
@@ -316,14 +477,12 @@ public enum UsageStore {
               let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
         state.setFolder(object["cwd"])
         let type = object["type"] as? String
-        if type == "user" || type == "assistant", let time = (object["timestamp"] as? String).flatMap(parseDate) {
-            state.addActivity(time)
-        }
+        guard type == "user" || type == "assistant", let time = (object["timestamp"] as? String).flatMap(parseDate) else { return }
+        state.addActivity(time)
         guard type == "assistant",
               let message = object["message"] as? [String: Any],
               let usage = message["usage"] as? [String: Any],
-              let model = message["model"] as? String, model != "<synthetic>",
-              let time = (object["timestamp"] as? String).flatMap(parseDate) else { return }
+              let model = message["model"] as? String, model != "<synthetic>" else { return }
         if let id = message["id"] as? String {
             let key = id + ":" + (object["requestId"] as? String ?? "")
             guard seen.insert(key).inserted else { return }
@@ -802,11 +961,24 @@ public enum UsageStore {
 
     // MARK: Dates
 
-    static func parseDate(_ text: String) -> Date? {
+    // ISO8601DateFormatter is mutable. Reuse a pair on each parsing thread.
+    private final class LogDateFormatters {
         let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: text) { return date }
-        return ISO8601DateFormatter().date(from: text)
+        let wholeSeconds = ISO8601DateFormatter()
+
+        init() { fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds] }
+    }
+    static func parseDate(_ text: String) -> Date? {
+        let key = "com.connorbescos.barista.logDateFormatters"
+        let local = Thread.current.threadDictionary
+        let formats: LogDateFormatters
+        if let existing = local[key] as? LogDateFormatters {
+            formats = existing
+        } else {
+            formats = LogDateFormatters()
+            local[key] = formats
+        }
+        return formats.fractional.date(from: text) ?? formats.wholeSeconds.date(from: text)
     }
     static func formatDate(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 }

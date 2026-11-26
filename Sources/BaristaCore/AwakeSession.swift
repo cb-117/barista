@@ -173,7 +173,7 @@ public final class AwakeSession: ObservableObject {
     public func restore(_ data: Data, maxAge: TimeInterval = 300) -> Int {
         refresh()
         guard sessions.isEmpty, let saved = try? CoffeeJSON.decoder().decode(Handoff.self, from: data),
-              clock.timeIntervalSince(saved.savedAt) <= maxAge, clock >= saved.savedAt else { return 0 }
+              (-5...maxAge).contains(clock.timeIntervalSince(saved.savedAt)) else { return 0 }  // the clock can step back a little
         let live = saved.sessions.filter { lease in
             if let end = lease.expiresAt, end <= clock { return false }
             if let pid = lease.processID { return processIdentity(pid) == lease.processIdentity }

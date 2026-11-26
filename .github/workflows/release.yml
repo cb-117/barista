@@ -202,6 +202,7 @@ jobs:
           mv portable/* .
           portable=("${portable[@]#portable/}")
           shasum -a 256 "$dmg" "$zip" Barista.dmg Barista.zip "${portable[@]}" > SHA256SUMS.txt
+          swift scripts/update-signing.swift sign SHA256SUMS.txt
 
           cp changes.md notes.md
           cat >> notes.md <<NOTES
@@ -212,7 +213,7 @@ jobs:
 
           **Or from Terminal (or let your AI agent do it):** \`curl -fsSL https://baristatime.app/install.sh | sh\`
 
-          **Already have Barista?** It will offer this update in its panel. Click **Update** and it installs and relaunches.
+          **Already have Barista?** On versions before 0.1.2, click **Update** on Mac or run Windows Setup once. From 0.1.2 onward, Mac and Windows clients with update checks enabled install verified releases after 24 hours.
 
           Works on Apple Silicon and Intel Macs running macOS 13 or later.
 
@@ -220,5 +221,5 @@ jobs:
 
           **Linux:** the same \`install.sh\` command, or download **barista-$version-linux-x86_64.tar.gz** (or \`-arm64\`). The tray icon uses StatusNotifierItem, built into KDE Plasma, Ubuntu, Xfce, and most desktops; on stock GNOME, install the AppIndicator extension. No GTK libraries are needed.
           NOTES
-          gh release create "v$version" "$dmg" Barista.dmg "$zip" "$zip.sig" Barista.zip "${portable[@]}" SHA256SUMS.txt --target "$GITHUB_SHA" \
+          gh release create "v$version" "$dmg" Barista.dmg "$zip" "$zip.sig" Barista.zip "${portable[@]}" SHA256SUMS.txt SHA256SUMS.txt.sig --target "$GITHUB_SHA" \
             --title "Barista $version" --notes-file notes.md

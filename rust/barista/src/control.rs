@@ -481,10 +481,12 @@ pub(crate) mod win {
         }
     }
 
-    /// Full access for this user only. "P" blocks inherited entries.
+    /// Owned by this user, with full access for this user only. "P" blocks inherited entries. The
+    /// owner is explicit because an elevated administrator's objects default to the Administrators
+    /// group, which `check_owner` would refuse.
     fn security() -> Result<Security> {
         let sid = current_user_sid().ok_or_else(|| CoffeeError::msg("Couldn't read this account's identity."))?;
-        let sddl = wide(&format!("D:P(A;;GA;;;{sid})"));
+        let sddl = wide(&format!("O:{sid}D:P(A;;GA;;;{sid})"));
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         let ok = unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, std::ptr::null_mut())

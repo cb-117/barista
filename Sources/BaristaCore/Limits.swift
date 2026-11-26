@@ -278,7 +278,7 @@ public enum ClaudeAccount {
         }
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let oauth = object["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String, !token.isEmpty else { return .noLogin }
+              let token = oauth["accessToken"] as? String, AccountRequest.headerSafe(token) else { return .noLogin }
         guard let expiresMs = (oauth["expiresAt"] as? NSNumber)?.doubleValue else { return .expired }
         let expires = Date(timeIntervalSince1970: expiresMs / 1000)
         guard expires.timeIntervalSince(now) > 60 else { return .expired }
@@ -338,7 +338,7 @@ public enum ClaudeAccount {
         case .failure(.status(let status)): return .httpStatus(status)
         }
         do {
-            let object: [String: Any] = ["observedAt": UsageStore.formatDate(Date()), "usage": usage]
+            let object: [String: Any] = ["observedAt": UsageStore.formatDate(Date()), "usage": cachedUsage(usage)]
             let saved = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
             try FileManager.default.createDirectory(at: UsageLocations.dataDirectory, withIntermediateDirectories: true)
             try saved.write(to: resultFile, options: .atomic)
@@ -346,6 +346,44 @@ public enum ClaudeAccount {
             return .unreachable("couldn\u{2019}t save the result")
         }
         return .updated
+    }
+
+    /// Keep the response shape older versions read, and only the fields used by windows(_:now:).
+    private static func cachedUsage(_ usage: [String: Any]) -> [String: Any] {
+        func fields(_ object: [String: Any], numbers: [String] = [], strings: [String] = []) -> [String: Any] {
+            var kept: [String: Any] = [:]
+            for key in numbers {
+                if let number = object[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { kept[key] = number }
+            }
+            for key in strings { kept[key] = object[key] as? String }
+            return kept
+        }
+        var kept: [String: Any] = [:]
+        if let limits = usage["limits"] as? [[String: Any]] {
+            kept["limits"] = limits.map { limit in
+                var row = fields(limit, numbers: ["percent"], strings: ["kind", "resets_at"])
+                if limit["kind"] as? String == "weekly_scoped", let scope = limit["scope"] as? [String: Any] {
+                    var label = fields(scope, strings: ["surface"])
+                    if let model = scope["model"] as? [String: Any] { label["model"] = fields(model, strings: ["display_name"]) }
+                    row["scope"] = label
+                }
+                return row
+            }
+        } else {
+            for key in ["five_hour", "seven_day"] {
+                if let window = usage[key] as? [String: Any] { kept[key] = fields(window, numbers: ["utilization"], strings: ["resets_at"]) }
+            }
+        }
+        if let spend = usage["spend"] as? [String: Any], let enabled = spend["enabled"] as? NSNumber,
+           CFGetTypeID(enabled) == CFBooleanGetTypeID(), enabled.boolValue {
+            var extra = fields(spend, numbers: ["percent"])
+            extra["enabled"] = true
+            for key in ["used", "limit"] {
+                if let money = spend[key] as? [String: Any] { extra[key] = fields(money, numbers: ["amount_minor", "exponent"]) }
+            }
+            kept["spend"] = extra
+        }
+        return kept
     }
 
     /// Turning the setting off: forget the saved result and the in-memory token.
@@ -411,6 +449,10 @@ public enum ClaudeAccount {
 /// active-user ping. No redirects are followed (a redirect is a failure, so a header never reaches
 /// another host), and no cookies or cache are kept.
 enum AccountRequest {
+    static func headerSafe(_ value: String) -> Bool {
+        !value.isEmpty && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
+
     enum Failure: Error {
         case unreachable(String)
         case status(Int)
@@ -531,16 +573,10 @@ public enum CodexAccount {
         guard let data = try? Data(contentsOf: authFile),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let tokens = object["tokens"] as? [String: Any],
-              let token = tokens["access_token"] as? String, headerSafe(token) else { return .noLogin }
+              let token = tokens["access_token"] as? String, AccountRequest.headerSafe(token) else { return .noLogin }
         if let expires = expiry(ofJWT: token), expires.timeIntervalSince(now) <= 60 { return .expired }
-        let account = (tokens["account_id"] as? String).flatMap { headerSafe($0) ? $0 : nil }
+        let account = (tokens["account_id"] as? String).flatMap { AccountRequest.headerSafe($0) ? $0 : nil }
         return .token(token, account: account)
-    }
-
-    /// A value that can go in a request header: not empty, and no control characters (nothing that
-    /// could start another header line).
-    static func headerSafe(_ value: String) -> Bool {
-        !value.isEmpty && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
 
     /// A JWT's `exp`, read locally from its payload; nil when the token isn't a JWT with one.

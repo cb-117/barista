@@ -215,7 +215,12 @@ pub fn build(app: &Shared) -> Model {
         prefs.weekly_summary,
     ));
     settings.push(check("toggle:limit-alerts", "Limit alerts", prefs.limit_alerts));
-    settings.push(check("toggle:updates", "Check for updates daily", prefs.checks_for_updates));
+    let update_label = if cfg!(windows) {
+        "Install updates automatically after 24 hours"
+    } else {
+        "Check for updates daily"
+    };
+    settings.push(check("toggle:updates", update_label, prefs.checks_for_updates));
     settings.push(item(
         "check-updates",
         state.update_status.as_deref().unwrap_or("Check for updates now"),
