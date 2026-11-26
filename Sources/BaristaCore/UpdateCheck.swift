@@ -12,6 +12,11 @@ public struct AvailableUpdate: Equatable, Sendable {
     public let archiveURL: URL?
     public let signatureURL: URL?
     public var canInstallInPlace: Bool { archiveURL != nil && signatureURL != nil }
+    /// Stable releases get a full day from publication before automatic installation.
+    public let installAfter: Date?
+    public func automaticInstallDue(enabled: Bool, now: Date) -> Bool {
+        enabled && canInstallInPlace && installAfter.map { now >= $0 } == true
+    }
 }
 
 public enum UpdateCheck {
@@ -36,9 +41,11 @@ public enum UpdateCheck {
         let archive = assets["Barista-\(version).zip"]
         let signature = assets["Barista-\(version).zip.sig"]
         let paired = archive != nil && signature != nil
+        let published = (release["published_at"] as? String).flatMap(UsageStore.parseDate)
         return AvailableUpdate(version: version, pageURL: page,
                                downloadURL: assets["Barista-\(version).dmg"] ?? archive,
-                               archiveURL: paired ? archive : nil, signatureURL: paired ? signature : nil)
+                               archiveURL: paired ? archive : nil, signatureURL: paired ? signature : nil,
+                               installAfter: published?.addingTimeInterval(86400))
     }
 
     /// Compares dotted numeric versions ("v1.2" == "1.2.0"). Anything unparseable is never newer.

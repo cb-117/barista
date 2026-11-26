@@ -13,6 +13,14 @@ pub struct AvailableUpdate {
     pub page_url: String,
     /// This platform's download, when the release has one.
     pub download_url: Option<String>,
+    /// GitHub's publication time plus 24 hours, in UTC Unix seconds.
+    pub install_after: Option<i64>,
+}
+
+impl AvailableUpdate {
+    pub fn automatic_install_due(&self, enabled: bool, now: f64) -> bool {
+        enabled && self.install_after.is_some_and(|deadline| now >= deadline as f64)
+    }
 }
 
 /// This platform's release downloads, best first: on Windows the installer
@@ -63,6 +71,11 @@ pub fn newer_release(data: &[u8], current: &str) -> Option<AvailableUpdate> {
         version,
         page_url,
         download_url,
+        install_after: release
+            .get("published_at")
+            .and_then(Value::as_str)
+            .and_then(crate::models::parse_date)
+            .map(|time| (time + 86400.0).ceil() as i64),
     })
 }
 
@@ -148,6 +161,19 @@ pub fn check() -> Result<Option<AvailableUpdate>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deadline_is_one_day_after_publication_and_respects_opt_out() {
+        let release = br#"{"tag_name":"v2.0","published_at":"2026-11-25T00:00:00Z"}"#;
+        let update = newer_release(release, "1.0").unwrap();
+        let deadline = crate::models::parse_date("2026-11-26T00:00:00Z").unwrap();
+        assert!(!update.automatic_install_due(true, deadline - 1.0));
+        assert!(update.automatic_install_due(true, deadline));
+        assert!(!update.automatic_install_due(false, deadline));
+        assert!(!newer_release(br#"{"tag_name":"v2.0"}"#, "1.0")
+            .unwrap()
+            .automatic_install_due(true, deadline));
+    }
 
     #[test]
     fn versions_compare_numerically() {

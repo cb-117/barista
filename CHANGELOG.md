@@ -11,8 +11,10 @@ new version and date, and start a fresh **Unreleased** section above it.
 
 ## [0.1.2] - 2026-11-25
 
+- **Automatic Mac and Windows updates.** With update checks enabled, Barista 0.1.2 installs future stable releases once they are 24 hours old. It verifies the download and relaunches with active sessions intact. Windows keeps per-user, all-users, and portable installs in place. All-users upgrades may ask for administrator approval. Install 0.1.2 using your existing update flow to receive future automatic updates.
 - **Mac keyboard shortcuts.** Press ⌘W to close the front Settings or Usage & Limits window and keep your timers running. Press ⌘, to open Settings, or ⌘Q to quit Barista and release its awake sessions, while Barista is active.
 - **Lower memory use for large agent logs.** Barista now reads Claude and Codex logs one record at a time. Mac builds reuse timestamp parsers, and Windows and Linux builds skip re-encoding the usage cache when nothing has changed.
+- **Codex costs, and prices that stay current.** Usage & Limits now estimates costs for GPT-6.2 Sol and Astra, which Codex uses and Barista had shown as unpriced. Claude Fable 5.2 is now priced at its own rates instead of Fable 5's, which had overstated its cost. With update checks on, the app also refreshes model prices once a day from LiteLLM's public price list, so new models get a cost without waiting for a Barista release. The download is a plain request with nothing about you, and the built-in prices still apply offline.
 - **Less account data on disk.** Each successful Claude account refresh saves only the limit and spending fields that Barista displays. Existing snapshots still work, and Barista rejects malformed Claude login tokens before sending a request.
 
 ## [0.1.1] - 2026-11-09

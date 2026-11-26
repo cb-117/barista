@@ -60,7 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.updateStatus() }
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.runtime.session.refresh() }
+            Task { @MainActor in
+                self?.runtime.session.refresh()
+                self?.runtime.checkForUpdatesIfDue()
+            }
         }
         runtime.start()
         updateStatus()

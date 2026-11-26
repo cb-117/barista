@@ -8,6 +8,17 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=BARISTA_VERSION");
     let windows_target = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    if windows_target {
+        let key_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Sources/BaristaCore/UpdateCheck.swift");
+        println!("cargo:rerun-if-changed={}", key_source.display());
+        let text = std::fs::read_to_string(key_source).expect("read updater public key");
+        let key = text
+            .lines()
+            .find(|line| line.contains("static let publicKey ="))
+            .and_then(|line| line.split('"').nth(1))
+            .expect("update signing public key");
+        println!("cargo:rustc-env=BARISTA_UPDATE_PUBLIC_KEY={key}");
+    }
     let windows_host = env::var("HOST").is_ok_and(|host| host.contains("windows"));
     if !(windows_target && windows_host) {
         return;

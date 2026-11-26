@@ -164,7 +164,13 @@ final class AppRuntime: ObservableObject {
     }
     private var scheduleTimer: Timer?
     private var scheduleObservers: [NSObjectProtocol] = []
-    @Published var checksForUpdates: Bool { didSet { defaults.set(checksForUpdates, forKey: "checksForUpdates"); scheduleUpdateChecks() } }
+    @Published var checksForUpdates: Bool {
+        didSet {
+            defaults.set(checksForUpdates, forKey: "checksForUpdates")
+            if checksForUpdates && !oldValue { defaults.set(Date(), forKey: "nextUpdateCheck") }
+            scheduleUpdateChecks()
+        }
+    }
     @Published private(set) var availableUpdate: AvailableUpdate?
     @Published private(set) var updateStatus: String?
     @Published private(set) var isCheckingForUpdates = false
@@ -523,7 +529,9 @@ final class AppRuntime: ObservableObject {
         guard !isRefreshingUsage else { return }
         if !force, let usage, Date().timeIntervalSince(usage.generatedAt) < 60 { return }
         isRefreshingUsage = true
+        let downloadPrices = checksForUpdates
         Task.detached(priority: .utility) {
+            if downloadPrices { await UsagePricing.refreshIfDue() }
             let report = UsageStore.report(periods: UsagePeriod.allCases)
             await MainActor.run {
                 self.usage = report
@@ -820,10 +828,11 @@ final class AppRuntime: ObservableObject {
         return false
     }
     /// Downloads, verifies, installs, and relaunches. Falls back to the download page when it can't.
-    func installUpdate() {
+    func installUpdate(automatic: Bool = false) {
         guard let update = availableUpdate, !isInstallingUpdate else { return }
         guard canInstallUpdate else {
-            if case .failure(let failure) = Updater.installLocation(), !failure.offerDownload { notice = failure.message }
+            if automatic { updateStatus = "Install Barista \(update.version) manually from Settings → Updates." }
+            else if case .failure(let failure) = Updater.installLocation(), !failure.offerDownload { notice = failure.message }
             else { openUpdate() }
             return
         }
@@ -831,13 +840,16 @@ final class AppRuntime: ObservableObject {
         updateStatus = "Updating to \(update.version)…"
         Task { @MainActor in
             do {
-                try await Updater.install(update) { self.prepareForUpdateRelaunch() }
+                try await Updater.install(update, shouldInstall: { !automatic || self.checksForUpdates }) {
+                    self.prepareForUpdateRelaunch()
+                }
             } catch {
                 isInstallingUpdate = false
                 updateStatus = nil
+                if error is CancellationError { return }
                 let failure = error as? Updater.Failure
                 notice = failure?.message ?? "Couldn’t install the update: \(error.localizedDescription)"
-                if failure?.offerDownload ?? true { openUpdate() }
+                if !automatic, failure?.offerDownload ?? true { openUpdate() }
             }
         }
     }
@@ -845,19 +857,18 @@ final class AppRuntime: ObservableObject {
         updateTimer?.invalidate()
         updateTimer = nil
         guard checksForUpdates else { return }
-        // Check hourly whether a day has passed, so sleep and restarts don't skip or repeat checks.
-        let timer = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+        let next = defaults.object(forKey: "nextUpdateCheck") as? Date ??
+            (defaults.object(forKey: "lastUpdateCheck") as? Date)?.addingTimeInterval(86400) ?? .distantPast
+        let timer = Timer(timeInterval: max(10, next.timeIntervalSinceNow), repeats: false) { [weak self] _ in
             Task { @MainActor in self?.checkForUpdatesIfDue() }
         }
         RunLoop.main.add(timer, forMode: .common)
         updateTimer = timer
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.checkForUpdatesIfDue() }
     }
-    private func checkForUpdatesIfDue() {
+    func checkForUpdatesIfDue() {
         guard checksForUpdates else { return }
-        let last = defaults.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
-        guard Date().timeIntervalSince(last) >= 86400 else { return }
-        checkForUpdates(userInitiated: false)
+        if let next = defaults.object(forKey: "nextUpdateCheck") as? Date, next > Date() { scheduleUpdateChecks() }
+        else { checkForUpdates(userInitiated: false) }
     }
     /// Asks GitHub for the latest release. Sends no identifiers beyond a standard HTTPS request.
     func checkForUpdates(userInitiated: Bool) {
@@ -865,7 +876,7 @@ final class AppRuntime: ObservableObject {
         isCheckingForUpdates = true
         if userInitiated { updateStatus = "Checking…" }
         Task { @MainActor in
-            defer { isCheckingForUpdates = false }
+            defer { isCheckingForUpdates = false; scheduleUpdateChecks() }
             var request = URLRequest(url: UpdateCheck.latestReleaseURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
             request.setValue("Barista/\(BaristaVersion.current)", forHTTPHeaderField: "User-Agent")
@@ -876,13 +887,19 @@ final class AppRuntime: ObservableObject {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 // 404 means nothing has been released yet.
                 guard status == 200 || status == 404 else { throw URLError(.badServerResponse) }
-                defaults.set(Date(), forKey: "lastUpdateCheck")
+                let now = Date()
+                defaults.set(now, forKey: "lastUpdateCheck")
                 availableUpdate = status == 200 ? UpdateCheck.newerRelease(in: data) : nil
+                let due = availableUpdate?.automaticInstallDue(enabled: checksForUpdates, now: now) == true
+                let next = availableUpdate?.installAfter.flatMap { $0 > now ? $0 : nil }
+                defaults.set(due ? now.addingTimeInterval(3600) : min(next ?? .distantFuture, now.addingTimeInterval(86400)), forKey: "nextUpdateCheck")
                 if userInitiated {
                     updateStatus = availableUpdate.map { "Barista \($0.version) is available." } ?? "You’re up to date (\(BaristaVersion.current))."
                     if availableUpdate != nil { defaults.removeObject(forKey: "dismissedUpdate") }
                 }
+                if due { installUpdate(automatic: true) }
             } catch {
+                defaults.set(Date().addingTimeInterval(3600), forKey: "nextUpdateCheck")
                 if userInitiated { updateStatus = "Couldn’t reach GitHub. Try again later." }
             }
         }

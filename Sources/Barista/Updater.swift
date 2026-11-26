@@ -19,6 +19,9 @@ enum Updater {
     /// Where the running app lives, or a reason it can't replace itself there.
     static func installLocation() -> Result<URL, Failure> {
         let bundle = Bundle.main.bundleURL.resolvingSymlinksInPath()
+        guard bundle.pathExtension.lowercased() == "app" else {
+            return .failure(Failure(message: "Open the installed Barista app to update it.", offerDownload: false))
+        }
         if bundle.path.contains("/AppTranslocation/") || bundle.path.hasPrefix("/Volumes/") {
             return .failure(Failure(message: "Move Barista to your Applications folder, open it from there, then update.", offerDownload: false))
         }
@@ -31,7 +34,7 @@ enum Updater {
     }
 
     /// Prepares the new version, then quits so the helper can swap it in. Only returns on failure.
-    static func install(_ update: AvailableUpdate, beforeQuit: () -> Void) async throws {
+    static func install(_ update: AvailableUpdate, shouldInstall: () -> Bool, beforeQuit: () -> Void) async throws {
         guard let archiveURL = update.archiveURL, let signatureURL = update.signatureURL else {
             throw Failure(message: "This release can’t be installed automatically. Download it instead.", offerDownload: true)
         }
@@ -83,6 +86,7 @@ enum Updater {
         helper.standardInput = FileHandle.nullDevice
         helper.standardOutput = FileHandle.nullDevice
         helper.standardError = FileHandle.nullDevice
+        guard shouldInstall() else { throw CancellationError() }
         try helper.run()
         handedOff = true
         beforeQuit()

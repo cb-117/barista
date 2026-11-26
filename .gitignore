@@ -5,3 +5,4 @@ build/
 rust/target/
 .wrangler/
 node_modules/
+.env

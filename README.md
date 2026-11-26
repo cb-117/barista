@@ -39,7 +39,7 @@ Keep your Mac awake for a timer, until an app quits, or while a command or agent
 - Battery protection: stops awake sessions at 20% while on battery by default, with a configurable cutoff. Your actual work continues; awake sessions do not restart automatically.
 - Launch at login, configurable global shortcut, Option-click quick toggle, optional completion notifications, and saved preferences.
 - A bundled CLI and stdio MCP server. No third-party runtime, API key, cloud account, simulated input, or network listener.
-- One-click updates: once a day Barista checks GitHub for a newer release. Click **Update** in the panel and it downloads it, verifies its signature, replaces itself, and relaunches. Running sessions carry over to the new version. Turn checks off or check now in Settings → Updates.
+- Automatic updates on Mac and Windows. With update checks enabled, Barista installs the latest stable release once it is 24 hours old, verifies the download, and relaunches with your active sessions. Turn automatic updates off or check now in Settings → Updates.
 
 ## Install
 
@@ -53,7 +53,7 @@ curl -fsSL https://baristatime.app/install.sh | sh
 
 The script installs the latest release to Applications after checking it against the release’s SHA-256, then runs `barista setup`. Already installed? Run `barista setup` (inside `Barista.app/Contents/Helpers/`) to connect any agents you’ve added since.
 
-After that, Barista updates itself: when a new version is out, click **Update** in its panel and it installs and relaunches.
+Starting with 0.1.2, automatic updates are on for everyone who has update checks enabled. You can still click **Update** in the Mac panel to install sooner. Copies running 0.1.1 or earlier need their usual one-time manual upgrade.
 
 ## Windows and Linux
 
@@ -71,11 +71,11 @@ Linux:
 curl -fsSL https://baristatime.app/install.sh | sh
 ```
 
-Both check the download against the release’s SHA-256, install `barista` and `barista-app` (Windows: `%LOCALAPPDATA%\Programs\Barista`, added to your PATH and Start menu; Linux: `~/.local/bin`, plus an app-menu entry), and run `barista setup`. Re-run to update; Barista’s menu tells you when a new version is out. Or download `barista-<version>-windows-x86_64.zip` or `barista-<version>-linux-<arch>.tar.gz` from the [latest release](https://github.com/cb-117/barista/releases/latest).
+Both check the download against the release’s SHA-256, install `barista` and `barista-app` (Windows: `%LOCALAPPDATA%\Programs\Barista`, added to your PATH and Start menu; Linux: `~/.local/bin`, plus an app-menu entry), and run `barista setup`. On Windows, Barista 0.1.2 and later automatically updates the installed or portable copy in place after the release is 24 hours old. An all-users installation can prompt for administrator approval. On Linux, the menu announces updates and you can rerun the installer. Or download `barista-<version>-windows-x86_64.zip` or `barista-<version>-linux-<arch>.tar.gz` from the [latest release](https://github.com/cb-117/barista/releases/latest).
 
 On Linux the tray icon is a StatusNotifierItem (no GTK needed), shown by KDE Plasma, Ubuntu, Xfce, and most desktops; on stock GNOME install the AppIndicator extension, and on trays that only support XEmbed (i3bar, dwm, tint2) run `snixembed`. Left-click or right-click the cup for the menu; the time left appears in the icon’s tooltip. Without a graphical session (a server, WSL, SSH), `barista-app` runs headless and the CLI, hooks, and MCP keep working. Linux keeps the computer awake through the desktop’s power service (GNOME, KDE, and others) and a systemd-logind idle inhibitor; Windows uses a system power request (it shows in `powercfg /requests`).
 
-What’s different from the Mac app: on Windows, clicking the cup opens a panel much like the Mac’s; on Linux it opens a menu. Neither has an end-time picker or “while an app runs” (use `barista start --pid` for that) or a global shortcut, and updates download from the release page instead of installing in place.
+What’s different from the Mac app: on Windows, clicking the cup opens a panel much like the Mac’s; on Linux it opens a menu. Neither has an end-time picker or “while an app runs” (use `barista start --pid` for that) or a global shortcut. Linux updates download from the release page.
 
 ## Build and run
 
@@ -154,7 +154,7 @@ The **Release** workflow notices the new version, runs the checks, builds a univ
 - `barista-<version>-windows-x86_64.zip`, `barista-<version>-linux-x86_64.tar.gz`, and `barista-<version>-linux-arm64.tar.gz`, built from `rust/` (which reads the same version), plus copies without the version for `install.sh` and `install.ps1`
 - `SHA256SUMS.txt`
 
-The app installs an update only if the zip is signed with the release key. The private key is the `BARISTA_UPDATE_KEY` Actions secret (a backup is in the maintainer’s Keychain as “Barista update signing key”), and the public key is `UpdateSignature.publicKey` in `Sources/BaristaCore/UpdateCheck.swift`. The workflow refuses to publish if they don’t match. To package a disk image locally: `pip install dmgbuild==1.6.5`, then `zsh scripts/make-dmg.sh`. Pushes that don’t change the version don’t create a release. Running apps see the update within a day, or right away from Settings → Updates → **Check now**.
+The Mac app checks the ZIP signature. Windows checks the Ed25519 signature on `SHA256SUMS.txt`, then matches the versioned installer against its signed SHA-256 before running it. The private key is the `BARISTA_UPDATE_KEY` Actions secret (a backup is in the maintainer’s Keychain as “Barista update signing key”), and the public key is `UpdateSignature.publicKey` in `Sources/BaristaCore/UpdateCheck.swift`. The workflow refuses to publish if they don’t match. To package a disk image locally: `pip install dmgbuild==1.6.5`, then `zsh scripts/make-dmg.sh`. Pushes that don’t change the version don’t create a release. Automatic updates use the GitHub release publication time. A sleeping or offline client catches up on a successful check after the deadline. A device still needs to be able to write its install location.
 
 Every push to `main` also attaches a universal `Barista.zip` to its **CI** run (kept for 30 days), so you can try any commit without releasing it.
 
@@ -170,7 +170,7 @@ Barista makes four kinds of network request, and each can be turned off:
 
 - **Your Claude plan’s limits.** The Barista app asks Anthropic for them at most every 5 minutes, using Claude Code’s saved login (read-only: Barista never refreshes, stores, or logs it). On macOS, Barista reads the login with Apple’s `security` tool, the way Claude Code does, so macOS normally doesn’t ask for Keychain access. Turn this off in Settings → Agents.
 - **Your ChatGPT plan’s limits.** The same, asking ChatGPT with Codex’s saved login, read-only. Barista keeps only the limits from the answer, not your email or account ID. Turn this off in Settings → Agents.
-- **Updates.** An anonymous HTTPS request to GitHub’s public releases API at most once a day, and downloading an update when you click **Update**. They send no identifiers, usage, or session data. Turn automatic checks off in Settings → Updates.
+- **Updates.** Barista checks GitHub’s public releases API daily, rechecks at the publication deadline, and retries failed requests. Mac and Windows download and verify eligible updates automatically when checks are enabled. With checks on, the app also downloads [LiteLLM's public model price list](https://github.com/BerriAI/litellm) once a day so cost estimates cover new models. These requests send no identifiers, usage, or session data. Turn automatic checks off in Settings → Updates.
 - **The active-user count.** Once a day the app tells baristatime.app that a copy is running: its version, whether it’s a Mac, Windows, or Linux, and whether this is its first ping today, this week, this month, and ever. There is no install ID, and nothing about you, your computer, or your usage is sent; the server doesn’t keep your IP address. That is how Barista’s daily, weekly, and monthly users are counted. [docs/ACTIVE-USERS.md](docs/ACTIVE-USERS.md) has every detail, and the server’s code is [worker/index.js](worker/index.js). Turn it off in Settings → Updates → **Help count active users**.
 
 Local builds are ad-hoc signed. Release builds are signed with Developer ID and notarized by the Release workflow (`BARISTA_SIGN_IDENTITY` and `scripts/notarize.sh`). Intel binaries are cross-compiled; testing on an Intel Mac is recommended before a public release.

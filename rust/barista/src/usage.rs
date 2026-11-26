@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 pub const PRICES_CHECKED: &str = env!("BARISTA_PRICES_CHECKED");
 const CACHE_FILE: &str = "usage-cache-portable.json";
@@ -27,7 +27,7 @@ const REPORT_PLACEHOLDER: &str = "/*BARISTA_REPORT_DATA*/null";
 
 // MARK: Prices
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Price {
     pub model: String,
@@ -38,12 +38,102 @@ pub struct Price {
     pub cache_write1h: f64,
 }
 
+/// LiteLLM's community price list, the source of the downloaded table (see docs/USAGE.md).
+pub const PRICES_URL: &str = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const PRICES_FILE: &str = "model-prices.json";
+const PRICES_MAX_AGE: f64 = 86_400.0;
+/// A failed download waits this long before the next try.
+const PRICES_RETRY: f64 = 3600.0;
+/// Fewer entries than this means the download isn't the list we expect.
+const PRICES_MIN_ENTRIES: usize = 50;
+const PRICE_PROVIDERS: [&str; 6] = ["anthropic", "openai", "gemini", "xai", "deepseek", "mistral"];
+
+/// The saved download: LiteLLM's first-party chat prices in Barista's format.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPrices {
+    fetched_at: f64,
+    prices: Vec<Price>,
+}
+
+pub struct PriceTable {
+    prices: Vec<Price>,
+    /// When the downloaded part was fetched; None when only the built-in table is in use.
+    fetched_at: Option<f64>,
+    /// Normalized model → index into `prices`, since every log bucket asks.
+    memo: Mutex<HashMap<String, Option<usize>>>,
+}
+
+impl PriceTable {
+    fn new(prices: Vec<Price>, fetched_at: Option<f64>) -> Self {
+        Self {
+            prices,
+            fetched_at,
+            memo: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The longest entry equal to the model or followed in it by `-`.
+    pub fn price_for(&self, model: &str) -> Option<&Price> {
+        let model = model_name(model);
+        let mut memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
+        let index = *memo.entry(model).or_insert_with_key(|model| {
+            self.prices
+                .iter()
+                .enumerate()
+                .filter(|(_, price)| {
+                    *model == price.model || model.strip_prefix(price.model.as_str()).is_some_and(|rest| rest.starts_with('-'))
+                })
+                .max_by_key(|(_, price)| price.model.len())
+                .map(|(index, _)| index)
+        });
+        index.map(|index| &self.prices[index])
+    }
+}
+
 /// The price table from Sources/BaristaCore/ModelPrices.swift, extracted by build.rs.
-pub fn prices() -> &'static [Price] {
-    static PRICES: OnceLock<Vec<Price>> = OnceLock::new();
-    PRICES.get_or_init(|| {
-        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/model-prices.json"))).expect("ModelPrices.swift holds valid JSON")
-    })
+fn bundled_prices() -> Vec<Price> {
+    serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/model-prices.json"))).expect("ModelPrices.swift holds valid JSON")
+}
+
+/// Downloaded entries replace built-in ones of the same model; built-in models the download lacks stay.
+fn merged_prices(downloaded: &[Price]) -> Vec<Price> {
+    let names: HashSet<&str> = downloaded.iter().map(|p| p.model.as_str()).collect();
+    let mut prices: Vec<Price> = bundled_prices().into_iter().filter(|p| !names.contains(p.model.as_str())).collect();
+    prices.extend_from_slice(downloaded);
+    prices
+}
+
+fn read_saved_prices(path: &Path) -> Option<SavedPrices> {
+    let saved: SavedPrices = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    (saved.prices.len() >= PRICES_MIN_ENTRIES).then_some(saved)
+}
+
+fn load_prices() -> PriceTable {
+    if !cfg!(test) {
+        if let Some(saved) = read_saved_prices(&data_dir().join(PRICES_FILE)) {
+            return PriceTable::new(merged_prices(&saved.prices), Some(saved.fetched_at));
+        }
+    }
+    PriceTable::new(bundled_prices(), None)
+}
+
+fn price_table() -> &'static RwLock<Arc<PriceTable>> {
+    static TABLE: OnceLock<RwLock<Arc<PriceTable>>> = OnceLock::new();
+    TABLE.get_or_init(|| RwLock::new(Arc::new(load_prices())))
+}
+
+/// The prices in use: the built-in table, updated by the newest download.
+pub fn prices() -> Arc<PriceTable> {
+    price_table().read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The date the estimates' prices were checked: the download's (UTC), else the built-in table's.
+pub fn prices_checked() -> String {
+    prices()
+        .fetched_at
+        .and_then(|at| chrono::DateTime::from_timestamp(at as i64, 0))
+        .map_or_else(|| PRICES_CHECKED.to_string(), |at| at.format("%Y-%m-%d").to_string())
 }
 
 /// A model ID as reported: cut at the first `[` or `@` (`claude-haiku-5-5[1m]` → `claude-haiku-5-5`).
@@ -52,12 +142,136 @@ pub fn model_name(raw: &str) -> String {
 }
 
 /// The longest price entry equal to the model or followed in it by `-`.
-pub fn price_for(model: &str) -> Option<&'static Price> {
-    let model = model_name(model);
-    prices()
-        .iter()
-        .filter(|price| model == price.model || model.strip_prefix(price.model.as_str()).is_some_and(|rest| rest.starts_with('-')))
-        .max_by_key(|price| price.model.len())
+pub fn price_for(model: &str) -> Option<Price> {
+    prices().price_for(model).cloned()
+}
+
+/// LiteLLM's list → Barista's entries: first-party chat models priced per token, by their bare name
+/// (`gemini/gemini-4-neon` → `gemini-4-neon`; a bare key wins over a prefixed one). Short-context
+/// rates only. OpenAI bills no cache writes; a missing cache-read rate is the input rate, a missing
+/// 1-hour write rate the 5-minute one.
+pub fn convert_litellm(list: &Value) -> Vec<Price> {
+    let per_million = |entry: &Value, key: &str| {
+        entry
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v < 0.01)
+            .map(|v| round6(v * 1_000_000.0))
+    };
+    let mut found: BTreeMap<String, (bool, Price)> = BTreeMap::new();
+    for (key, entry) in list.as_object().into_iter().flatten() {
+        let Some(provider) = entry
+            .get("litellm_provider")
+            .and_then(Value::as_str)
+            .filter(|p| PRICE_PROVIDERS.contains(p))
+        else {
+            continue;
+        };
+        if !matches!(entry.get("mode").and_then(Value::as_str), Some("chat" | "responses")) {
+            continue;
+        }
+        let bare = !key.contains('/');
+        let model = key.strip_prefix(&format!("{provider}/")).unwrap_or(key);
+        if model.is_empty() || model.contains('/') || model != model_name(model) {
+            continue;
+        }
+        let (Some(input), Some(output)) = (
+            per_million(entry, "input_cost_per_token"),
+            per_million(entry, "output_cost_per_token"),
+        ) else {
+            continue;
+        };
+        if input <= 0.0 || output <= 0.0 {
+            continue;
+        }
+        let openai = provider == "openai";
+        let cache_write5m = if openai {
+            0.0
+        } else {
+            per_million(entry, "cache_creation_input_token_cost").unwrap_or(input)
+        };
+        let price = Price {
+            model: model.to_string(),
+            input,
+            output,
+            cache_read: per_million(entry, "cache_read_input_token_cost").unwrap_or(input),
+            cache_write5m,
+            cache_write1h: if openai {
+                0.0
+            } else {
+                per_million(entry, "cache_creation_input_token_cost_above_1hr").unwrap_or(cache_write5m)
+            },
+        };
+        match found.get(model) {
+            Some((true, _)) if !bare => {}
+            _ => {
+                found.insert(model.to_string(), (bare, price));
+            }
+        }
+    }
+    found.into_values().map(|(_, price)| price).collect()
+}
+
+/// Downloads LiteLLM's price list with the system's `curl` when the saved copy is a day old (sending
+/// nothing but a standard HTTPS request), saves it, and switches to it. True when prices changed.
+pub fn refresh_prices() -> bool {
+    static LAST_TRY: Mutex<f64> = Mutex::new(0.0);
+    let path = data_dir().join(PRICES_FILE);
+    let now = now();
+    if read_saved_prices(&path).is_some_and(|saved| (0.0..PRICES_MAX_AGE).contains(&(now - saved.fetched_at))) {
+        return false;
+    }
+    {
+        let mut last = LAST_TRY.lock().unwrap_or_else(|e| e.into_inner());
+        if now - *last < PRICES_RETRY {
+            return false;
+        }
+        *last = now;
+    }
+    let Some(downloaded) = download_prices() else { return false };
+    let saved = SavedPrices {
+        fetched_at: now,
+        prices: downloaded,
+    };
+    let _ = fs::create_dir_all(data_dir());
+    if let Ok(data) = serde_json::to_vec(&saved) {
+        let _ = write_atomically(&path, &data);
+    }
+    let changed = merged_prices(&saved.prices) != prices().prices;
+    *price_table().write().unwrap_or_else(|e| e.into_inner()) = Arc::new(PriceTable::new(merged_prices(&saved.prices), Some(now)));
+    changed
+}
+
+fn download_prices() -> Option<Vec<Price>> {
+    let output = crate::update::curl()
+        .args([
+            "-sS",
+            "-L",
+            "--proto",
+            "=https",
+            "--max-time",
+            "30",
+            "--max-filesize",
+            "50000000",
+            "-w",
+            "\n%{http_code}",
+        ])
+        .args(["-H", &format!("User-Agent: Barista/{VERSION}")])
+        .arg(PRICES_URL)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let (body, status) = text.rsplit_once('\n')?;
+    if status.trim() != "200" {
+        return None;
+    }
+    let prices = convert_litellm(&serde_json::from_str(body).ok()?);
+    (prices.len() >= PRICES_MIN_ENTRIES).then_some(prices)
 }
 
 // MARK: Counts and cache
@@ -1003,7 +1217,7 @@ struct Tally {
 impl Tally {
     fn add_tokens(&mut self, model: &str, session: &str, counts: &Counts) {
         add(&mut self.counts, counts);
-        match price_for(model) {
+        match prices().price_for(model) {
             Some(price) => self.cost += cost(price, counts),
             None => self.unpriced += token_total(counts),
         }
@@ -1318,7 +1532,7 @@ fn projects_json(snapshot: &Snapshot, start: Option<f64>, now: f64, roots: &mut 
             .add_tokens(&entry.model, &entry.session, &entry.counts);
         let day = project.days.entry(local_date(entry.hour)).or_default();
         day.tokens += token_total(&entry.counts);
-        if let Some(price) = price_for(&entry.model) {
+        if let Some(price) = prices().price_for(&entry.model) {
             day.cost += cost(price, &entry.counts);
         }
     }
@@ -1477,7 +1691,7 @@ fn projects_json(snapshot: &Snapshot, start: Option<f64>, now: f64, roots: &mut 
 pub fn build(snapshot: &Snapshot, periods: &[Period]) -> Value {
     let mut roots = Roots::default();
     json!({
-        "estimateNote": format!("Costs are estimates at API list prices (checked {PRICES_CHECKED}), not what a subscription charges."),
+        "estimateNote": format!("Costs are estimates at API list prices (checked {}), not what a subscription charges.", prices_checked()),
         "generatedAt": format_date(now()),
         "limits": limits_json(snapshot),
         "periods": periods.iter().map(|p| period_json(snapshot, *p, p.start(), &mut roots)).collect::<Vec<_>>(),
@@ -1869,7 +2083,8 @@ pub fn text(report: &Value, detailed: bool) -> String {
         }
     }
     out.push_str(&format!(
-        "\nCursor reports turns, not tokens. Prices checked {PRICES_CHECKED}; Barista {VERSION}.\n"
+        "\nCursor reports turns, not tokens. Prices checked {}; Barista {VERSION}.\n",
+        prices_checked()
     ));
     out
 }
@@ -2115,6 +2330,77 @@ mod tests {
         assert!(price_for("gpt-5x").is_none());
         assert!(price_for("codex-auto-review").is_none());
         assert_eq!(model_name("claude-opus-5-5@20260101"), "claude-opus-5-5");
+    }
+
+    #[test]
+    fn litellm_prices_convert_to_first_party_entries() {
+        let list = json!({
+            "sample_spec": {"litellm_provider": "one of …", "mode": "chat", "input_cost_per_token": 0.0, "output_cost_per_token": 0.0},
+            "gpt-6.2-sol": {"litellm_provider": "openai", "mode": "chat", "input_cost_per_token": 2e-6, "output_cost_per_token": 1e-5,
+                            "cache_read_input_token_cost": 1e-7, "cache_creation_input_token_cost": 2.5e-6},
+            "gpt-5.1-codex": {"litellm_provider": "openai", "mode": "responses", "input_cost_per_token": 1.25e-6, "output_cost_per_token": 1e-5},
+            "claude-fable-5-2": {"litellm_provider": "anthropic", "mode": "chat", "input_cost_per_token": 8e-6, "output_cost_per_token": 4e-5,
+                                 "cache_read_input_token_cost": 2e-7, "cache_creation_input_token_cost": 1e-5},
+            "gemini/gemini-4-neon": {"litellm_provider": "gemini", "mode": "chat", "input_cost_per_token": 3e-6, "output_cost_per_token": 1.5e-5},
+            "vertex_ai/gemini-4-neon": {"litellm_provider": "vertex_ai", "mode": "chat", "input_cost_per_token": 9e-6, "output_cost_per_token": 9e-5},
+            "azure/gpt-6.2-sol": {"litellm_provider": "azure", "mode": "chat", "input_cost_per_token": 9e-6, "output_cost_per_token": 9e-5},
+            "text-embedding-4": {"litellm_provider": "openai", "mode": "embedding", "input_cost_per_token": 1e-7, "output_cost_per_token": 1e-7},
+            "gpt-free": {"litellm_provider": "openai", "mode": "chat", "input_cost_per_token": 0.0, "output_cost_per_token": 0.0},
+        });
+        let prices = convert_litellm(&list);
+        let names: Vec<&str> = prices.iter().map(|p| p.model.as_str()).collect();
+        assert_eq!(names, ["claude-fable-5-2", "gemini-4-neon", "gpt-5.1-codex", "gpt-6.2-sol"]);
+        let sol = &prices[3];
+        assert_eq!(
+            (sol.input, sol.output, sol.cache_read, sol.cache_write5m, sol.cache_write1h),
+            (2.0, 10.0, 0.1, 0.0, 0.0),
+            "OpenAI bills no cache writes"
+        );
+        let fable = &prices[0];
+        assert_eq!(
+            (fable.cache_write5m, fable.cache_write1h),
+            (10.0, 10.0),
+            "a missing 1-hour rate is the 5-minute one"
+        );
+        assert_eq!(prices[1].input, 3.0, "Gemini's own price, not Vertex's");
+        assert_eq!(prices[2].cache_read, 1.25, "a missing cache-read rate is the input rate");
+    }
+
+    #[test]
+    fn downloaded_prices_replace_and_extend_the_built_in_table() {
+        let downloaded = vec![
+            Price {
+                model: "gpt-5.1-codex".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.1,
+                cache_write5m: 0.0,
+                cache_write1h: 0.0,
+            },
+            Price {
+                model: "claude-opus-5-5".into(),
+                input: 3.0,
+                output: 4.0,
+                cache_read: 0.3,
+                cache_write5m: 3.75,
+                cache_write1h: 6.0,
+            },
+        ];
+        let table = PriceTable::new(merged_prices(&downloaded), Some(0.0));
+        assert_eq!(
+            table.price_for("gpt-5.1-codex-max").unwrap().model,
+            "gpt-5.1-codex",
+            "a longer downloaded entry wins"
+        );
+        assert_eq!(
+            table.price_for("claude-opus-5-5[1m]").unwrap().input,
+            3.0,
+            "a downloaded entry replaces the built-in one"
+        );
+        assert_eq!(table.price_for("gpt-5-mini").unwrap().model, "gpt-5-mini", "built-in models stay");
+        assert_eq!(table.prices.iter().filter(|p| p.model == "claude-opus-5-5").count(), 1);
+        assert!(table.price_for("codex-auto-review").is_none());
+        assert!(table.price_for("codex-auto-review").is_none(), "a memoized miss stays a miss");
     }
 
     #[test]

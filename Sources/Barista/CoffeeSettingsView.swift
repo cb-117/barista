@@ -135,7 +135,7 @@ struct CoffeeSettingsView: View {
                 Text("Your Claude and ChatGPT plan limits, and tokens per agent, in one window.")
             }
             Section {
-                Toggle("Check for updates automatically", isOn: $runtime.checksForUpdates)
+                Toggle("Install updates automatically after 24 hours", isOn: $runtime.checksForUpdates)
                 Toggle(isOn: $runtime.shareActiveCount) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Help count active users")
@@ -157,7 +157,7 @@ struct CoffeeSettingsView: View {
                     }
                 }
             } header: { Text("Updates") } footer: {
-                Text("Once a day, Barista asks GitHub whether there’s a newer release. Nothing about you or your Mac is sent. Updates are signed; Barista installs them and relaunches. The active-user count is separate and anonymous.")
+                Text("Barista checks GitHub daily. After a release has been available for 24 hours, Barista verifies the update and relaunches with your awake sessions. Choose Update to install sooner.")
             }
 
             Section {

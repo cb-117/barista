@@ -10,15 +10,16 @@ import Foundation
 /// longest `model` that equals it, or is followed in it by "-", wins. So "claude-opus-4-1-20250805"
 /// prices as "claude-opus-4-1" and "gpt-5.1-codex" as "gpt-5.1". Unlisted models show tokens with no cost.
 ///
-/// Sources (checked 2026-11-01): Anthropic's model pricing (cache writes are 1.25× input for 5-minute
+/// Sources (checked 2026-11-25): Anthropic's model pricing (cache writes are 1.25× input for 5-minute
 /// entries and 2× for 1-hour entries; cache reads are priced per model), and
 /// https://developers.openai.com/api/docs/pricing (Standard tier, short-context rates; OpenAI bills
 /// no cache writes, and models without a cached rate bill cached input at the full input price).
 public enum ModelPrices {
-    public static let checkedOn = "2026-11-01"
+    public static let checkedOn = "2026-11-25"
 
     public static let json = #"""
     [
+      {"model": "claude-fable-5-2",  "input": 8,    "output": 40,   "cacheRead": 0.2,  "cacheWrite5m": 10,    "cacheWrite1h": 16},
       {"model": "claude-fable-5-1",  "input": 10,   "output": 50,   "cacheRead": 0.25, "cacheWrite5m": 12.5,  "cacheWrite1h": 20},
       {"model": "claude-mythos-5-1", "input": 10,   "output": 50,   "cacheRead": 0.25, "cacheWrite5m": 12.5,  "cacheWrite1h": 20},
       {"model": "claude-fable-5",    "input": 10,   "output": 50,   "cacheRead": 1,    "cacheWrite5m": 12.5,  "cacheWrite1h": 20},
@@ -38,6 +39,8 @@ public enum ModelPrices {
       {"model": "claude-sonnet-4",   "input": 3,    "output": 15,   "cacheRead": 0.3,  "cacheWrite5m": 3.75,  "cacheWrite1h": 6},
       {"model": "claude-haiku-5-5",  "input": 0.1,  "output": 0.5,  "cacheRead": 0.01, "cacheWrite5m": 0.125, "cacheWrite1h": 0.2},
       {"model": "claude-haiku-4-5",  "input": 1,    "output": 5,    "cacheRead": 0.1,  "cacheWrite5m": 1.25,  "cacheWrite1h": 2},
+      {"model": "gpt-6.2-astra",     "input": 8,    "output": 40,   "cacheRead": 0.4,   "cacheWrite5m": 0, "cacheWrite1h": 0},
+      {"model": "gpt-6.2-sol",       "input": 2,    "output": 10,   "cacheRead": 0.1,   "cacheWrite5m": 0, "cacheWrite1h": 0},
       {"model": "gpt-6-astra",       "input": 10,   "output": 50,   "cacheRead": 1,     "cacheWrite5m": 0, "cacheWrite1h": 0},
       {"model": "gpt-6.1-sol",       "input": 2,    "output": 10,   "cacheRead": 0.1,   "cacheWrite5m": 0, "cacheWrite1h": 0},
       {"model": "gpt-6.1-terra",     "input": 1,    "output": 5,    "cacheRead": 0.05,  "cacheWrite5m": 0, "cacheWrite1h": 0},

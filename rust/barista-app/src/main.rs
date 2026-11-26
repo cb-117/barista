@@ -15,6 +15,8 @@ mod tray;
 mod panel;
 #[cfg(windows)]
 mod report;
+#[cfg(windows)]
+mod windows_update;
 
 use barista_core::active_ping;
 use barista_core::activity::{self, ActivityTracker, WatchedApp};
@@ -290,6 +292,9 @@ impl App {
     }
 
     pub fn set_checks_for_updates(&mut self, value: bool) {
+        if cfg!(windows) && value && !self.prefs.checks_for_updates {
+            self.prefs.next_update_check = Some(now());
+        }
         self.prefs.checks_for_updates = value;
         self.save();
     }
@@ -347,17 +352,21 @@ impl App {
 /// Recomputes usage on a background thread if it's older than `max_age` (parsing logs can take a
 /// moment, so the event loop never waits for it).
 pub fn refresh_usage(app: &Shared, max_age: Duration) {
-    {
+    let download_prices = {
         let mut state = lock(app);
         let fresh = state.usage_updated.is_some_and(|at| at.elapsed() < max_age);
         if state.ephemeral || state.usage_loading || fresh {
             return;
         }
         state.usage_loading = true;
-    }
+        state.prefs.checks_for_updates
+    };
     let app = app.clone();
     std::thread::spawn(move || {
-        use barista_core::usage::{report, Period};
+        use barista_core::usage::{refresh_prices, report, Period};
+        if download_prices {
+            refresh_prices();
+        }
         let value = report(&[Period::Today, Period::Week, Period::Month, Period::All]);
         let today = chrono::Local::now().date_naive();
         let week = barista_core::usage::daily_active_seconds(&value, 7, today).map(|days| {
@@ -547,7 +556,7 @@ pub fn set_account_limits(app: &Shared, account: LimitsAccount, enabled: bool) {
 pub fn check_for_updates(app: &Shared, user_initiated: bool) {
     {
         let mut state = lock(app);
-        if state.checking_for_updates || state.ephemeral {
+        if state.checking_for_updates || state.ephemeral || (!user_initiated && !state.prefs.checks_for_updates) {
             return;
         }
         state.checking_for_updates = true;
@@ -559,11 +568,26 @@ pub fn check_for_updates(app: &Shared, user_initiated: bool) {
     std::thread::spawn(move || {
         let result = update::check();
         let mut state = lock(&app);
-        state.checking_for_updates = false;
+        let checked = now();
+        #[cfg(windows)]
+        let mut automatic = None;
         match result {
             Ok(found) => {
-                state.prefs.last_update_check = now();
+                state.prefs.last_update_check = checked;
                 state.update = found;
+                #[cfg(windows)]
+                {
+                    let deadline = state.update.as_ref().and_then(|u| u.install_after).map(|t| t as f64);
+                    automatic = state
+                        .update
+                        .clone()
+                        .filter(|u| u.automatic_install_due(state.prefs.checks_for_updates, checked));
+                    state.prefs.next_update_check = Some(if automatic.is_some() {
+                        checked + 3600.0
+                    } else {
+                        deadline.filter(|t| *t > checked).unwrap_or(f64::MAX).min(checked + 86400.0)
+                    });
+                }
                 if user_initiated {
                     state.update_status = Some(match &state.update {
                         Some(update) => format!("Barista {} is available.", update.version),
@@ -575,9 +599,26 @@ pub fn check_for_updates(app: &Shared, user_initiated: bool) {
                 }
                 state.save();
             }
-            Err(_) if user_initiated => state.update_status = Some("Couldn’t reach GitHub. Try again later.".into()),
-            Err(_) => {}
+            Err(_) => {
+                if user_initiated {
+                    state.update_status = Some("Couldn’t reach GitHub. Try again later.".into());
+                }
+                #[cfg(windows)]
+                {
+                    state.prefs.next_update_check = Some(checked + 3600.0);
+                    state.save();
+                }
+            }
         }
+        #[cfg(windows)]
+        if let Some(update) = automatic {
+            state.update_status = Some(format!("Updating to {}…", update.version));
+            drop(state);
+            let result = windows_update::install(&app, &update);
+            state = lock(&app);
+            state.update_status = result.err().map(|e| format!("Couldn’t install Barista {}: {e}", update.version));
+        }
+        state.checking_for_updates = false;
     });
 }
 
@@ -694,8 +735,32 @@ fn main() {
     }
 
     let path = options.serve.clone().unwrap_or_else(default_path);
+    #[cfg(windows)]
+    let resume = !ephemeral && std::env::args().any(|a| a == "--resume-update");
+    #[cfg(windows)]
+    if resume {
+        match windows_update::Handoff::read() {
+            Ok(saved) => saved.restore(&mut lock(&app)),
+            Err(_) => std::process::exit(1),
+        }
+    }
     let handler_app = app.clone();
-    let server = match ControlServer::start(&path, Arc::new(move |request| lock(&handler_app).handle(request))) {
+    let handler: barista_core::control::Handler = Arc::new(move |request| lock(&handler_app).handle(request));
+    let bound = ControlServer::start(&path, handler.clone());
+    #[cfg(windows)]
+    let bound = {
+        let mut bound = bound;
+        // The previous process exits immediately after closing the handoff pipe.
+        for _ in 0..50 {
+            if !resume || bound.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            bound = ControlServer::start(&path, handler.clone());
+        }
+        bound
+    };
+    let server = match bound {
         Ok(server) => server,
         Err(error) => {
             eprintln!("barista-app: {error}");
@@ -750,21 +815,26 @@ fn main() {
             refresh_usage(&usage_app, Duration::from_secs(60));
             std::thread::sleep(Duration::from_secs(300));
         });
-        // Check hourly whether a day has passed, so sleep and restarts don't skip or repeat checks.
-        // The active-user ping keeps the same hours, whether or not update checks are on.
+        // Windows also wakes for the release deadline. The anonymous count stays on its hourly schedule.
         let app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(10));
+            let mut next_ping = 0.0;
             loop {
                 let due = {
                     let state = lock(&app);
-                    state.prefs.checks_for_updates && now() - state.prefs.last_update_check >= 86400.0
+                    state.prefs.checks_for_updates
+                        && now() >= state.prefs.next_update_check.unwrap_or(state.prefs.last_update_check + 86400.0)
                 };
                 if due {
                     check_for_updates(&app, false);
                 }
-                send_active_ping_if_due(&app);
-                std::thread::sleep(Duration::from_secs(3600));
+                let time = now();
+                if time >= next_ping || next_ping - time > 3600.0 {
+                    send_active_ping_if_due(&app);
+                    next_ping = time + 3600.0;
+                }
+                std::thread::sleep(Duration::from_secs(if cfg!(windows) { 60 } else { 3600 }));
             }
         });
     }

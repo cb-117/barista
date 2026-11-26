@@ -328,7 +328,15 @@ is missing or unreadable, uninstall fails with an error and leaves the settings 
 ## Cost estimates
 
 Prices come from `Sources/BaristaCore/ModelPrices.swift` (USD per million tokens; the Rust build reads
-the same JSON). The model is cut at the first `[` or `@`, then the longest price entry that equals it or
+the same JSON), updated once a day from [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+while the app's update checks are on. The app downloads it with a plain HTTPS GET (no identifiers) when
+`model-prices.json` in the data folder is a day old (a failed download waits an hour), and saves its
+first-party chat models (Anthropic, OpenAI, Gemini, xAI, DeepSeek, Mistral) by bare name
+(`gemini/gemini-4-neon` → `gemini-4-neon`) with their short-context rates: OpenAI's cache writes are 0, a
+missing cache-read rate is the input rate, and a missing 1-hour write rate the 5-minute one. A download
+with fewer than 50 such models is ignored. Downloaded entries replace built-in ones of the same model;
+built-in models it lacks stay. The CLI and MCP server read the saved file but never download, and
+`estimateNote` dates the prices by the download (UTC) when there is one. The model is cut at the first `[` or `@`, then the longest price entry that equals it or
 is followed in it by `-` wins. Cost = input × `input` + output × `output` + cache read × `cacheRead` +
 5-minute writes × `cacheWrite5m` + 1-hour writes × `cacheWrite1h`, divided by 1,000,000. Tokens of an
 unlisted model are counted as **unpriced**. These are pay-as-you-go API rates, not what a Claude,

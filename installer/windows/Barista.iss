@@ -71,6 +71,8 @@ WizardStyle=modern
 SetupIconFile=barista.ico
 UninstallDisplayIcon={app}\barista-app.exe
 UninstallDisplayName=Barista
+Uninstallable=not PortableUpdate
+CreateUninstallRegKey=not PortableUpdate
 OutputBaseFilename=Barista-Setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
@@ -84,27 +86,27 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "startup"; Description: "Start Barista when I sign in"; Check: OffersUserChoices
-Name: "addtopath"; Description: "Add Barista to PATH (for the barista command)"
+Name: "addtopath"; Description: "Add Barista to PATH (for the barista command)"; Check: not PortableUpdate
 Name: "connectagents"; Description: "Connect Claude Code, Codex, and Cursor"; Check: OffersUserChoices
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Check: not PortableUpdate
 
 [InstallDelete]
 ; Copies set aside by an earlier install or upgrade because they were still running.
-Type: files; Name: "{app}\*.old"
+Type: files; Name: "{app}\*.old"; Check: not AutomaticUpdate
 
 [Files]
 Source: "{#SourceDir}\barista.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\barista-app.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#LicensePath}"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "{#LicensePath}"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion; Check: not PortableUpdate
 
 [Icons]
 ; AppUserModelID matches the app's (platform.rs, identity::APP_ID), so notifications show as Barista.
-Name: "{autoprograms}\Barista"; Filename: "{app}\barista-app.exe"; Comment: "Keeps your PC awake while work happens"; AppUserModelID: "Barista.App"
+Name: "{autoprograms}\Barista"; Filename: "{app}\barista-app.exe"; Comment: "Keeps your PC awake while work happens"; AppUserModelID: "Barista.App"; Check: not PortableUpdate
 Name: "{autodesktop}\Barista"; Filename: "{app}\barista-app.exe"; Comment: "Keeps your PC awake while work happens"; AppUserModelID: "Barista.App"; Tasks: desktopicon
 
 [Registry]
 ; Notifications' name and icon (Barista also writes this itself, for zip installs). Removed on uninstall.
-Root: HKCU; Subkey: "Software\Classes\AppUserModelId\Barista.App"; ValueType: string; ValueName: "DisplayName"; ValueData: "Barista"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\Barista.App"; ValueType: string; ValueName: "DisplayName"; ValueData: "Barista"; Flags: uninsdeletekey; Check: not PortableUpdate
 ; The uninstaller removes it in [Code], and only while it still points into this install.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Barista"; ValueData: """{app}\barista-app.exe"" --background"; Tasks: startup
 
@@ -134,7 +136,27 @@ const
   ProfileListKey = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList';
 
 var
-  Upgrading: Boolean;
+  Upgrading, AutoCommitted: Boolean;
+  PreviousApp, PreviousCLI: String;
+
+function HasSwitch(Flag: String): Boolean;
+var I: Integer;
+begin
+  Result := True;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Flag) = 0 then Exit;
+  Result := False;
+end;
+
+function AutomaticUpdate: Boolean;
+begin
+  Result := HasSwitch('/BARISTAAUTOUPDATE');
+end;
+
+function PortableUpdate: Boolean;
+begin
+  Result := AutomaticUpdate and HasSwitch('/PORTABLEUPDATE');
+end;
 
 function SetEnvironmentVariable(lpName, lpValue: String): BOOL;
   external 'SetEnvironmentVariableW@kernel32.dll stdcall';
@@ -169,12 +191,12 @@ end;
 { "Start Barista when I sign in" and "Connect…" are offered only on a fresh per-user install. }
 function OffersUserChoices: Boolean;
 begin
-  Result := not IsAdminInstallMode and not Upgrading;
+  Result := not IsAdminInstallMode and not Upgrading and not AutomaticUpdate;
 end;
 
 function ShouldLaunch: Boolean;
 begin
-  Result := Pos('/NOLAUNCH', Uppercase(GetCmdTail)) = 0;
+  Result := not AutomaticUpdate and not HasSwitch('/NOLAUNCH');
 end;
 
 { A fresh per-user install with "Start Barista when I sign in" unchecked: tell Barista the user
@@ -312,8 +334,55 @@ begin
     Log('Couldn''t set aside ' + Path);
 end;
 
+function StageForUpdate(Name: String; var Backup: String): Boolean;
+var Path, Candidate: String; N: Integer;
+begin
+  Path := ExpandConstant('{app}\') + Name;
+  Candidate := Path + '.barista-update.old';
+  N := 0;
+  while FileExists(Candidate) and not DeleteFile(Candidate) do
+  begin
+    N := N + 1;
+    Candidate := Path + '.barista-update.' + IntToStr(N) + '.old';
+  end;
+  Result := RenameFile(Path, Candidate);
+  if Result then Backup := Candidate;
+end;
+
+procedure RestorePrevious(Name: String; var Backup: String);
+var Path: String;
+begin
+  if Backup = '' then Exit;
+  Path := ExpandConstant('{app}\') + Name;
+  if FileExists(Path) then DeleteFile(Path);
+  if RenameFile(Backup, Path) then Backup := '';
+end;
+
+procedure DeinitializeSetup;
+begin
+  if not AutoCommitted then
+  begin
+    RestorePrevious('barista.exe', PreviousCLI);
+    RestorePrevious('barista-app.exe', PreviousApp);
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  if AutomaticUpdate then
+  begin
+    { Keep serving awake sessions and leave CLI wrappers alive while the files are replaced.
+      The running app handles the relaunch after Setup reports success. }
+    Result := 'Barista could not stage the installed executables. The current version is still running.';
+    if not StageForUpdate('barista-app.exe', PreviousApp) then Exit;
+    if not StageForUpdate('barista.exe', PreviousCLI) then
+    begin
+      RestorePrevious('barista-app.exe', PreviousApp);
+      Exit;
+    end;
+    Result := '';
+    Exit;
+  end;
   if not StopBarista then
   begin
     Log('Barista was still running after 10 seconds.');
@@ -325,7 +394,13 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and WizardIsTaskSelected('addtopath') then
+  if CurStep = ssDone then
+  begin
+    AutoCommitted := True;
+    if PreviousApp <> '' then DeleteFile(PreviousApp);
+    if PreviousCLI <> '' then DeleteFile(PreviousCLI);
+  end;
+  if (CurStep = ssPostInstall) and not PortableUpdate and WizardIsTaskSelected('addtopath') then
     AddToPath(ExpandConstant('{app}'));
 end;
 
