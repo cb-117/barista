@@ -751,7 +751,7 @@ fn main() {
     #[cfg(windows)]
     let bound = {
         let mut bound = bound;
-        // The previous process exits immediately after closing the handoff pipe.
+        // The previous process exits right after writing its handoff file.
         for _ in 0..50 {
             if !resume || bound.is_ok() {
                 break;

@@ -86,13 +86,15 @@ impl AwakeSession {
     }
 
     /// Resume ownership after a verified update. Recheck deadlines, process identity and battery.
-    pub fn resume_after_update(&mut self, leases: Vec<CoffeeLease>, stop_token: String) {
+    /// False when the handoff was refused (sessions already running, too many, or a bad token).
+    pub fn resume_after_update(&mut self, leases: Vec<CoffeeLease>, stop_token: String) -> bool {
         if !self.sessions.is_empty() || leases.len() > MAX_SESSIONS || !is_uuid(&stop_token) {
-            return;
+            return false;
         }
         self.sessions = leases;
         self.stop_token = stop_token;
         self.refresh();
+        true
     }
     pub fn is_active(&self) -> bool {
         !self.sessions.is_empty()

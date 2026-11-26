@@ -129,7 +129,7 @@ pub fn curl() -> Command {
     #[cfg(windows)]
     let program = std::env::var_os("SystemRoot")
         .map(|root| std::path::PathBuf::from(root).join("System32").join("curl.exe"))
-        .filter(|path| path.is_file())
+        .filter(|path| path.is_absolute() && path.is_file())
         .map_or_else(|| "curl".into(), std::path::PathBuf::into_os_string);
     #[cfg(not(windows))]
     let program = "curl";

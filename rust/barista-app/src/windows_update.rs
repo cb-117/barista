@@ -207,6 +207,10 @@ impl Handoff {
         let saved = handoff_path(endpoint);
         let claimed = saved.with_file_name(format!("update-handoff.{}.json", std::process::id()));
         fs::rename(&saved, &claimed).ok()?;
+        if !fs::symlink_metadata(&claimed).is_ok_and(|m| m.file_type().is_file()) {
+            let _ = fs::remove_dir_all(&claimed).or_else(|_| fs::remove_file(&claimed));
+            return None;
+        }
         let mut text = Vec::new();
         let read = fs::File::open(&claimed).and_then(|file| file.take(4 * 1024 * 1024).read_to_end(&mut text));
         let _ = fs::remove_file(&claimed);
@@ -218,7 +222,9 @@ impl Handoff {
         if !(-5.0..=300.0).contains(&(now() - self.saved_at)) {
             return;
         }
-        app.session.resume_after_update(self.sessions, self.stop_token);
+        if !app.session.resume_after_update(self.sessions, self.stop_token) {
+            return;
+        }
         for watched in WatchedApp::ALL {
             let id = watched.id;
             if let Some(v) = self.activity.remove(id) {

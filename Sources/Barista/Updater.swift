@@ -79,7 +79,7 @@ enum Updater {
           fi
         fi
         # Keep the previous version (in the work folder) unless the app at the target path opened.
-        if [ "$background" = 1 ]; then open "$target" --args --background; else open "$target"; fi && rm -rf "$work"
+        if [ "$background" = 1 ]; then open -g "$target" --args --background; else open "$target"; fi && rm -rf "$work"
         """
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")

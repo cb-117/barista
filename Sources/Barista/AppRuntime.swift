@@ -847,6 +847,11 @@ final class AppRuntime: ObservableObject {
                 isInstallingUpdate = false
                 updateStatus = nil
                 if error is CancellationError { return }
+                if automatic {
+                    // A broken download or signature won't fix itself within the hour.
+                    defaults.set(Date().addingTimeInterval(86400), forKey: "nextUpdateCheck")
+                    scheduleUpdateChecks()
+                }
                 let failure = error as? Updater.Failure
                 notice = failure?.message ?? "Couldn’t install the update: \(error.localizedDescription)"
                 if !automatic, failure?.offerDownload ?? true { openUpdate() }
